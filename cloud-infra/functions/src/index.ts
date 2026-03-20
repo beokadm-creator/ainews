@@ -7,7 +7,7 @@ import { createDailyBriefing } from './services/briefingService';
 import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processScrapingSources } from './services/scrapingService';
-import { processPuppeteerSources, loginMarketInsight, scrapeMarketInsightMNA } from './services/puppeteerService';
+import { processPuppeteerSources, loginMarketInsight, scrapeMarketInsightMNA, loginThebell, scrapeThebell } from './services/puppeteerService';
 import { processApiSources } from './services/apiSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
@@ -365,18 +365,40 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
   const updates: any = {};
   
   if (baseUrl !== undefined) {
-    updates.aiBaseUrls = { [provider]: baseUrl };
+    updates[`aiBaseUrls.${provider}`] = baseUrl;
   }
   
   if (model !== undefined) {
-    updates.aiModels = { [provider]: model };
+    updates[`aiModels.${provider}`] = model;
   }
 
-  if (Object.keys(updates).length > 0) {
-    // merge: true를 쓰면 aiModels 안의 다른 provider 값들이 사라지지 않음
-    await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
-  }
+  // 기본 활성 프로바이더/모델도 업데이트
+  updates['ai.provider'] = provider;
+  if (model) updates['ai.model'] = model;
+  if (baseUrl) updates['ai.baseUrl'] = baseUrl;
 
+  await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
+
+  return { success: true, message: `Settings for ${provider} saved to company ${companyId}` };
+});
+
+/** 회사별 파이프라인 설정 (필터, 출력 등) 업데이트 */
+export const updateCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const { companyId, filters, output, timezone } = request.data || {};
+  const targetCompanyId = companyId || await getPrimaryCompanyId(request.auth.uid);
+  await assertCompanyAccess(request.auth.uid, targetCompanyId);
+
+  const db = admin.firestore();
+  const updates: any = {};
+  if (filters) updates.filters = filters;
+  if (output) updates.output = output;
+  if (timezone) updates.timezone = timezone;
+
+  if (Object.keys(updates).length === 0) return { success: false, message: 'No updates provided' };
+
+  await db.collection('companySettings').doc(targetCompanyId).set(updates, { merge: true });
   return { success: true };
 });
 
@@ -755,6 +777,49 @@ export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, i
     return { success: true, articlesFound: articles.length, articles };
   } catch (err: any) {
     console.error('marketinsightScrape error:', err);
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+// ─────────────────────────────────────────
+// [NEW] Thebell Premium Member Access (Superadmin)
+// ─────────────────────────────────────────
+
+/** Thebell 유료 회원 로그인 (Superadmin) */
+export const thebellLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  try {
+    const result = await loginThebell();
+    if (!result.success) {
+      throw new HttpsError('internal', result.message);
+    }
+    return { success: true, message: result.message };
+  } catch (err: any) {
+    console.error('thebellLogin error:', err);
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/** Thebell 기사 스크래핑 (Superadmin) */
+export const thebellScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  try {
+    const articles = await scrapeThebell();
+    return { success: true, articlesFound: articles.length, articles };
+  } catch (err: any) {
+    console.error('thebellScrape error:', err);
     throw new HttpsError('internal', err.message);
   }
 });

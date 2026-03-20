@@ -65,6 +65,7 @@ export default function Layout({ children }: LayoutProps) {
     { name: 'Media Library', href: '/admin/media', icon: ShieldCheck },
     { name: 'Company & Users', href: '/admin/management', icon: ShieldCheck },
     { name: 'MarketInsight', href: '/admin/market-insight', icon: TrendingUp },
+    { name: '더벨', href: '/admin/thebell', icon: TrendingUp },
   ];
 
   const handleLogout = async () => {

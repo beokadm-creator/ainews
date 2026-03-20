@@ -329,32 +329,11 @@ export async function processPuppeteerSources(options?: {
  * 3. 로그인 후 쿠키를 Firestore에 저장하고 7일간 유지
  */
 export async function loginMarketInsight(): Promise<{ success: boolean; cookies?: any[]; message: string }> {
-  // Firebase Runtime Config 읽기
-  let email = '';
-  let password = '';
-
-  try {
-    const configJson = process.env.FIREBASE_CONFIG;
-    if (configJson) {
-      const config = JSON.parse(configJson);
-      email = config.marketinsight?.email || '';
-      password = config.marketinsight?.password || '';
-    }
-  } catch (err: any) {
-    console.warn('[MarketInsight] Could not parse FIREBASE_CONFIG:', err.message);
-  }
-
-  // FIREBASE_CONFIG에서 못 읽으면 직접 환경변수 시도
-  if (!email) email = process.env.MARKETINSIGHT_EMAIL || '';
-  if (!password) password = process.env.MARKETINSIGHT_PASSWORD || '';
+  const email = process.env.MARKETINSIGHT_EMAIL || '';
+  const password = process.env.MARKETINSIGHT_PASSWORD || '';
 
   if (!email || !password) {
-    console.error('[MarketInsight] Credentials not configured');
-    console.error('[MarketInsight] Environment check:', {
-      hasFirebaseConfig: !!process.env.FIREBASE_CONFIG,
-      hasDirectEmail: !!process.env.MARKETINSIGHT_EMAIL,
-      hasDirectPassword: !!process.env.MARKETINSIGHT_PASSWORD
-    });
+    console.error('[MarketInsight] Credentials not configured (MARKETINSIGHT_EMAIL, MARKETINSIGHT_PASSWORD)');
     return { success: false, message: 'MarketInsight credentials not configured' };
   }
 
@@ -685,6 +664,263 @@ export async function scrapeMarketInsightMNA(): Promise<ScrapedArticle[]> {
       } catch (e) {
         console.warn('[MarketInsight] Browser close error:', e);
       }
+    }
+  }
+}
+
+// ─────────────────────────────────────────
+// Thebell 유료 회원 로그인 & 스크래핑
+// ─────────────────────────────────────────
+
+/**
+ * Thebell 유료 회원 로그인 (세션 유지)
+ * 환경변수: THEBELL_EMAIL, THEBELL_PASSWORD
+ *
+ * 동작:
+ * 1. 기존 유효한 세션이 있으면 재사용
+ * 2. 세션이 없거나 만료되면 새로 로그인
+ * 3. 로그인 후 쿠키를 Firestore에 저장하고 7일간 유지
+ *
+ * 참고: Thebell은 PC 인증(쿠키/세션 기반)을 사용하므로
+ *       최초 로그인 후 세션 쿠키를 저장해 재사용합니다.
+ */
+export async function loginThebell(): Promise<{ success: boolean; cookies?: any[]; message: string }> {
+  const email = process.env.THEBELL_EMAIL || '';
+  const password = process.env.THEBELL_PASSWORD || '';
+
+  if (!email || !password) {
+    console.error('[Thebell] Credentials not configured (THEBELL_EMAIL, THEBELL_PASSWORD)');
+    return { success: false, message: 'Thebell credentials not configured' };
+  }
+
+  const db = admin.firestore();
+  const sessionRef = db.collection('sessions').doc('thebell');
+
+  // 1. 기존 유효한 세션 확인
+  const existingSession = await sessionRef.get();
+  if (existingSession.exists) {
+    const sessionData = existingSession.data();
+    const expiresAt = sessionData?.expiresAt?.toDate?.() || new Date(sessionData?.expiresAt);
+    if (expiresAt > new Date()) {
+      console.log('[Thebell] Using existing valid session');
+      return { success: true, cookies: sessionData?.cookies || [], message: 'Using existing session' };
+    }
+  }
+
+  let browser: any = null;
+
+  try {
+    console.log('[Thebell] Starting new login...');
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      timeout: 60000
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    console.log('[Thebell] Loading login page...');
+    await page.goto('https://www.thebell.co.kr/front/index.asp', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // 로그인 폼 입력
+    console.log('[Thebell] Filling login form...');
+    await page.evaluate((id: string, pw: string) => {
+      const idInput = document.querySelector('input[name="user_id"], input[id="user_id"], input[name="id"], input[type="text"]') as HTMLInputElement;
+      const pwInput = document.querySelector('input[name="user_pw"], input[id="user_pw"], input[name="password"], input[type="password"]') as HTMLInputElement;
+      if (idInput) idInput.value = id;
+      if (pwInput) pwInput.value = pw;
+    }, email, password);
+
+    // 로그인 버튼 클릭
+    const loginButton = await page.$('input[type="submit"], button[type="submit"], .btn_login, a[href*="login"]');
+    if (!loginButton) {
+      console.error('[Thebell] Login button not found');
+      return { success: false, message: 'Login button not found' };
+    }
+
+    await Promise.all([
+      loginButton.click(),
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => null)
+    ]);
+
+    await page.waitForTimeout(2000);
+
+    // 로그인 성공 확인
+    const currentUrl = page.url();
+    const pageContent = await page.content();
+    const isLoginPage = currentUrl.includes('login') || pageContent.includes('로그인');
+    const hasError = pageContent.includes('아이디') && pageContent.includes('비밀번호') && pageContent.includes('틀');
+
+    if (hasError) {
+      console.error('[Thebell] Login failed - wrong credentials');
+      return { success: false, message: 'Login failed - check credentials' };
+    }
+
+    const cookies = await page.cookies();
+    if (!cookies || cookies.length === 0) {
+      return { success: false, message: 'No session cookies found' };
+    }
+
+    // 세션 저장 (7일)
+    const expirationTime = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await sessionRef.set({
+      cookies,
+      email,
+      loginAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: expirationTime,
+      status: 'active',
+      loginUrl: currentUrl
+    });
+
+    console.log('[Thebell] Login successful, session saved for 7 days');
+    return { success: true, cookies, message: isLoginPage ? 'Logged in (session may need verification)' : 'Logged in successfully' };
+
+  } catch (err: any) {
+    console.error('[Thebell] Login error:', err.message, err.stack);
+    return { success: false, message: `Login failed: ${err.message}` };
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch (e) { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Thebell 최신 기사 스크래핑
+ * 세션이 없거나 만료되면 자동으로 로그인
+ */
+export async function scrapeThebell(): Promise<ScrapedArticle[]> {
+  const db = admin.firestore();
+  const sessionRef = db.collection('sessions').doc('thebell');
+
+  // 세션 확인 및 필요시 재로그인
+  let sessionData = (await sessionRef.get()).data();
+
+  if (!sessionData) {
+    console.log('[Thebell] No session found, logging in...');
+    const loginResult = await loginThebell();
+    if (!loginResult.success) {
+      console.error('[Thebell] Login failed, cannot scrape');
+      return [];
+    }
+    sessionData = (await sessionRef.get()).data();
+  } else {
+    const expiresAt = sessionData.expiresAt?.toDate?.() || new Date(sessionData.expiresAt);
+    if (expiresAt <= new Date()) {
+      console.log('[Thebell] Session expired, logging in again...');
+      const loginResult = await loginThebell();
+      if (!loginResult.success) {
+        console.error('[Thebell] Re-login failed');
+        return [];
+      }
+      sessionData = (await sessionRef.get()).data();
+    }
+  }
+
+  const cookies = sessionData?.cookies || [];
+  let browser: any = null;
+
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      timeout: 60000
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    if (cookies.length > 0) {
+      try {
+        await page.setCookie(...cookies);
+      } catch (e: any) {
+        console.warn('[Thebell] Cookie warning:', e.message);
+      }
+    }
+
+    // 최신 기사 목록 페이지 접근
+    console.log('[Thebell] Loading article list...');
+    const response = await page.goto('https://www.thebell.co.kr/front/free/contents/News/list.asp', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    }).catch((err: any) => {
+      console.warn('[Thebell] Navigation warning:', err.message);
+      return null;
+    });
+
+    if (!response) return [];
+
+    // 기사 스크래핑
+    const articles: ScrapedArticle[] = await page.evaluate(() => {
+      const items: any[] = [];
+
+      const selectors = [
+        '.news_list li, .news_list article',
+        'table.list tbody tr',
+        '.article-list li',
+        '.content-list li',
+        'ul.list li'
+      ];
+
+      for (const selector of selectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          elements.forEach((el) => {
+            const titleEl = el.querySelector('a.tit, .title a, h3 a, h4 a, td.tit a, a[href*="article"]');
+            const dateEl = el.querySelector('.date, span.date, td.date, time');
+            const contentEl = el.querySelector('.lead, .summary, td.lead, p');
+
+            if (titleEl) {
+              const href = (titleEl as HTMLAnchorElement).getAttribute('href') || '';
+              const title = titleEl.textContent?.trim() || '';
+              if (title && title.length > 3) {
+                items.push({
+                  title,
+                  url: href,
+                  content: contentEl?.textContent?.trim().substring(0, 500) || '',
+                  publishedAt: dateEl?.textContent?.trim() ? new Date(dateEl.textContent.trim()) : new Date()
+                });
+              }
+            }
+          });
+          if (items.length > 0) break;
+        }
+      }
+
+      return items.slice(0, 100);
+    });
+
+    // URL 정규화
+    const baseUrl = 'https://www.thebell.co.kr';
+    const normalized = articles
+      .filter((a) => a.title && a.url && a.title.length > 3)
+      .map((a) => ({
+        ...a,
+        url: a.url.startsWith('http') ? a.url : `${baseUrl}${a.url.startsWith('/') ? '' : '/'}${a.url}`
+      }));
+
+    console.log(`[Thebell] Scraped ${normalized.length} articles`);
+
+    await sessionRef.update({
+      lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastArticleCount: normalized.length
+    });
+
+    return normalized;
+
+  } catch (err: any) {
+    console.error('[Thebell] Scraping error:', err.message, err.stack);
+    return [];
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch (e) { /* ignore */ }
     }
   }
 }
