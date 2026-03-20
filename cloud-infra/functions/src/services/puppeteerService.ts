@@ -401,12 +401,12 @@ export async function loginMarketInsight(): Promise<{ success: boolean; cookies?
     }
 
     // 입력값 설정
-    await page.evaluate((email) => {
+    await page.evaluate((email: string) => {
       const input = document.querySelector('input[type="text"], input[type="email"], input[name="id"], input[name="email"], input[name="uid"]') as HTMLInputElement;
       if (input) input.value = email;
     }, email);
 
-    await page.evaluate((pwd) => {
+    await page.evaluate((pwd: string) => {
       const input = document.querySelector('input[type="password"]') as HTMLInputElement;
       if (input) input.value = pwd;
     }, password);
@@ -446,7 +446,7 @@ export async function loginMarketInsight(): Promise<{ success: boolean; cookies?
     await page.goto('https://marketinsight.hankyung.com/mna', {
       waitUntil: 'networkidle2',
       timeout: 30000
-    }).catch(err => {
+    }).catch((err: any) => {
       console.warn('[MarketInsight] Warning accessing MNA:', err.message);
     });
 
@@ -564,7 +564,7 @@ export async function scrapeMarketInsightMNA(): Promise<ScrapedArticle[]> {
     const response = await page.goto('https://marketinsight.hankyung.com/mna', {
       waitUntil: 'networkidle2',
       timeout: 30000
-    }).catch(err => {
+    }).catch((err: any) => {
       console.warn('[MarketInsight] Navigation error:', err.message);
       return null;
     });
