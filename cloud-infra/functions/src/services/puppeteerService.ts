@@ -329,11 +329,32 @@ export async function processPuppeteerSources(options?: {
  * 3. 로그인 후 쿠키를 Firestore에 저장하고 7일간 유지
  */
 export async function loginMarketInsight(): Promise<{ success: boolean; cookies?: any[]; message: string }> {
-  const email = process.env.MARKETINSIGHT_EMAIL;
-  const password = process.env.MARKETINSIGHT_PASSWORD;
+  // Firebase Runtime Config 읽기
+  let email = '';
+  let password = '';
+
+  try {
+    const configJson = process.env.FIREBASE_CONFIG;
+    if (configJson) {
+      const config = JSON.parse(configJson);
+      email = config.marketinsight?.email || '';
+      password = config.marketinsight?.password || '';
+    }
+  } catch (err: any) {
+    console.warn('[MarketInsight] Could not parse FIREBASE_CONFIG:', err.message);
+  }
+
+  // FIREBASE_CONFIG에서 못 읽으면 직접 환경변수 시도
+  if (!email) email = process.env.MARKETINSIGHT_EMAIL || '';
+  if (!password) password = process.env.MARKETINSIGHT_PASSWORD || '';
 
   if (!email || !password) {
     console.error('[MarketInsight] Credentials not configured');
+    console.error('[MarketInsight] Environment check:', {
+      hasFirebaseConfig: !!process.env.FIREBASE_CONFIG,
+      hasDirectEmail: !!process.env.MARKETINSIGHT_EMAIL,
+      hasDirectPassword: !!process.env.MARKETINSIGHT_PASSWORD
+    });
     return { success: false, message: 'MarketInsight credentials not configured' };
   }
 
