@@ -318,3 +318,179 @@ export async function processPuppeteerSources(options?: {
 
   return { success: true, totalCollected };
 }
+
+/**
+ * MarketInsight 유료 회원 로그인
+ * 환경변수: MARKETINSIGHT_EMAIL, MARKETINSIGHT_PASSWORD
+ */
+export async function loginMarketInsight(): Promise<{ success: boolean; cookies?: any[]; message: string }> {
+  const email = process.env.MARKETINSIGHT_EMAIL;
+  const password = process.env.MARKETINSIGHT_PASSWORD;
+
+  if (!email || !password) {
+    return { success: false, message: 'MarketInsight credentials not configured' };
+  }
+
+  let browser: any = null;
+
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
+
+    // 1. 메인 페이지 로드
+    console.log('[MarketInsight] Loading main page...');
+    await page.goto('https://marketinsight.hankyung.com', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // 2. 로그인 폼 찾기 및 입력
+    console.log('[MarketInsight] Logging in...');
+    const emailInput = await page.$('input[type="email"], input[name*="email"], input[name*="id"]');
+    const passwordInput = await page.$('input[type="password"], input[name*="password"]');
+
+    if (!emailInput || !passwordInput) {
+      return { success: false, message: 'Login form not found' };
+    }
+
+    await emailInput.type(email);
+    await passwordInput.type(password);
+
+    // 로그인 버튼 찾아서 클릭
+    const loginButton = await page.$('button[type="submit"], button[class*="login"]');
+    if (loginButton) {
+      await loginButton.click();
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+    }
+
+    // 3. 로그인 성공 확인 (URL 변경 또는 특정 요소 존재)
+    const currentUrl = page.url();
+    const isLoggedIn = !currentUrl.includes('login') && !currentUrl.includes('sign');
+
+    if (!isLoggedIn) {
+      return { success: false, message: 'Login failed' };
+    }
+
+    // 4. 쿠키 추출
+    const cookies = await page.cookies();
+
+    // 5. Firestore에 세션 저장
+    const db = admin.firestore();
+    await db.collection('sessions').doc('marketinsight_mna').set({
+      cookies,
+      email,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24시간
+    });
+
+    console.log('[MarketInsight] Login successful, cookies saved');
+    return { success: true, cookies, message: 'Logged in successfully' };
+
+  } catch (err: any) {
+    console.error('[MarketInsight] Login error:', err.message);
+    return { success: false, message: err.message };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+/**
+ * MarketInsight MNA 섹션 스크래핑 (유료 회원)
+ */
+export async function scrapeMarketInsightMNA(): Promise<ScrapedArticle[]> {
+  const db = admin.firestore();
+  const sessionDoc = await db.collection('sessions').doc('marketinsight_mna').get();
+
+  if (!sessionDoc.exists) {
+    console.error('[MarketInsight] No session found. Please login first.');
+    return [];
+  }
+
+  const sessionData = sessionDoc.data();
+  const cookies = sessionData?.cookies || [];
+  let browser: any = null;
+
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
+
+    // 쿠키 설정
+    if (cookies.length > 0) {
+      await page.setCookie(...cookies);
+    }
+
+    // MNA 섹션 접근
+    console.log('[MarketInsight] Loading MNA section...');
+    await page.goto('https://marketinsight.hankyung.com/mna', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // 기사 목록 스크래핑
+    const articles: ScrapedArticle[] = await page.evaluate(() => {
+      const items: any[] = [];
+
+      // 다양한 선택자 시도
+      const selectors = [
+        '.article-item',
+        '.news-item',
+        '.post-item',
+        '[class*="article"]',
+        'article',
+      ];
+
+      for (const selector of selectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          elements.forEach((el) => {
+            const titleEl = el.querySelector('h1, h2, h3, .title, a');
+            const linkEl = el.querySelector('a[href]');
+            const contentEl = el.querySelector('p, .summary, .description');
+            const dateEl = el.querySelector('time, .date, [class*="date"]');
+
+            if (titleEl && linkEl) {
+              items.push({
+                title: titleEl.textContent?.trim() || '',
+                url: linkEl.getAttribute('href') || '',
+                content: contentEl?.textContent?.trim() || '',
+                publishedAt: new Date(dateEl?.getAttribute('datetime') || dateEl?.textContent || Date.now())
+              });
+            }
+          });
+
+          if (items.length > 0) break;
+        }
+      }
+
+      return items;
+    });
+
+    // URL 정규화
+    const baseUrl = 'https://marketinsight.hankyung.com';
+    const normalizedArticles = articles
+      .filter((a) => a.title && a.url)
+      .map((a) => ({
+        ...a,
+        url: a.url.startsWith('http') ? a.url : `${baseUrl}${a.url.startsWith('/') ? '' : '/'}${a.url}`
+      }));
+
+    console.log(`[MarketInsight] Scraped ${normalizedArticles.length} articles`);
+    return normalizedArticles;
+
+  } catch (err: any) {
+    console.error('[MarketInsight] Scraping error:', err.message);
+    return [];
+  } finally {
+    if (browser) await browser.close();
+  }
+}
