@@ -33,6 +33,7 @@ firebase-debug.log*
 node_modules
 dist
 dist-ssr
+cloud-infra/functions/lib/
 
 # System
 .DS_Store
