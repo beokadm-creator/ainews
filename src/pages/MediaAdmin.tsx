@@ -8,6 +8,7 @@ import { httpsCallable } from 'firebase/functions';
 import { collection, getDocs, orderBy, query } from 'firebase/firestore';
 import { functions, db } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { getAuth } from 'firebase/auth';
 
 type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
 type PricingTier = 'free' | 'paid' | 'requires_subscription';
@@ -122,8 +123,27 @@ export default function MediaAdmin() {
   const handleTest = async (source: GlobalSource) => {
     setTestingId(source.id);
     try {
-      const fn = httpsCallable(functions, 'testSourceConnection');
-      await fn({ sourceId: source.id });
+      const auth = getAuth();
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        'https://us-central1-eumnews-9a99c.cloudfunctions.net/testSourceConnectionHttp',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ sourceId: source.id }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Test failed');
+      }
+
       await loadSources();
     } catch (err: any) {
       console.error('Test failed:', err);

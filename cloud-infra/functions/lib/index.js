@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.runFullPipeline = exports.scheduledBriefingGeneration = exports.scheduledNewsCollection = exports.triggerTelegramSend = exports.triggerEmailSend = exports.triggerBriefingGeneration = exports.triggerDeepAnalysis = exports.triggerAiFiltering = exports.triggerPuppeteerCollection = exports.triggerScrapingCollection = exports.triggerRssCollection = exports.analyzeManualArticle = exports.testAiConnection = exports.saveAiApiKey = exports.getCompanyUsers = exports.adminCreateUser = exports.upsertCompany = exports.getCompanies = exports.updateCompanySourceSubscriptions = exports.testSourceConnection = exports.deleteGlobalSource = exports.upsertGlobalSource = exports.getGlobalSources = void 0;
+exports.runFullPipeline = exports.scheduledBriefingGeneration = exports.scheduledNewsCollection = exports.triggerTelegramSend = exports.triggerEmailSend = exports.triggerBriefingGeneration = exports.triggerDeepAnalysis = exports.triggerAiFiltering = exports.triggerPuppeteerCollection = exports.triggerScrapingCollection = exports.triggerRssCollection = exports.analyzeManualArticle = exports.testAiConnection = exports.saveAiApiKey = exports.getCompanyUsers = exports.adminCreateUser = exports.upsertCompany = exports.getCompanies = exports.updateCompanySourceSubscriptions = exports.testSourceConnectionHttp = exports.deleteGlobalSource = exports.upsertGlobalSource = exports.getGlobalSources = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 const admin = __importStar(require("firebase-admin"));
@@ -134,25 +134,45 @@ exports.deleteGlobalSource = (0, https_1.onCall)({ region: 'us-central1', cors: 
     await admin.firestore().collection('globalSources').doc(id).delete();
     return { success: true };
 });
-/** 글로벌 소스 연결 테스트 (Superadmin만) */
-exports.testSourceConnection = (0, https_1.onCall)({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 60, memory: '512MiB' }, async (request) => {
-    if (!request.auth)
-        throw new https_1.HttpsError('unauthenticated', 'Authentication required');
-    const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-    if (userDoc.data()?.role !== 'superadmin') {
-        throw new https_1.HttpsError('permission-denied', 'Superadmin required');
+/** 글로벌 소스 연결 테스트 (Superadmin만) - HTTP 함수 with CORS */
+exports.testSourceConnectionHttp = (0, https_1.onRequest)({ region: 'us-central1', timeoutSeconds: 60, memory: '512MiB' }, async (request, response) => {
+    // CORS 헤더 설정
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (request.method === 'OPTIONS') {
+        response.status(204).send('');
+        return;
     }
-    const { sourceId } = request.data || {};
-    if (!sourceId)
-        throw new https_1.HttpsError('invalid-argument', 'sourceId required');
-    const result = await (0, globalSourceService_1.testGlobalSource)(sourceId);
-    // 테스트 결과를 문서에 저장
-    await admin.firestore().collection('globalSources').doc(sourceId).update({
-        lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastTestResult: result,
-        ...(result.success ? { status: 'active' } : { status: 'error' }),
-    });
-    return result;
+    try {
+        const auth = request.headers.authorization?.split('Bearer ')[1];
+        if (!auth) {
+            response.status(401).json({ error: 'Authentication required' });
+            return;
+        }
+        const decodedToken = await admin.auth().verifyIdToken(auth);
+        const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+        if (userDoc.data()?.role !== 'superadmin') {
+            response.status(403).json({ error: 'Superadmin required' });
+            return;
+        }
+        const { sourceId } = request.body || {};
+        if (!sourceId) {
+            response.status(400).json({ error: 'sourceId required' });
+            return;
+        }
+        const result = await (0, globalSourceService_1.testGlobalSource)(sourceId);
+        // 테스트 결과를 문서에 저장
+        await admin.firestore().collection('globalSources').doc(sourceId).update({
+            lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastTestResult: result,
+            ...(result.success ? { status: 'active' } : { status: 'error' }),
+        });
+        response.json(result);
+    }
+    catch (err) {
+        response.status(500).json({ error: err.message || 'Test failed' });
+    }
 });
 /** 회사가 구독 소스 선택 저장 */
 exports.updateCompanySourceSubscriptions = (0, https_1.onCall)({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
@@ -323,12 +343,13 @@ exports.saveAiApiKey = (0, https_1.onCall)({ region: 'us-central1', cors: true, 
     const db = admin.firestore();
     const updates = {};
     if (baseUrl !== undefined) {
-        updates[`aiBaseUrls.${provider}`] = baseUrl;
+        updates.aiBaseUrls = { [provider]: baseUrl };
     }
     if (model !== undefined) {
-        updates[`aiModels.${provider}`] = model;
+        updates.aiModels = { [provider]: model };
     }
     if (Object.keys(updates).length > 0) {
+        // merge: true를 쓰면 aiModels 안의 다른 provider 값들이 사라지지 않음
         await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
     }
     return { success: true };
