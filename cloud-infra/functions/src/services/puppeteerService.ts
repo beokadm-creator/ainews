@@ -5,7 +5,7 @@ import { isDuplicateArticle, hashUrl } from './duplicateService';
 import { sendErrorNotificationToAdmin } from './telegramService';
 import { isContentSufficient, cleanNoise, matchesRuntimeFilters } from '../utils/textUtils';
 import { fixEncodingIssues } from '../utils/encodingUtils';
-import { RuntimeFilters } from '../types/runtime';
+import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
 puppeteer.use(StealthPlugin());
@@ -157,6 +157,7 @@ export async function processPuppeteerSources(options?: {
   companyId?: string;
   pipelineRunId?: string;
   filters?: RuntimeFilters;
+  aiConfig?: RuntimeAiConfig;
 }) {
   const db = admin.firestore();
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
@@ -179,7 +180,30 @@ export async function processPuppeteerSources(options?: {
   }
 
   const sourcesSnapshot = await sourcesQuery.get();
-  if (sourcesSnapshot.empty) {
+  const allSourcesToProcess: { id: string; data: any; isGlobal: boolean }[] = [];
+  sourcesSnapshot.docs.forEach(d => allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: false }));
+
+  // [ADD] GlobalSources 구독 처리
+  const subscribedIds = options?.filters?.sourceIds ?? [];
+  if (subscribedIds.length > 0) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < subscribedIds.length; i += 30) chunks.push(subscribedIds.slice(i, i + 30));
+
+    for (const chunk of chunks) {
+      const globalSnap = await db.collection('globalSources')
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .where('type', '==', 'puppeteer')
+        .where('status', '==', 'active')
+        .get();
+      globalSnap.docs.forEach(d => {
+        if (!allSourcesToProcess.find(s => s.id === d.id)) {
+          allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: true });
+        }
+      });
+    }
+  }
+
+  if (allSourcesToProcess.length === 0) {
     return { success: true, totalCollected: 0 };
   }
 
@@ -196,22 +220,24 @@ export async function processPuppeteerSources(options?: {
       ]
     });
 
-    for (const doc of sourcesSnapshot.docs) {
-      const source = doc.data();
+    for (const { id: sourceId, data: source, isGlobal } of allSourcesToProcess) {
+      const docRef = isGlobal
+        ? db.collection('globalSources').doc(sourceId)
+        : db.collection('sources').doc(sourceId);
       const page = await browser.newPage();
 
       try {
         await page.setUserAgent('Mozilla/5.0');
 
         if (source.authType === 'session' || source.authType === 'puppeteer') {
-          const cookies = await getCookies(doc.id);
+          const cookies = await getCookies(sourceId);
           if (cookies.length > 0) {
             await page.setCookie(...cookies);
           }
         }
 
-        const baseArticles = puppeteerScraperMap[doc.id]
-          ? await puppeteerScraperMap[doc.id](page, source.url)
+        const baseArticles = puppeteerScraperMap[sourceId]
+          ? await puppeteerScraperMap[sourceId](page, source.url)
           : await scrapePuppeteerDynamic(page, source.url, source);
         const articles = await enrichArticles(page, baseArticles);
 
@@ -236,7 +262,8 @@ export async function processPuppeteerSources(options?: {
           }
 
           const dupCheck = await isDuplicateArticle(article, {
-            companyId: source.companyId || options?.companyId
+            companyId: source.companyId || options?.companyId,
+            aiConfig: options?.aiConfig
           });
           if (dupCheck.isDuplicate) continue;
 
@@ -247,7 +274,8 @@ export async function processPuppeteerSources(options?: {
             companyId: source.companyId || options?.companyId || null,
             pipelineRunId: options?.pipelineRunId || null,
             source: source.name,
-            sourceId: doc.id,
+            sourceId,
+            globalSourceId: isGlobal ? sourceId : null,
             collectedAt: admin.firestore.FieldValue.serverTimestamp(),
             status: 'pending',
             urlHash: hashUrl(article.url)
@@ -259,24 +287,24 @@ export async function processPuppeteerSources(options?: {
 
         if (source.authType === 'session' || source.authType === 'puppeteer') {
           const currentCookies = await page.cookies();
-          await db.collection('sessions').doc(doc.id).set({
+          await db.collection('sessions').doc(sourceId).set({
             cookies: currentCookies,
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
           });
         }
-
-        await doc.ref.update({
+  
+        await docRef.update({
           lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
           lastStatus: 'success',
           errorMessage: null
         });
-
-        console.log(`Processed ${sourceCollected} puppeteer articles from ${source.name}`);
+  
+        console.log(`Processed ${sourceCollected} puppeteer articles from ${source.name}${isGlobal ? ' [global]' : ''}`);
       } catch (error: any) {
-        await doc.ref.update({
+        await docRef.update({
           lastStatus: 'error',
           errorMessage: error.message
-        });
+        }).catch(() => {});
         await sendErrorNotificationToAdmin('Puppeteer collection failed', error.message, source.name);
       } finally {
         await page.close();

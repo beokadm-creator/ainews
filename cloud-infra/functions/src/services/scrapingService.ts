@@ -10,7 +10,7 @@ import {
   matchesRuntimeFilters
 } from '../utils/textUtils';
 import { fixEncodingIssues } from '../utils/encodingUtils';
-import { RuntimeFilters } from '../types/runtime';
+import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
 interface ScrapedArticle {
@@ -89,7 +89,7 @@ const scraperMap: Record<string, (html: string, baseUrl: string) => ScrapedArtic
   }
 };
 
-async function enrichArticles(articles: ScrapedArticle[]): Promise<ScrapedArticle[]> {
+export async function enrichArticles(articles: ScrapedArticle[]): Promise<ScrapedArticle[]> {
   return Promise.all(
     articles.map(async (article) => {
       if (isContentSufficient(article.content, 100)) {
@@ -193,6 +193,7 @@ export async function processScrapingSources(options?: {
   companyId?: string;
   pipelineRunId?: string;
   filters?: RuntimeFilters;
+  aiConfig?: RuntimeAiConfig;
 }) {
   const db = admin.firestore();
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
@@ -214,14 +215,39 @@ export async function processScrapingSources(options?: {
   }
 
   const sourcesSnapshot = await sourcesQuery.get();
+  const allSourcesToProcess: { id: string; data: any; isGlobal: boolean }[] = [];
+  sourcesSnapshot.docs.forEach(d => allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: false }));
+
+  // [ADD] GlobalSources 구독 처리
+  const subscribedIds = options?.filters?.sourceIds ?? [];
+  if (subscribedIds.length > 0) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < subscribedIds.length; i += 30) chunks.push(subscribedIds.slice(i, i + 30));
+
+    for (const chunk of chunks) {
+      const globalSnap = await db.collection('globalSources')
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .where('type', '==', 'scraping')
+        .where('status', '==', 'active')
+        .get();
+      globalSnap.docs.forEach(d => {
+        if (!allSourcesToProcess.find(s => s.id === d.id)) {
+          allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: true });
+        }
+      });
+    }
+  }
+
   let totalCollected = 0;
 
-  for (const doc of sourcesSnapshot.docs) {
-    const source = doc.data();
+  for (const { id: sourceId, data: source, isGlobal } of allSourcesToProcess) {
+    const docRef = isGlobal
+      ? db.collection('globalSources').doc(sourceId)
+      : db.collection('sources').doc(sourceId);
 
     try {
-      const articles = scraperMap[doc.id]
-        ? await scrapeWebsite(source.url, doc.id)
+      const articles = scraperMap[sourceId]
+        ? await scrapeWebsite(source.url, sourceId)
         : await scrapeWebsiteDynamic(source.url, source);
 
       let sourceCollected = 0;
@@ -245,7 +271,8 @@ export async function processScrapingSources(options?: {
         }
 
         const dupCheck = await isDuplicateArticle(article, {
-          companyId: source.companyId || options?.companyId
+          companyId: source.companyId || options?.companyId,
+          aiConfig: options?.aiConfig
         });
         if (dupCheck.isDuplicate) continue;
 
@@ -256,7 +283,8 @@ export async function processScrapingSources(options?: {
           companyId: source.companyId || options?.companyId || null,
           pipelineRunId: options?.pipelineRunId || null,
           source: source.name,
-          sourceId: doc.id,
+          sourceId,
+          sourceCategory: source.category || null,
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
           status: 'pending',
           urlHash: hashUrl(article.url)
@@ -266,18 +294,18 @@ export async function processScrapingSources(options?: {
         totalCollected++;
       }
 
-      await doc.ref.update({
+      await docRef.update({
         lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
         lastStatus: 'success',
         errorMessage: null
       });
 
-      console.log(`Processed ${sourceCollected} scraped articles from ${source.name}`);
+      console.log(`Processed ${sourceCollected} scraped articles from ${source.name}${isGlobal ? ' [global]' : ''}`);
     } catch (error: any) {
-      await doc.ref.update({
+      await docRef.update({
         lastStatus: 'error',
         errorMessage: error.message
-      });
+      }).catch(() => {});
       await sendErrorNotificationToAdmin('Scraping collection failed', error.message, source.name);
     }
   }

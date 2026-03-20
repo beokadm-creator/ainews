@@ -109,7 +109,16 @@ export function matchesKeywords(title: string, content: string, keywords?: strin
   
   return keywords.some(keyword => {
     const lowerKeyword = keyword.toLowerCase().trim();
-    return lowerKeyword.length > 0 && searchText.includes(lowerKeyword);
+    if (lowerKeyword.length === 0) return false;
+
+    // 만약 키워드가 매우 짧거나(예: "AI", "PE") 영문만 포함된 경우, 
+    // 정규표현식을 사용하여 부분 일치가 아닌 단어 단위 일치 확인 (간단한 워드 바운더리 체크)
+    if (lowerKeyword.length <= 3 && /^[a-z0-9&]+$/i.test(lowerKeyword)) {
+      const regex = new RegExp(`\\b${lowerKeyword}\\b`, 'i');
+      return regex.test(searchText);
+    }
+
+    return searchText.includes(lowerKeyword);
   });
 }
 

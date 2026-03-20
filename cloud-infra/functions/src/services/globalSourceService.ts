@@ -48,10 +48,18 @@ export interface GlobalSource {
 }
 
 // ─────────────────────────────────────────
+// 기본 키워드: 모든 국내 매체에 공통 적용
+// ─────────────────────────────────────────
+const BASE_KO_KEYWORDS = ['M&A', '인수', '합병', '매각'];
+const EXTENDED_KO_KEYWORDS = [...BASE_KO_KEYWORDS, '피인수', '지분인수', '사모펀드', 'PE', 'VC'];
+const BASE_EN_KEYWORDS = ['M&A', 'merger', 'acquisition', 'private equity', 'buyout', 'deal'];
+const STARTUP_KEYWORDS = ['M&A', 'acquisition', 'merger', 'private equity', 'PE', 'VC', 'venture capital', 'buyout', 'LBO', 'funding', 'raised', 'startup', 'exit'];
+
+// ─────────────────────────────────────────
 // Initial seed data from MA-media-sources.md
 // ─────────────────────────────────────────
 export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'updatedAt' | 'createdBy' | 'lastTestedAt' | 'lastTestResult'>[] = [
-  // === RSS FREE ===
+  // === RSS FREE — 국내 ===
   {
     name: '한국경제신문',
     description: '국내 주요 경제 매체. M&A 전담 기자 보유. RSS 모든 섹션 제공.',
@@ -61,7 +69,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 4,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병', '피인수', '사모펀드', 'PE', 'VC'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
     notes: 'RSS 피드에서 M&A 키워드 필터링 필요',
@@ -75,7 +83,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 4,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수합병', '피인수', '지분인수', '사모펀드'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -88,7 +96,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', 'PE', 'VC', '인수', '합병'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -101,7 +109,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병', 'PE'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -114,7 +122,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병'],
+    defaultKeywords: BASE_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -127,7 +135,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병'],
+    defaultKeywords: BASE_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -140,7 +148,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병'],
+    defaultKeywords: BASE_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -153,7 +161,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병', 'PE', 'VC'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -166,10 +174,11 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'ko',
     relevanceScore: 4,
     category: 'domestic',
-    defaultKeywords: ['M&A', '인수', '합병', '뉴스와이어'],
+    defaultKeywords: [...BASE_KO_KEYWORDS, '뉴스와이어'],
     status: 'active',
     pricingTier: 'free',
   },
+  // === RSS FREE — 영문 ===
   {
     name: 'The Korea Herald',
     description: '한국 경제 뉴스 영문판. 크로스보더 M&A 특화.',
@@ -179,7 +188,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 3,
     category: 'domestic',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'private equity'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -192,7 +201,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 5,
     category: 'asian',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'PE', 'VC', 'private equity'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
     notes: '아시아 M&A 필수 소스',
@@ -206,7 +215,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 5,
     category: 'global',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'deal', 'private equity'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'active',
     pricingTier: 'requires_subscription',
     notes: '일부 기사 유료 구독 필요. 헤드라인만 수집 가능.',
@@ -220,7 +229,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 3,
     category: 'global',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'deal'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
   },
@@ -233,7 +242,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 5,
     category: 'tech',
-    defaultKeywords: ['acquisition', 'merger', 'M&A', 'buyout', 'deal'],
+    defaultKeywords: ['acquisition', 'merger', 'M&A', 'buyout', 'deal', 'raises'],
     status: 'active',
     pricingTier: 'free',
     notes: 'Term Sheet 섹션 특히 유용',
@@ -252,7 +261,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     linkSelector: '.title a, h3 a',
     contentSelector: '.lead, .summary',
     dateSelector: '.date, time',
-    defaultKeywords: ['M&A', 'PE', 'VC', '인수', '합병', '사모펀드'],
+    defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'requires_subscription',
     authType: 'session',
@@ -269,7 +278,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     category: 'domestic',
     listSelector: '.news-list li, .post-list li',
     titleSelector: 'h2 a, h3 a, .title a',
-    defaultKeywords: ['M&A', 'VC', '벤처', '투자', '인수'],
+    defaultKeywords: [...BASE_KO_KEYWORDS, 'VC', '벤처', '투자'],
     status: 'inactive',
     pricingTier: 'free',
     notes: '사이트 구조 분석 후 셀렉터 업데이트 필요',
@@ -284,7 +293,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     category: 'asian',
     listSelector: 'article, .article-list__item',
     titleSelector: 'h3 a, .article-title a',
-    defaultKeywords: ['M&A', 'acquisition', 'merger', 'private equity', 'deal'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'inactive',
     pricingTier: 'paid',
     loginRequired: true,
@@ -303,7 +312,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 3,
     category: 'global',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'private equity', 'buyout'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'inactive',
     pricingTier: 'free',
     notes: '무료 티어: 일 100회 요청. API 키 필요 (newsapi.org 가입).',
@@ -318,10 +327,159 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     language: 'en',
     relevanceScore: 5,
     category: 'global',
-    defaultKeywords: ['M&A', 'merger', 'acquisition', 'deal'],
+    defaultKeywords: BASE_EN_KEYWORDS,
     status: 'inactive',
     pricingTier: 'paid',
     notes: '유료. 개발자 등록 후 API 키 발급 필요.',
+  },
+  // === RSS FREE — 스타트업/PE·VC ===
+  {
+    name: 'PE Hub',
+    description: 'PE/VC 딜 뉴스 전문. 중소형 PE 딜 커버. PE firm 뉴스.',
+    url: 'https://www.pehub.com',
+    rssUrl: 'https://www.pehub.com/feed/',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'PitchBook News',
+    description: 'VC/PE 딜 데이터 기반 뉴스. 스타트업 펀딩/EXIT. 밸류에이션 트렌드.',
+    url: 'https://pitchbook.com',
+    rssUrl: 'https://pitchbook.com/news/rss.xml',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    defaultKeywords: [...STARTUP_KEYWORDS, 'series A', 'series B', 'series C', 'valuation'],
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'AltAssets',
+    description: 'PE/VC 전용 뉴스. LP perspective. 펀드레이징 뉴스.',
+    url: 'https://www.altassets.com',
+    rssUrl: 'https://www.altassets.com/rss',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 4,
+    category: 'startup',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'VentureBeat',
+    description: '테크 스타트업 M&A. VC 투자 뉴스.',
+    url: 'https://venturebeat.com',
+    rssUrl: 'https://venturebeat.com/feed/',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 4,
+    category: 'startup',
+    defaultKeywords: [...STARTUP_KEYWORDS, 'funding round', 'Series'],
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'Crunchbase News',
+    description: 'Crunchbase 데이터 기반. 글로벌 펀딩/EXIT.',
+    url: 'https://news.crunchbase.com',
+    rssUrl: 'https://news.crunchbase.com/feed/',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 4,
+    category: 'startup',
+    defaultKeywords: [...STARTUP_KEYWORDS, 'series A', 'series B', 'IPO', 'unicorn'],
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'Business Insider',
+    description: '비즈니스/PE/VC 뉴스. 딜 뉴스 빠름.',
+    url: 'https://www.businessinsider.com',
+    rssUrl: 'https://www.businessinsider.com/rss',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 3,
+    category: 'startup',
+    defaultKeywords: BASE_EN_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+  },
+  {
+    name: 'Institutional Investor',
+    description: '기관투자/PE 뉴스. LP perspective. PE 펀드 성과.',
+    url: 'https://www.institutionalinvestor.com',
+    rssUrl: 'https://www.institutionalinvestor.com/rss',
+    type: 'rss',
+    language: 'en',
+    relevanceScore: 4,
+    category: 'startup',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+  },
+  // === SCRAPING — 스타트업/PE·VC ===
+  {
+    name: 'Fortune Term Sheet',
+    description: 'Fortune의 Term Sheet 컬럼. 딜 뉴스 1위.',
+    url: 'https://fortune.com/section/term-sheet/',
+    type: 'scraping',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    listSelector: '.article-list article, .content-list article, .river-item',
+    titleSelector: 'h3 a, h2 a, .article-title a',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+    notes: '웹 스크래핑 필요. CSS 셀렉터 검증 후 사용 권장.',
+  },
+  {
+    name: 'Axios Pro Rata',
+    description: '딜 뉴스 전문. PE/VC/SPAC 커버.',
+    url: 'https://www.axios.com/pro-rata',
+    type: 'scraping',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    listSelector: '.story, .story-content, article',
+    titleSelector: 'h2 a, h3 a, .headline a',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'active',
+    pricingTier: 'free',
+    notes: '웹 스크래핑. 일부 기사 직접 접근 가능.',
+  },
+  {
+    name: 'Private Equity International',
+    description: '글로벌 PE 뉴스 1위. PE 딜 데이터. 펀드레이징 트래킹.',
+    url: 'https://www.privateequityinternational.com',
+    type: 'scraping',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'inactive',
+    pricingTier: 'requires_subscription',
+    notes: '유료 구독 필요.',
+  },
+  {
+    name: 'Buyouts News',
+    description: 'LBO/Buyout 전문. 중소형 PE 딜.',
+    url: 'https://www.buyoutsnews.com',
+    type: 'scraping',
+    language: 'en',
+    relevanceScore: 5,
+    category: 'startup',
+    defaultKeywords: STARTUP_KEYWORDS,
+    status: 'inactive',
+    pricingTier: 'requires_subscription',
+    notes: '유료 구독 필요.',
   },
 ];
 
@@ -373,7 +531,10 @@ export async function testGlobalSource(sourceId: string): Promise<{
   const startMs = Date.now();
 
   try {
-    if (source.type === 'rss' && source.rssUrl) {
+    if (source.type === 'rss') {
+      if (!source.rssUrl && !source.url) {
+        return { success: false, message: 'RSS source is missing feed URL' };
+      }
       return await testRssSource(source, startMs);
     } else if (source.type === 'scraping') {
       return await testScrapingSource(source, startMs);
@@ -397,14 +558,57 @@ export async function testGlobalSource(sourceId: string): Promise<{
   }
 }
 
+// ─────────────────────────────────────────
+// XML 전처리 (testRssSource 전용)
+// 1. Bare & 엔티티 수정
+// 2. 값 없는 HTML 불리언 속성 수정 (e.g. <img loading> → <img loading="">)
+// ─────────────────────────────────────────
+function preprocessXmlForTest(xml: string): string {
+  return xml
+    .replace(/&(?!(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);)/gi, '&amp;')
+    .replace(/<([a-zA-Z][a-zA-Z0-9_:-]*)([^>]*)>/g, (_m, tagName, rest) => {
+      if (!rest || !rest.includes(' ')) return `<${tagName}${rest}>`;
+      const fixedRest = rest.replace(
+        /(\s+)([a-zA-Z][a-zA-Z0-9_:-]*)(?!\s*=)(?=\s|\/|$)/g,
+        '$1$2=""',
+      );
+      return `<${tagName}${fixedRest}>`;
+    });
+}
+
 async function testRssSource(source: GlobalSource, startMs: number) {
   const RssParser = require('rss-parser');
-  const parser = new RssParser({ timeout: 10000 });
+  const USER_AGENT = 'Mozilla/5.0 (compatible; ainews-bot/1.0; +https://ainews.io)';
+  const HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+  };
+  const parser = new RssParser({ timeout: 15000, headers: HEADERS });
 
-  const feed = await parser.parseURL(source.rssUrl!);
+  const feedUrl = source.rssUrl || source.url;
+  let feed: any;
+
+  try {
+    // 1차 시도: 일반 파싱
+    feed = await parser.parseURL(feedUrl);
+  } catch (firstErr: any) {
+    // 2차 시도: 수동 fetch + XML 전처리 (한국 RSS 비표준 처리)
+    try {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 15000);
+      const resp = await fetch(feedUrl, { signal: controller.signal as any, headers: HEADERS });
+      clearTimeout(tid);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const rawXml = await resp.text();
+      feed = await parser.parseString(preprocessXmlForTest(rawXml));
+    } catch (secondErr: any) {
+      throw new Error(`RSS parse failed [${firstErr.message}] | Fallback: [${secondErr.message}]`);
+    }
+  }
+
   const latencyMs = Date.now() - startMs;
-  const items = feed.items || [];
-
+  const items = (feed && Array.isArray(feed.items)) ? feed.items : [];
   const sampleTitles = items.slice(0, 3).map((item: any) => item.title || '(no title)');
 
   return {

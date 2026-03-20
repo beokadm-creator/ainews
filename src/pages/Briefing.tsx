@@ -7,11 +7,21 @@ import { useSearchParams, Link } from 'react-router-dom';
 import html2pdf from 'html2pdf.js';
 import { useAuthStore } from '@/store/useAuthStore';
 
+const SECTION_TABS = [
+  { key: 'all', label: '전체' },
+  { key: 'domestic', label: '🇰🇷 국내' },
+  { key: 'asian', label: '🌏 아시아' },
+  { key: 'global', label: '🌐 글로벌' },
+  { key: 'tech', label: '💻 테크' },
+  { key: 'startup', label: '🚀 스타트업/PE·VC' },
+];
+
 export default function Briefing() {
   const [searchParams] = useSearchParams();
   const [output, setOutput] = useState<any>(null);
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [articles, setArticles] = useState<any[]>([]);
+  const [sectionFilter, setSectionFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const pdfRef = useRef<HTMLDivElement>(null);
@@ -163,6 +173,7 @@ export default function Briefing() {
   const risks = structured.risks || [];
   const opportunities = structured.opportunities || [];
   const nextSteps = structured.nextSteps || [];
+  const visibleArticles = sectionFilter === 'all' ? articles : articles.filter(a => a.sourceCategory === sectionFilter);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -247,8 +258,25 @@ export default function Briefing() {
 
           <section>
             <h2 className="text-xl font-bold text-[#1e3a5f] mb-4">Articles</h2>
+            {articles.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-200 dark:border-gray-700 pb-3">
+                {SECTION_TABS.filter(tab => tab.key === 'all' || articles.some(a => a.sourceCategory === tab.key)).map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setSectionFilter(tab.key)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                      sectionFilter === tab.key
+                        ? 'bg-[#1e3a5f] text-white dark:bg-blue-600'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+                    }`}
+                  >
+                    {tab.label} {tab.key !== 'all' ? `(${articles.filter(a => a.sourceCategory === tab.key).length})` : `(${articles.length})`}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="space-y-6">
-              {articles.map((article: any) => (
+              {visibleArticles.map((article: any) => (
                 <div key={article.id} className="border-b border-gray-100 pb-6 last:border-0">
                   <div className="flex items-start justify-between">
                     <div>

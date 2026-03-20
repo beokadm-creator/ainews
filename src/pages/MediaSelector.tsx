@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Search, CheckCircle2, Rss, Code2, Cpu, Globe, Star, Loader2, Save, Filter } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { functions, db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, orderBy, query } from 'firebase/firestore';
 import { useAuthStore } from '@/store/useAuthStore';
 
 type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
@@ -76,9 +76,9 @@ export default function MediaSelector() {
     setLoading(true);
     try {
       // Load global sources
-      const fn = httpsCallable(functions, 'getGlobalSources');
-      const result = await fn({}) as any;
-      setAllSources(result.data || []);
+      const q = query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'));
+      const snap = await getDocs(q);
+      setAllSources(snap.docs.map(d => ({ id: d.id, ...d.data() } as GlobalSource)));
 
       // Load current subscriptions
       if (companyId) {
@@ -133,12 +133,13 @@ export default function MediaSelector() {
 
   // Group by category
   const groups: Record<string, GlobalSource[]> = {};
-  const categoryOrder = ['domestic', 'asian', 'global', 'tech'];
+  const categoryOrder = ['domestic', 'asian', 'global', 'tech', 'startup'];
   const categoryLabel: Record<string, string> = {
     domestic: '🇰🇷 국내 매체',
     asian: '🌏 아시아 매체',
     global: '🌐 글로벌 매체',
     tech: '💻 테크 매체',
+    startup: '🚀 스타트업/PE·VC',
   };
 
   filtered.forEach(s => {
@@ -203,6 +204,7 @@ export default function MediaSelector() {
           <option value="asian">아시아</option>
           <option value="global">글로벌</option>
           <option value="tech">테크</option>
+          <option value="startup">스타트업/PE·VC</option>
         </select>
         <select
           value={filterType}

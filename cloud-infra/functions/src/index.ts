@@ -8,6 +8,7 @@ import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processScrapingSources } from './services/scrapingService';
 import { processPuppeteerSources } from './services/puppeteerService';
+import { processApiSources } from './services/apiSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
@@ -458,7 +459,11 @@ export const triggerRssCollection = onRequest({ region: 'us-central1' }, async (
     const companyId = request.query.companyId as string | undefined;
     const user = (request as any).user;
     const runtime = await resolveRuntime(user.uid, companyId);
-    const result = await processRssSources({ companyId: runtime.companyId, filters: runtime.filters });
+    const result = await processRssSources({
+      companyId: runtime.companyId,
+      filters: runtime.filters,
+      aiConfig: runtime.ai
+    });
     response.json(result);
   } catch (error: any) {
     response.status(500).json({ success: false, error: error.message });
@@ -472,7 +477,11 @@ export const triggerScrapingCollection = onRequest({ region: 'us-central1' }, as
     const companyId = request.query.companyId as string | undefined;
     const user = (request as any).user;
     const runtime = await resolveRuntime(user.uid, companyId);
-    const result = await processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters });
+    const result = await processScrapingSources({
+      companyId: runtime.companyId,
+      filters: runtime.filters,
+      aiConfig: runtime.ai
+    });
     response.json(result);
   } catch (error: any) {
     response.status(500).json({ success: false, error: error.message });
@@ -488,7 +497,11 @@ export const triggerPuppeteerCollection = onRequest(
       const companyId = request.query.companyId as string | undefined;
       const user = (request as any).user;
       const runtime = await resolveRuntime(user.uid, companyId);
-      const result = await processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters });
+      const result = await processPuppeteerSources({
+        companyId: runtime.companyId,
+        filters: runtime.filters,
+        aiConfig: runtime.ai
+      });
       response.json(result);
     } catch (error: any) {
       response.status(500).json({ success: false, error: error.message });
@@ -544,7 +557,7 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
 // Scheduled: Collection (hourly per company)
 // ─────────────────────────────────────────
 export const scheduledNewsCollection = onSchedule(
-  { schedule: '0 * * * *', memory: '1GiB', timeoutSeconds: 300 },
+  { schedule: '0 * * * *', memory: '1GiB', timeoutSeconds: 540 },
   async () => {
     const db = admin.firestore();
     const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
@@ -553,9 +566,10 @@ export const scheduledNewsCollection = onSchedule(
       try {
         const runtime = await getCompanyRuntimeConfig(companyDoc.id);
         await Promise.all([
-          processRssSources({ companyId: runtime.companyId, filters: runtime.filters }),
-          processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters }),
-          processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters }),
+          processRssSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
+          processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
+          processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
+          processApiSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
         ]);
         await processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
         await processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
@@ -592,7 +606,7 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
 // ─────────────────────────────────────────
 // runFullPipeline: Full manual pipeline trigger
 // ─────────────────────────────────────────
-export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
@@ -630,20 +644,23 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
   try {
     await updateStep('collection', 'running');
     const collectionStart = Date.now();
-    const [rssResult, scrapingResult, puppeteerResult] = await Promise.all([
-      processRssSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
-      processScrapingSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
-      processPuppeteerSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
+    const [rssResult, scrapingResult, puppeteerResult, apiResult] = await Promise.all([
+      processRssSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
+      processScrapingSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
+      processPuppeteerSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
+      processApiSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
     ]);
     const totalCollected =
       (rssResult.totalCollected || 0) +
       (scrapingResult.totalCollected || 0) +
-      (puppeteerResult.totalCollected || 0);
+      (puppeteerResult.totalCollected || 0) +
+      (apiResult.totalCollected || 0);
     await updateStep('collection', 'completed', {
       duration: Date.now() - collectionStart,
       rss: rssResult,
       scraping: scrapingResult,
       puppeteer: puppeteerResult,
+      api: apiResult,
       totalCollected,
     });
 

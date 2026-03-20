@@ -5,12 +5,25 @@ import { RuntimeAiConfig } from '../types/runtime';
 export function normalizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
+    
+    // 1. 네이버 뉴스 전용 처리
     if (parsed.hostname.includes('naver.com')) {
       const oid = parsed.searchParams.get('oid');
       const aid = parsed.searchParams.get('aid');
       if (oid && aid) return `${parsed.origin}${parsed.pathname}?oid=${oid}&aid=${aid}`;
     }
-    return `${parsed.origin}${parsed.pathname}`;
+
+    // 2. 일반적인 트래킹 파라미터 제거 (utm_*, gclid, fbclid 등)
+    const paramsToExclude = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid'];
+    paramsToExclude.forEach(param => parsed.searchParams.delete(param));
+
+    // 3. 파라미터 정렬 (순서가 달라도 동일 URL로 인식하게 함)
+    parsed.searchParams.sort();
+
+    // 4. 불필요한 해시 제거
+    parsed.hash = '';
+
+    return parsed.toString();
   } catch {
     return url;
   }

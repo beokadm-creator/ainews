@@ -630,7 +630,7 @@ export default function MediaAdmin() {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">RSS URL</label>
                   <input
                     type="url"
-                    value={editingSource.rssUrl || ''}
+                    value={editingSource.rssUrl || editingSource.url || ''}
                     onChange={e => setEditingSource(s => ({ ...s, rssUrl: e.target.value }))}
                     placeholder="https://www.example.com/rss"
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
