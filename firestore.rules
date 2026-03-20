@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperadmin() {
+      return request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin';
+    }
+
+    function belongsToCompany(companyId) {
+      return request.auth != null && (
+        isSuperadmin() ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId == companyId) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyIds != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyIds.hasAny([companyId])) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.managedCompanyIds != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.managedCompanyIds.hasAny([companyId]))
+      );
+    }
+
+    function role() {
+      return request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isCompanyAdmin(companyId) {
+      return signedIn() && belongsToCompany(companyId) && role() in ['superadmin', 'company_admin'];
+    }
+
+    function canOperateCompany(companyId) {
+      return signedIn() && belongsToCompany(companyId) && role() in ['superadmin', 'company_admin', 'company_editor'];
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isSuperadmin());
+      allow create, update, delete: if isSuperadmin();
+    }
+
+    match /companies/{companyId} {
+      allow read: if isSuperadmin() || belongsToCompany(companyId);
+      allow create, update, delete: if isSuperadmin();
+    }
+
+    // 글로벌 매체 라이브러리 (SuperAdmin이 관리, 모든 인증 사용자가 읽기)
+    match /globalSources/{sourceId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isSuperadmin();
+    }
+
+    // 회사별 구독 소스 (회사가 globalSources에서 선택)
+    match /companySourceSubscriptions/{companyId} {
+      allow read: if isSuperadmin() || belongsToCompany(companyId);
+      allow write: if isCompanyAdmin(companyId);
+    }
+
+    // 레거시 sources (기존 호환성 유지)
+    match /sources/{sourceId} {
+      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
+      allow create: if canOperateCompany(request.resource.data.companyId);
+      allow update, delete: if canOperateCompany(resource.data.companyId);
+    }
+
+    match /settings/{documentId} {
+      allow read: if isSuperadmin();
+      allow write: if isSuperadmin();
+    }
+
+    match /companySettings/{companyId} {
+      allow read: if isSuperadmin() || belongsToCompany(companyId);
+      allow write: if isSuperadmin() || isCompanyAdmin(companyId);
+      allow create: if isSuperadmin() || isCompanyAdmin(companyId);
+    }
+
+    match /articles/{articleId} {
+      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
+      allow create: if canOperateCompany(request.resource.data.companyId);
+      allow update, delete: if canOperateCompany(resource.data.companyId);
+    }
+
+    match /outputs/{outputId} {
+      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
+      allow create: if canOperateCompany(request.resource.data.companyId);
+      allow update, delete: if canOperateCompany(resource.data.companyId);
+
+      match /versions/{versionId} {
+        allow read: if signedIn() && belongsToCompany(get(/databases/$(database)/documents/outputs/$(outputId)).data.companyId);
+        allow write: if canOperateCompany(get(/databases/$(database)/documents/outputs/$(outputId)).data.companyId);
+      }
+    }
+
+    match /briefings/{briefingId} {
+      allow read, write: if false;
+      match /briefingVersions/{versionId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /subscribers/{subscriberId} {
+      allow read, write: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read, write: if isSuperadmin();
+    }
+
+    match /systemMetrics/{metricId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+
+    match /promptTemplates/{templateId} {
+      allow read: if isSuperadmin();
+      allow write: if isSuperadmin();
+    }
+
+    match /promptLogs/{logId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+
+    match /pipelineRuns/{runId} {
+      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
+      allow create: if canOperateCompany(request.resource.data.companyId);
+      allow update: if canOperateCompany(resource.data.companyId);
+      allow delete: if isSuperadmin();
+    }
+
+    match /systemErrors/{errorId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+
+    match /aiCostTracking/{costId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+  }
+}

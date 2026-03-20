@@ -1,0 +1,44 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Specific IDE/Tool dirs
+.claude
+.trae
+.sisyphus
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Secrets and Env
+.env
+.env.*
+*.local
+*.local.json
+service-account.json
+*-key.json
+
+# Firebase
+.firebase
+.runtimeconfig.json
+firebase-debug.log*
+.firebaserc
+
+# Node
+node_modules
+dist
+dist-ssr
+
+# System
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

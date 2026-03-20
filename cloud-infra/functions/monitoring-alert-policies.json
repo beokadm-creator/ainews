@@ -1,0 +1,51 @@
+{
+  "displayName": "EUM News Alert Policies",
+  "documentation": {
+    "content": "https://github.com/eumpe/eum-news/blob/main/docs/monitoring.md",
+    "mimeType": "text/markdown"
+  },
+  "conditions": [
+    {
+      "displayName": "Function Error Rate High",
+      "conditionThreshold": {
+        "filter": "resource.type = \"cloud_function\" AND resource.labels.function_name = \"eum-news-api\" AND metric.type = \"logging.googleapis.com/user/cloud_functions_error_rate\"",
+        "comparison": "COMPARISON_GT",
+        "threshold": {
+          "value": 0.1,
+          "duration": "300s"
+        }
+      }
+    },
+    {
+      "displayName": "Function Execution Latency High",
+      "conditionThreshold": {
+        "filter": "resource.type = \"cloud_function\" AND resource.labels.function_name = \"eum-news-api\" AND metric.type = \"cloud.googleapis.com/function/execution_times\"",
+        "comparison": "COMPARISON_GT",
+        "threshold": {
+          "value": 60000,
+          "duration": "300s"
+        }
+      }
+    },
+    {
+      "displayName": "Function Invocation Count Low",
+      "conditionThreshold": {
+        "filter": "resource.type = \"cloud_function\" AND resource.labels.function_name = \"eum-news-api\" AND metric.type = \"cloud.googleapis.com/function/invocation_count\"",
+        "comparison": "COMPARISON_LT",
+        "threshold": {
+          "value": 1,
+          "duration": "3600s"
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "3600s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ]
+      }
+    }
+  ],
+  "combiner": "OR",
+  "notificationChannels": [],
+  "enabled": true
+}

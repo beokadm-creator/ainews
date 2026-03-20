@@ -1,0 +1,676 @@
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+import * as admin from 'firebase-admin';
+import { processRssSources } from './services/rssService';
+import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
+import { createDailyBriefing } from './services/briefingService';
+import { sendBriefingEmails } from './services/emailService';
+import { sendBriefingToTelegram } from './services/telegramService';
+import { processScrapingSources } from './services/scrapingService';
+import { processPuppeteerSources } from './services/puppeteerService';
+import { ensureCollectionsExist } from './utils/firestoreValidation';
+import { requireAdmin } from './utils/authMiddleware';
+import { seedPromptTemplates } from './seed/promptTemplates';
+import { assertCompanyAccess, getCompanyRuntimeConfig } from './services/runtimeConfigService';
+import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from './types/runtime';
+import { saveApiKeyForCompany } from './utils/secretManager';
+import { seedGlobalSources, testGlobalSource } from './services/globalSourceService';
+
+admin.initializeApp();
+
+// Seeding (필요 시 수동 실행 또는 별도 트리거로 이동 권장)
+// ensureCollectionsExist().catch(console.error);
+// seedPromptTemplates().catch(err => {
+//   console.warn('Failed to seed prompt templates:', err);
+// });
+// seedGlobalSources().catch(err => {
+//   console.warn('Failed to seed global sources:', err);
+// });
+
+// ─────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────
+async function getPrimaryCompanyId(uid: string): Promise<string> {
+  const userDoc = await admin.firestore().collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    throw new HttpsError('permission-denied', 'User record not found');
+  }
+  const userData = userDoc.data() as {
+    companyIds?: string[];
+    managedCompanyIds?: string[];
+    companyId?: string;
+  };
+  const companyId = userData.companyIds?.[0] || userData.managedCompanyIds?.[0] || userData.companyId;
+  if (!companyId) {
+    throw new HttpsError('permission-denied', 'No company assigned to user');
+  }
+  return companyId;
+}
+
+async function resolveRuntime(uid: string, companyId?: string, overrides?: PipelineInvocationOverrides) {
+  const resolvedCompanyId = companyId || await getPrimaryCompanyId(uid);
+  await assertCompanyAccess(uid, resolvedCompanyId);
+  return getCompanyRuntimeConfig(resolvedCompanyId, overrides);
+}
+
+// ─────────────────────────────────────────
+// [NEW] Global Source Management (Superadmin)
+// ─────────────────────────────────────────
+
+/** 글로벌 소스 목록 조회 (모든 인증 사용자) */
+export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  try {
+    const db = admin.firestore();
+    const snap = await db.collection('globalSources').orderBy('relevanceScore', 'desc').get();
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (err: any) {
+    console.error('getGlobalSources error:', err);
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/** 글로벌 소스 생성/수정 (Superadmin만) */
+export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { id, ...data } = request.data || {};
+  if (!data.name || !data.url || !data.type) {
+    throw new HttpsError('invalid-argument', 'name, url, type are required');
+  }
+
+  const db = admin.firestore();
+  const docRef = id ? db.collection('globalSources').doc(id) : db.collection('globalSources').doc();
+
+  await docRef.set({
+    ...data,
+    id: docRef.id,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(id ? {} : {
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: request.auth.uid,
+    }),
+  }, { merge: !!id });
+
+  return { success: true, id: docRef.id };
+});
+
+/** 글로벌 소스 삭제 (Superadmin만) */
+export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { id } = request.data || {};
+  if (!id) throw new HttpsError('invalid-argument', 'Source ID required');
+
+  await admin.firestore().collection('globalSources').doc(id).delete();
+  return { success: true };
+});
+
+/** 글로벌 소스 연결 테스트 (Superadmin만) */
+export const testSourceConnection = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 60, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+    if (userDoc.data()?.role !== 'superadmin') {
+      throw new HttpsError('permission-denied', 'Superadmin required');
+    }
+
+    const { sourceId } = request.data || {};
+    if (!sourceId) throw new HttpsError('invalid-argument', 'sourceId required');
+
+    const result = await testGlobalSource(sourceId);
+
+    // 테스트 결과를 문서에 저장
+    await admin.firestore().collection('globalSources').doc(sourceId).update({
+      lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastTestResult: result,
+      ...(result.success ? { status: 'active' } : { status: 'error' }),
+    });
+
+    return result;
+  }
+);
+
+/** 회사가 구독 소스 선택 저장 */
+export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
+  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+  const access = await assertCompanyAccess(request.auth.uid, companyId);
+
+  if (!['superadmin', 'company_admin'].includes(access.role)) {
+    throw new HttpsError('permission-denied', 'Company admin required');
+  }
+
+  if (!Array.isArray(subscribedSourceIds)) {
+    throw new HttpsError('invalid-argument', 'subscribedSourceIds must be an array');
+  }
+
+  const db = admin.firestore();
+  await db.collection('companySourceSubscriptions').doc(companyId).set({
+    companyId,
+    subscribedSourceIds,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  });
+
+  return { success: true, companyId, count: subscribedSourceIds.length };
+});
+
+// ─────────────────────────────────────────
+// [NEW] Company & User Management
+// ─────────────────────────────────────────
+
+/** 회사 목록 조회 (Superadmin만) */
+export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  
+  try {
+    const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+    if (userDoc.data()?.role !== 'superadmin') {
+      throw new HttpsError('permission-denied', 'Superadmin required');
+    }
+
+    const db = admin.firestore();
+    const snap = await db.collection('companies').orderBy('name').get();
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (err: any) {
+    console.error('getCompanies error:', err);
+    if (err instanceof HttpsError) {
+      throw err;
+    }
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/** 회사 생성/수정 (Superadmin만) */
+export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { id, name, active, settings } = request.data || {};
+  if (!name) throw new HttpsError('invalid-argument', 'Company name is required');
+
+  const db = admin.firestore();
+  const docRef = id ? db.collection('companies').doc(id) : db.collection('companies').doc();
+
+  await docRef.set({
+    id: docRef.id,
+    name,
+    active: active ?? true,
+    settings: settings || {},
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(id ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() }),
+  }, { merge: true });
+
+  return { success: true, id: docRef.id };
+});
+
+/** 사용자 생성 (Superadmin 또는 Company Admin) */
+export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const { email, password, displayName, role, companyId: targetCompanyId } = request.data || {};
+  if (!email || !password || !role || !targetCompanyId) {
+    throw new HttpsError('invalid-argument', 'Missing required fields');
+  }
+
+  // 권한 확인
+  const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const callerData = callerDoc.data();
+  const isSuper = callerData?.role === 'superadmin';
+  const isCompanyAdmin = callerData?.role === 'company_admin' && 
+                        (callerData?.companyIds?.includes(targetCompanyId) || callerData?.companyId === targetCompanyId);
+
+  if (!isSuper && !isCompanyAdmin) {
+    throw new HttpsError('permission-denied', 'Insufficient permissions to create user');
+  }
+
+  // 역할 제한: Company Admin은 superadmin을 생성할 수 없음
+  if (!isSuper && role === 'superadmin') {
+    throw new HttpsError('permission-denied', 'Only superadmins can create other superadmins');
+  }
+
+  try {
+    // Auth 사용자 생성
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: displayName || email.split('@')[0],
+    });
+
+    // Firestore 사용자 문서 생성
+    await admin.firestore().collection('users').doc(userRecord.uid).set({
+      uid: userRecord.uid,
+      email,
+      role,
+      companyId: targetCompanyId,
+      companyIds: [targetCompanyId],
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: request.auth.uid,
+    });
+
+    // Custom Claims 설정
+    await admin.auth().setCustomUserClaims(userRecord.uid, { role, companyId: targetCompanyId });
+
+    return { success: true, uid: userRecord.uid };
+  } catch (error: any) {
+    throw new HttpsError('internal', error.message);
+  }
+});
+
+/** 특정 회사 사용자 목록 조회 */
+export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const { companyId } = request.data || {};
+  if (!companyId) throw new HttpsError('invalid-argument', 'Company ID required');
+
+  const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const isSuper = callerDoc.data()?.role === 'superadmin';
+  const isTargetAdmin = callerDoc.data()?.role === 'company_admin' && 
+                       (callerDoc.data()?.companyIds?.includes(companyId) || callerDoc.data()?.companyId === companyId);
+
+  if (!isSuper && !isTargetAdmin) {
+    throw new HttpsError('permission-denied', 'Access denied');
+  }
+
+  const snap = await admin.firestore().collection('users')
+    .where('companyIds', 'array-contains', companyId)
+    .get();
+    
+  return snap.docs.map(doc => {
+    const data = doc.data();
+    return {
+      uid: data.uid,
+      email: data.email,
+      role: data.role,
+      createdAt: data.createdAt,
+    };
+  });
+});
+
+
+// ─────────────────────────────────────────
+// [NEW] Save AI Provider API Key
+// ─────────────────────────────────────────
+export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Authentication required');
+  }
+
+  const { companyId: rawCompanyId, provider, apiKey, baseUrl, model } = request.data || {};
+  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+  const access = await assertCompanyAccess(request.auth.uid, companyId);
+
+  if (access.role !== 'superadmin' && access.role !== 'company_admin') {
+    throw new HttpsError('permission-denied', 'Company admin or superadmin required');
+  }
+
+  if (!provider || !['glm', 'gemini', 'openai', 'claude'].includes(provider)) {
+    throw new HttpsError('invalid-argument', 'Valid provider required: glm, gemini, openai, claude');
+  }
+
+  // 1. API Key 저장 (Secret Manager - 기존 로직 유지)
+  if (apiKey) {
+    if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
+      throw new HttpsError('invalid-argument', 'Valid API key is required');
+    }
+    await saveApiKeyForCompany(companyId, provider as AiProvider, apiKey.trim());
+  }
+
+  // 2. Base URL 및 선택된 모델 저장 (Firestore companySettings에 저장)
+  const db = admin.firestore();
+  const updates: any = {};
+  
+  if (baseUrl !== undefined) {
+    updates[`aiBaseUrls.${provider}`] = baseUrl;
+  }
+  
+  if (model !== undefined) {
+    updates[`aiModels.${provider}`] = model;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
+  }
+
+  return { success: true };
+});
+
+// ─────────────────────────────────────────
+// [NEW] Test AI Provider Connection
+// ─────────────────────────────────────────
+export const testAiConnection = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Authentication required');
+  }
+
+  const { companyId: rawCompanyId, provider, model, baseUrl } = request.data || {};
+  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+  await assertCompanyAccess(request.auth.uid, companyId);
+
+  try {
+    const targetProvider: AiProvider = provider || 'glm';
+    const defaults = PROVIDER_DEFAULTS[targetProvider];
+
+    const testConfig: RuntimeAiConfig = {
+      provider: targetProvider,
+      model: model || defaults.model,
+      baseUrl: baseUrl || null,
+      apiKeyEnvKey: defaults.apiKeyEnvKey,
+    };
+
+    const result = await testAiProviderConnection(testConfig, companyId);
+    return result;
+  } catch (error: any) {
+    return {
+      success: false,
+      message: error.message || 'Connection test failed',
+    };
+  }
+});
+
+// ─────────────────────────────────────────
+// Analyze Manual Article
+// ─────────────────────────────────────────
+export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Authentication required');
+  }
+
+  const { title, content, source, url, publishedAt, companyId } = request.data || {};
+  if (!title || !content) {
+    throw new HttpsError('invalid-argument', 'Title and content are required');
+  }
+
+  const runtime = await resolveRuntime(request.auth.uid, companyId);
+  const relevanceResult = await checkRelevance(
+    { title, content, source: source || 'manual' },
+    runtime.ai,
+    { companyId: runtime.companyId }
+  );
+
+  const analysis = await analyzeArticle(
+    { title, content, source: source || 'manual', url: url || '', publishedAt: publishedAt || new Date().toISOString() },
+    runtime.ai,
+    { companyId: runtime.companyId }
+  );
+
+  return {
+    success: true,
+    companyId: runtime.companyId,
+    isRelevant: relevanceResult.isRelevant,
+    confidence: relevanceResult.confidence,
+    relevanceReason: relevanceResult.reason,
+    analysis,
+  };
+});
+
+// ─────────────────────────────────────────
+// HTTP triggers (collection)
+// ─────────────────────────────────────────
+export const triggerRssCollection = onRequest({ region: 'us-central1' }, async (request, response) => {
+  const isAuthenticated = await requireAdmin(request, response as any);
+  if (!isAuthenticated) return;
+  try {
+    const companyId = request.query.companyId as string | undefined;
+    const user = (request as any).user;
+    const runtime = await resolveRuntime(user.uid, companyId);
+    const result = await processRssSources({ companyId: runtime.companyId, filters: runtime.filters });
+    response.json(result);
+  } catch (error: any) {
+    response.status(500).json({ success: false, error: error.message });
+  }
+});
+
+export const triggerScrapingCollection = onRequest({ region: 'us-central1' }, async (request, response) => {
+  const isAuthenticated = await requireAdmin(request, response as any);
+  if (!isAuthenticated) return;
+  try {
+    const companyId = request.query.companyId as string | undefined;
+    const user = (request as any).user;
+    const runtime = await resolveRuntime(user.uid, companyId);
+    const result = await processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters });
+    response.json(result);
+  } catch (error: any) {
+    response.status(500).json({ success: false, error: error.message });
+  }
+});
+
+export const triggerPuppeteerCollection = onRequest(
+  { region: 'us-central1', memory: '1GiB', timeoutSeconds: 300 },
+  async (request, response) => {
+    const isAuthenticated = await requireAdmin(request, response as any);
+    if (!isAuthenticated) return;
+    try {
+      const companyId = request.query.companyId as string | undefined;
+      const user = (request as any).user;
+      const runtime = await resolveRuntime(user.uid, companyId);
+      const result = await processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters });
+      response.json(result);
+    } catch (error: any) {
+      response.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// ─────────────────────────────────────────
+// Callable triggers (AI pipeline steps)
+// ─────────────────────────────────────────
+export const triggerAiFiltering = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
+  return processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
+});
+
+export const triggerDeepAnalysis = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
+  return processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
+});
+
+export const triggerBriefingGeneration = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
+  return createDailyBriefing({
+    companyId: runtime.companyId,
+    aiConfig: runtime.ai,
+    outputConfig: runtime.output,
+    timezone: runtime.timezone,
+  });
+});
+
+export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+  await assertCompanyAccess(request.auth.uid, companyId);
+  const outputId = request.data?.id;
+  if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
+  return sendBriefingEmails(outputId);
+});
+
+export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+  await assertCompanyAccess(request.auth.uid, companyId);
+  const outputId = request.data?.id;
+  if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
+  return sendBriefingToTelegram(outputId);
+});
+
+// ─────────────────────────────────────────
+// Scheduled: Collection (hourly per company)
+// ─────────────────────────────────────────
+export const scheduledNewsCollection = onSchedule(
+  { schedule: '0 * * * *', memory: '1GiB', timeoutSeconds: 300 },
+  async () => {
+    const db = admin.firestore();
+    const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
+
+    for (const companyDoc of companiesSnapshot.docs) {
+      try {
+        const runtime = await getCompanyRuntimeConfig(companyDoc.id);
+        await Promise.all([
+          processRssSources({ companyId: runtime.companyId, filters: runtime.filters }),
+          processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters }),
+          processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters }),
+        ]);
+        await processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
+        await processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
+      } catch (err: any) {
+        // WARN-01 FIX: 개별 회사 실패가 전체 스케줄러를 멈추지 않도록
+        console.error(`Scheduled collection failed for company ${companyDoc.id}:`, err.message);
+      }
+    }
+  }
+);
+
+// ─────────────────────────────────────────
+// Scheduled: Briefing generation (daily 22:00)
+// ─────────────────────────────────────────
+export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => {
+  const db = admin.firestore();
+  const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
+
+  for (const companyDoc of companiesSnapshot.docs) {
+    try {
+      const runtime = await getCompanyRuntimeConfig(companyDoc.id);
+      await createDailyBriefing({
+        companyId: runtime.companyId,
+        aiConfig: runtime.ai,
+        outputConfig: runtime.output,
+        timezone: runtime.timezone,
+      });
+    } catch (err: any) {
+      console.error(`Scheduled briefing failed for company ${companyDoc.id}:`, err.message);
+    }
+  }
+});
+
+// ─────────────────────────────────────────
+// runFullPipeline: Full manual pipeline trigger
+// ─────────────────────────────────────────
+export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Authentication required');
+  }
+
+  const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
+  const db = admin.firestore();
+  const pipelineRef = db.collection('pipelineRuns').doc();
+  const pipelineId = pipelineRef.id;
+
+  await pipelineRef.set({
+    id: pipelineId,
+    companyId: runtime.companyId,
+    companyName: runtime.companyName,
+    status: 'running',
+    triggeredBy: request.auth.uid,
+    configSnapshot: runtime,
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    steps: {},
+  });
+
+  const updateStep = async (
+    step: string,
+    status: 'running' | 'completed' | 'failed' | 'skipped',
+    result?: any
+  ) => {
+    await pipelineRef.update({
+      [`steps.${step}`]: {
+        status,
+        completedAt: status === 'running' ? null : admin.firestore.FieldValue.serverTimestamp(),
+        ...(result ? { result } : {}),
+      },
+    });
+  };
+
+  try {
+    await updateStep('collection', 'running');
+    const collectionStart = Date.now();
+    const [rssResult, scrapingResult, puppeteerResult] = await Promise.all([
+      processRssSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
+      processScrapingSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
+      processPuppeteerSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters }),
+    ]);
+    const totalCollected =
+      (rssResult.totalCollected || 0) +
+      (scrapingResult.totalCollected || 0) +
+      (puppeteerResult.totalCollected || 0);
+    await updateStep('collection', 'completed', {
+      duration: Date.now() - collectionStart,
+      rss: rssResult,
+      scraping: scrapingResult,
+      puppeteer: puppeteerResult,
+      totalCollected,
+    });
+
+    await updateStep('filtering', 'running');
+    const filteringStart = Date.now();
+    const filteringResult = await processRelevanceFiltering({
+      companyId: runtime.companyId,
+      pipelineRunId: pipelineId,
+      aiConfig: runtime.ai,
+    });
+    await updateStep('filtering', 'completed', { duration: Date.now() - filteringStart, ...filteringResult });
+
+    await updateStep('analysis', 'running');
+    const analysisStart = Date.now();
+    const analysisResult = await processDeepAnalysis({
+      companyId: runtime.companyId,
+      pipelineRunId: pipelineId,
+      aiConfig: runtime.ai,
+    });
+    await updateStep('analysis', 'completed', { duration: Date.now() - analysisStart, ...analysisResult });
+
+    await updateStep('output', 'running');
+    const outputStart = Date.now();
+    const outputResult = await createDailyBriefing({
+      companyId: runtime.companyId,
+      pipelineRunId: pipelineId,
+      aiConfig: runtime.ai,
+      outputConfig: runtime.output,
+      timezone: runtime.timezone,
+    });
+    await updateStep('output', outputResult.success ? 'completed' : 'failed', {
+      duration: Date.now() - outputStart,
+      ...outputResult,
+    });
+
+    const finalStatus = outputResult.success ? 'completed' : 'failed';
+    await pipelineRef.update({ status: finalStatus, completedAt: admin.firestore.FieldValue.serverTimestamp() });
+
+    return {
+      success: outputResult.success,
+      pipelineId,
+      companyId: runtime.companyId,
+      outputId: outputResult.outputId || null,
+      outputType: runtime.output.type,
+    };
+  } catch (error: any) {
+    await pipelineRef.update({
+      status: 'failed',
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      error: error.message || String(error),
+    });
+    throw new HttpsError('internal', `Pipeline failed: ${error.message}`);
+  }
+});
