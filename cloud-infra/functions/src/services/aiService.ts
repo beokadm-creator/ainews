@@ -399,7 +399,7 @@ Source: ${article.source}
 Decision:`;
 
   try {
-    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.1, maxTokens: 120 }, context?.companyId);
+    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.1, maxTokens: 1000 }, context?.companyId);
 
     const relevantMatch = result.content.match(/RELEVANT:\s*(YES|NO)/i);
     const confidenceMatch = result.content.match(/CONFIDENCE:\s*(\d+\.?\d*)/i);
