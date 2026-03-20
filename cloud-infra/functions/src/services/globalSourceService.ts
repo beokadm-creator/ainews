@@ -201,7 +201,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     name: 'Financial Times',
     description: '글로벌 M&A 트렌드. M&M (Mergers & Markets) 섹션 보유. 일부 유료.',
     url: 'https://www.ft.com',
-    rssUrl: 'https://www.ft.com/rss/home',
+    rssUrl: 'https://www.ft.com/rss',
     type: 'rss',
     language: 'en',
     relevanceScore: 5,
@@ -215,7 +215,7 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     name: 'MarketWatch',
     description: '미국 시장/M&A 뉴스.',
     url: 'https://www.marketwatch.com',
-    rssUrl: 'https://www.marketwatch.com/rss/topstories',
+    rssUrl: 'https://www.marketwatch.com/rss',
     type: 'rss',
     language: 'en',
     relevanceScore: 3,
@@ -399,11 +399,17 @@ export async function testGlobalSource(sourceId: string): Promise<{
 
 async function testRssSource(source: GlobalSource, startMs: number) {
   const RssParser = require('rss-parser');
-  const parser = new RssParser({ timeout: 10000 });
+  const parser = new RssParser({
+    timeout: 15000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; ainews-bot/1.0; +https://ainews.io)',
+      'Accept': 'application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8'
+    }
+  });
 
   const feed = await parser.parseURL(source.rssUrl!);
   const latencyMs = Date.now() - startMs;
-  const items = feed.items || [];
+  const items = (feed && Array.isArray(feed.items)) ? feed.items : [];
 
   const sampleTitles = items.slice(0, 3).map((item: any) => item.title || '(no title)');
 

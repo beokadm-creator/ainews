@@ -8,6 +8,11 @@ import { RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
 const parser = new Parser({
+  timeout: 15000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (compatible; ainews-bot/1.0; +https://ainews.io)',
+    'Accept': 'application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8'
+  },
   customFields: {
     item: [
       ['content:encoded', 'contentEncoded'],
@@ -26,6 +31,12 @@ interface ParsedArticle {
 export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
   const feed = await parser.parseURL(url);
   const articles: ParsedArticle[] = [];
+
+  // 안전하게 feed.items 처리 (undefined/null 체크)
+  if (!feed || !Array.isArray(feed.items)) {
+    console.warn(`No items found in RSS feed: ${url}`);
+    return articles;
+  }
 
   for (const item of feed.items) {
     const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
