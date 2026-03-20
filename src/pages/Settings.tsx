@@ -19,8 +19,8 @@ interface ProviderInfo {
 const PROVIDERS: Record<AiProvider, ProviderInfo> = {
   glm: {
     label: 'Zhipu GLM',
-    modelDefault: 'glm-4-flash',
-    models: ['glm-4.7', 'glm-4-flash', 'glm-4-air', 'glm-4-coding-flash', 'glm-3-turbo'],
+    modelDefault: 'glm-4.7',
+    models: ['glm-4.7'],
     docsUrl: 'https://open.bigmodel.cn',
     color: '#6366f1',
     placeholder: 'GLM API Key (from open.bigmodel.cn)',

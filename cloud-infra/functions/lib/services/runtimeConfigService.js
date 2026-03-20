@@ -50,7 +50,7 @@ const DEFAULT_FILTERS = {
 };
 const DEFAULT_AI_CONFIG = {
     provider: 'glm',
-    model: 'glm-4',
+    model: 'glm-4.7',
     apiKeyEnvKey: 'GLM_API_KEY',
     maxPendingBatch: 20,
     maxAnalysisBatch: 10,
@@ -102,11 +102,20 @@ async function getCompanyRuntimeConfig(companyId, overrides) {
     if (company.active === false) {
         throw new Error(`Company ${companyId} is inactive`);
     }
+    // ── [FIX] Load runtime settings from companySettings collection
+    const settingsDoc = await db.collection('companySettings').doc(companyId).get();
+    const runtimeSettings = (settingsDoc.data() || {});
     const settings = (company.settings ?? {});
-    // ── 구독 소스 목록 병합: companySourceSubscriptions → filters.sourceIds
+    // AI Config 병합 (companySettings의 aiModels, aiBaseUrls 우선)
+    const aiConfig = {
+        ...DEFAULT_AI_CONFIG,
+        ...(settings.ai ?? {}),
+        model: runtimeSettings.aiModels?.[settings.ai?.provider || 'glm'] || settings.ai?.model || DEFAULT_AI_CONFIG.model,
+        baseUrl: runtimeSettings.aiBaseUrls?.[settings.ai?.provider || 'glm'] || settings.ai?.baseUrl || null,
+    };
+    // ── 구독 소스 목록 병합
     let subscribedSourceIds = settings.filters?.sourceIds ?? [];
     if (subscribedSourceIds.length === 0) {
-        // companySourceSubscriptions에서 구독 중인 globalSources ID 로드
         const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
         if (subDoc.exists) {
             subscribedSourceIds = subDoc.data().subscribedSourceIds ?? [];
@@ -122,10 +131,7 @@ async function getCompanyRuntimeConfig(companyId, overrides) {
         companyName: company.name,
         timezone: settings.timezone || DEFAULT_TIMEZONE,
         filters: mergeFilters(baseFilters, overrides?.filters),
-        ai: mergeAiConfig({
-            ...DEFAULT_AI_CONFIG,
-            ...(settings.ai ?? {})
-        }, overrides?.ai),
+        ai: mergeAiConfig(aiConfig, overrides?.ai),
         output: mergeOutputConfig({
             ...DEFAULT_OUTPUT_CONFIG,
             ...(settings.output ?? {})
