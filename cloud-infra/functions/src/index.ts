@@ -7,7 +7,7 @@ import { createDailyBriefing } from './services/briefingService';
 import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processScrapingSources } from './services/scrapingService';
-import { processPuppeteerSources } from './services/puppeteerService';
+import { processPuppeteerSources, loginMarketInsight, scrapeMarketInsightMNA } from './services/puppeteerService';
 import { processApiSources } from './services/apiSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
@@ -713,5 +713,48 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       error: error.message || String(error),
     });
     throw new HttpsError('internal', `Pipeline failed: ${error.message}`);
+  }
+});
+
+// ─────────────────────────────────────────
+// [NEW] MarketInsight Premium Member Access (Superadmin)
+// ─────────────────────────────────────────
+
+/** MarketInsight 유료 회원 로그인 (Superadmin) */
+export const marketinsightLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  try {
+    const result = await loginMarketInsight();
+    if (!result.success) {
+      throw new HttpsError('internal', result.message);
+    }
+    return { success: true, message: result.message };
+  } catch (err: any) {
+    console.error('marketinsightLogin error:', err);
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/** MarketInsight MNA 섹션 스크래핑 (Superadmin) */
+export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  try {
+    const articles = await scrapeMarketInsightMNA();
+    return { success: true, articlesFound: articles.length, articles };
+  } catch (err: any) {
+    console.error('marketinsightScrape error:', err);
+    throw new HttpsError('internal', err.message);
   }
 });
