@@ -6,8 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc",
-    "check": "tsc --noEmit",
-    "gcp-build": "npx puppeteer browsers install chrome"
+    "check": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
@@ -20,10 +19,6 @@
     "firebase-functions": "^7.2.2",
     "iconv-lite": "^0.6.3",
     "nodemailer": "^8.0.3",
-    "puppeteer": "^24.40.0",
-    "puppeteer-core": "^24.40.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rss-parser": "^3.13.0"
   },
   "devDependencies": {

@@ -7,7 +7,6 @@ import { createDailyBriefing } from './services/briefingService';
 import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processScrapingSources } from './services/scrapingService';
-import { processPuppeteerSources, loginMarketInsight, scrapeMarketInsightMNA, loginThebell, scrapeThebell } from './services/puppeteerService';
 import { processApiSources } from './services/apiSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
@@ -16,9 +15,7 @@ import { assertCompanyAccess, getCompanyRuntimeConfig } from './services/runtime
 import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from './types/runtime';
 import { saveApiKeyForCompany } from './utils/secretManager';
 import { seedGlobalSources, testGlobalSource } from './services/globalSourceService';
-
 admin.initializeApp();
-
 // Seeding (필요 시 수동 실행 또는 별도 트리거로 이동 권장)
 // ensureCollectionsExist().catch(console.error);
 // seedPromptTemplates().catch(err => {
@@ -27,7 +24,6 @@ admin.initializeApp();
 // seedGlobalSources().catch(err => {
 //   console.warn('Failed to seed global sources:', err);
 // });
-
 // ─────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────
@@ -47,17 +43,14 @@ async function getPrimaryCompanyId(uid: string): Promise<string> {
   }
   return companyId;
 }
-
 async function resolveRuntime(uid: string, companyId?: string, overrides?: PipelineInvocationOverrides) {
   const resolvedCompanyId = companyId || await getPrimaryCompanyId(uid);
   await assertCompanyAccess(uid, resolvedCompanyId);
   return getCompanyRuntimeConfig(resolvedCompanyId, overrides);
 }
-
 // ─────────────────────────────────────────
 // [NEW] Global Source Management (Superadmin)
 // ─────────────────────────────────────────
-
 /** 글로벌 소스 목록 조회 (모든 인증 사용자) */
 export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
@@ -70,24 +63,19 @@ export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invo
     throw new HttpsError('internal', err.message);
   }
 });
-
 /** 글로벌 소스 생성/수정 (Superadmin만) */
 export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
     throw new HttpsError('permission-denied', 'Superadmin required');
   }
-
   const { id, ...data } = request.data || {};
   if (!data.name || !data.url || !data.type) {
     throw new HttpsError('invalid-argument', 'name, url, type are required');
   }
-
   const db = admin.firestore();
   const docRef = id ? db.collection('globalSources').doc(id) : db.collection('globalSources').doc();
-
   await docRef.set({
     ...data,
     id: docRef.id,
@@ -97,26 +85,20 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
       createdBy: request.auth.uid,
     }),
   }, { merge: !!id });
-
   return { success: true, id: docRef.id };
 });
-
 /** 글로벌 소스 삭제 (Superadmin만) */
 export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
     throw new HttpsError('permission-denied', 'Superadmin required');
   }
-
   const { id } = request.data || {};
   if (!id) throw new HttpsError('invalid-argument', 'Source ID required');
-
   await admin.firestore().collection('globalSources').doc(id).delete();
   return { success: true };
 });
-
 /** 글로벌 소스 연결 테스트 (Superadmin만) - HTTP 함수 with CORS */
 export const testSourceConnectionHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 60, memory: '512MiB' },
@@ -125,64 +107,52 @@ export const testSourceConnectionHttp = onRequest(
     response.set('Access-Control-Allow-Origin', '*');
     response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
     response.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
     if (request.method === 'OPTIONS') {
       response.status(204).send('');
       return;
     }
-
     try {
       const auth = request.headers.authorization?.split('Bearer ')[1];
       if (!auth) {
         response.status(401).json({ error: 'Authentication required' });
         return;
       }
-
       const decodedToken = await admin.auth().verifyIdToken(auth);
       const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
       if (userDoc.data()?.role !== 'superadmin') {
         response.status(403).json({ error: 'Superadmin required' });
         return;
       }
-
       const { sourceId } = request.body || {};
       if (!sourceId) {
         response.status(400).json({ error: 'sourceId required' });
         return;
       }
-
       const result = await testGlobalSource(sourceId);
-
       // 테스트 결과를 문서에 저장
       await admin.firestore().collection('globalSources').doc(sourceId).update({
         lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
         lastTestResult: result,
         ...(result.success ? { status: 'active' } : { status: 'error' }),
       });
-
       response.json(result);
     } catch (err: any) {
       response.status(500).json({ error: err.message || 'Test failed' });
     }
   }
 );
-
 /** 회사가 구독 소스 선택 저장 */
 export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
   const access = await assertCompanyAccess(request.auth.uid, companyId);
-
   if (!['superadmin', 'company_admin'].includes(access.role)) {
     throw new HttpsError('permission-denied', 'Company admin required');
   }
-
   if (!Array.isArray(subscribedSourceIds)) {
     throw new HttpsError('invalid-argument', 'subscribedSourceIds must be an array');
   }
-
   const db = admin.firestore();
   await db.collection('companySourceSubscriptions').doc(companyId).set({
     companyId,
@@ -190,24 +160,19 @@ export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', 
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
   });
-
   return { success: true, companyId, count: subscribedSourceIds.length };
 });
-
 // ─────────────────────────────────────────
 // [NEW] Company & User Management
 // ─────────────────────────────────────────
-
 /** 회사 목록 조회 (Superadmin만) */
 export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-  
   try {
     const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
     if (userDoc.data()?.role !== 'superadmin') {
       throw new HttpsError('permission-denied', 'Superadmin required');
     }
-
     const db = admin.firestore();
     const snap = await db.collection('companies').orderBy('name').get();
     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -219,22 +184,17 @@ export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker:
     throw new HttpsError('internal', err.message);
   }
 });
-
 /** 회사 생성/수정 (Superadmin만) */
 export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
     throw new HttpsError('permission-denied', 'Superadmin required');
   }
-
   const { id, name, active, settings } = request.data || {};
   if (!name) throw new HttpsError('invalid-argument', 'Company name is required');
-
   const db = admin.firestore();
   const docRef = id ? db.collection('companies').doc(id) : db.collection('companies').doc();
-
   await docRef.set({
     id: docRef.id,
     name,
@@ -243,35 +203,28 @@ export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     ...(id ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() }),
   }, { merge: true });
-
   return { success: true, id: docRef.id };
 });
-
 /** 사용자 생성 (Superadmin 또는 Company Admin) */
 export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const { email, password, displayName, role, companyId: targetCompanyId } = request.data || {};
   if (!email || !password || !role || !targetCompanyId) {
     throw new HttpsError('invalid-argument', 'Missing required fields');
   }
-
   // 권한 확인
   const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   const callerData = callerDoc.data();
   const isSuper = callerData?.role === 'superadmin';
   const isCompanyAdmin = callerData?.role === 'company_admin' && 
                         (callerData?.companyIds?.includes(targetCompanyId) || callerData?.companyId === targetCompanyId);
-
   if (!isSuper && !isCompanyAdmin) {
     throw new HttpsError('permission-denied', 'Insufficient permissions to create user');
   }
-
   // 역할 제한: Company Admin은 superadmin을 생성할 수 없음
   if (!isSuper && role === 'superadmin') {
     throw new HttpsError('permission-denied', 'Only superadmins can create other superadmins');
   }
-
   try {
     // Auth 사용자 생성
     const userRecord = await admin.auth().createUser({
@@ -279,7 +232,6 @@ export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invok
       password,
       displayName: displayName || email.split('@')[0],
     });
-
     // Firestore 사용자 문서 생성
     await admin.firestore().collection('users').doc(userRecord.uid).set({
       uid: userRecord.uid,
@@ -290,36 +242,28 @@ export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invok
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: request.auth.uid,
     });
-
     // Custom Claims 설정
     await admin.auth().setCustomUserClaims(userRecord.uid, { role, companyId: targetCompanyId });
-
     return { success: true, uid: userRecord.uid };
   } catch (error: any) {
     throw new HttpsError('internal', error.message);
   }
 });
-
 /** 특정 회사 사용자 목록 조회 */
 export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const { companyId } = request.data || {};
   if (!companyId) throw new HttpsError('invalid-argument', 'Company ID required');
-
   const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   const isSuper = callerDoc.data()?.role === 'superadmin';
   const isTargetAdmin = callerDoc.data()?.role === 'company_admin' && 
                        (callerDoc.data()?.companyIds?.includes(companyId) || callerDoc.data()?.companyId === companyId);
-
   if (!isSuper && !isTargetAdmin) {
     throw new HttpsError('permission-denied', 'Access denied');
   }
-
   const snap = await admin.firestore().collection('users')
     .where('companyIds', 'array-contains', companyId)
     .get();
-    
   return snap.docs.map(doc => {
     const data = doc.data();
     return {
@@ -330,8 +274,6 @@ export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invok
     };
   });
 });
-
-
 // ─────────────────────────────────────────
 // [NEW] Save AI Provider API Key
 // ─────────────────────────────────────────
@@ -339,19 +281,15 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
-
   const { companyId: rawCompanyId, provider, apiKey, baseUrl, model } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
   const access = await assertCompanyAccess(request.auth.uid, companyId);
-
   if (access.role !== 'superadmin' && access.role !== 'company_admin') {
     throw new HttpsError('permission-denied', 'Company admin or superadmin required');
   }
-
   if (!provider || !['glm', 'gemini', 'openai', 'claude'].includes(provider)) {
     throw new HttpsError('invalid-argument', 'Valid provider required: glm, gemini, openai, claude');
   }
-
   // 1. API Key 저장 (Secret Manager - 기존 로직 유지)
   if (apiKey) {
     if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
@@ -359,49 +297,37 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     }
     await saveApiKeyForCompany(companyId, provider as AiProvider, apiKey.trim());
   }
-
   // 2. Base URL 및 선택된 모델 저장 (Firestore companySettings에 저장)
   const db = admin.firestore();
   const updates: any = {};
-  
   if (baseUrl !== undefined) {
     updates[`aiBaseUrls.${provider}`] = baseUrl;
   }
-  
   if (model !== undefined) {
     updates[`aiModels.${provider}`] = model;
   }
-
   // 기본 활성 프로바이더/모델도 업데이트
   updates['ai.provider'] = provider;
   if (model) updates['ai.model'] = model;
   if (baseUrl) updates['ai.baseUrl'] = baseUrl;
-
   await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
-
   return { success: true, message: `Settings for ${provider} saved to company ${companyId}` };
 });
-
 /** 회사별 파이프라인 설정 (필터, 출력 등) 업데이트 */
 export const updateCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
   const { companyId, filters, output, timezone } = request.data || {};
   const targetCompanyId = companyId || await getPrimaryCompanyId(request.auth.uid);
   await assertCompanyAccess(request.auth.uid, targetCompanyId);
-
   const db = admin.firestore();
   const updates: any = {};
   if (filters) updates.filters = filters;
   if (output) updates.output = output;
   if (timezone) updates.timezone = timezone;
-
   if (Object.keys(updates).length === 0) return { success: false, message: 'No updates provided' };
-
   await db.collection('companySettings').doc(targetCompanyId).set(updates, { merge: true });
   return { success: true };
 });
-
 // ─────────────────────────────────────────
 // [NEW] Test AI Provider Connection
 // ─────────────────────────────────────────
@@ -409,22 +335,18 @@ export const testAiConnection = onCall({ region: 'us-central1', cors: true, invo
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
-
   const { companyId: rawCompanyId, provider, model, baseUrl } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
   await assertCompanyAccess(request.auth.uid, companyId);
-
   try {
     const targetProvider: AiProvider = provider || 'glm';
     const defaults = PROVIDER_DEFAULTS[targetProvider];
-
     const testConfig: RuntimeAiConfig = {
       provider: targetProvider,
       model: model || defaults.model,
       baseUrl: baseUrl || null,
       apiKeyEnvKey: defaults.apiKeyEnvKey,
     };
-
     const result = await testAiProviderConnection(testConfig, companyId);
     return result;
   } catch (error: any) {
@@ -434,7 +356,6 @@ export const testAiConnection = onCall({ region: 'us-central1', cors: true, invo
     };
   }
 });
-
 // ─────────────────────────────────────────
 // Analyze Manual Article
 // ─────────────────────────────────────────
@@ -442,25 +363,21 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
-
   const { title, content, source, url, publishedAt, companyId } = request.data || {};
   if (!title || !content) {
     throw new HttpsError('invalid-argument', 'Title and content are required');
   }
-
   const runtime = await resolveRuntime(request.auth.uid, companyId);
   const relevanceResult = await checkRelevance(
     { title, content, source: source || 'manual' },
     runtime.ai,
     { companyId: runtime.companyId }
   );
-
   const analysis = await analyzeArticle(
     { title, content, source: source || 'manual', url: url || '', publishedAt: publishedAt || new Date().toISOString() },
     runtime.ai,
     { companyId: runtime.companyId }
   );
-
   return {
     success: true,
     companyId: runtime.companyId,
@@ -470,7 +387,6 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
     analysis,
   };
 });
-
 // ─────────────────────────────────────────
 // HTTP triggers (collection)
 // ─────────────────────────────────────────
@@ -491,7 +407,6 @@ export const triggerRssCollection = onRequest({ region: 'us-central1' }, async (
     response.status(500).json({ success: false, error: error.message });
   }
 });
-
 export const triggerScrapingCollection = onRequest({ region: 'us-central1' }, async (request, response) => {
   const isAuthenticated = await requireAdmin(request, response as any);
   if (!isAuthenticated) return;
@@ -509,28 +424,6 @@ export const triggerScrapingCollection = onRequest({ region: 'us-central1' }, as
     response.status(500).json({ success: false, error: error.message });
   }
 });
-
-export const triggerPuppeteerCollection = onRequest(
-  { region: 'us-central1', memory: '1GiB', timeoutSeconds: 300 },
-  async (request, response) => {
-    const isAuthenticated = await requireAdmin(request, response as any);
-    if (!isAuthenticated) return;
-    try {
-      const companyId = request.query.companyId as string | undefined;
-      const user = (request as any).user;
-      const runtime = await resolveRuntime(user.uid, companyId);
-      const result = await processPuppeteerSources({
-        companyId: runtime.companyId,
-        filters: runtime.filters,
-        aiConfig: runtime.ai
-      });
-      response.json(result);
-    } catch (error: any) {
-      response.status(500).json({ success: false, error: error.message });
-    }
-  }
-);
-
 // ─────────────────────────────────────────
 // Callable triggers (AI pipeline steps)
 // ─────────────────────────────────────────
@@ -539,13 +432,11 @@ export const triggerAiFiltering = onCall({ region: 'us-central1', cors: true, in
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   return processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
 });
-
 export const triggerDeepAnalysis = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   return processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
 });
-
 export const triggerBriefingGeneration = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
@@ -556,7 +447,6 @@ export const triggerBriefingGeneration = onCall({ region: 'us-central1', cors: t
     timezone: runtime.timezone,
   });
 });
-
 export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
@@ -565,7 +455,6 @@ export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invo
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingEmails(outputId);
 });
-
 export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
@@ -574,7 +463,6 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
-
 // ─────────────────────────────────────────
 // Scheduled: Collection (hourly per company)
 // ─────────────────────────────────────────
@@ -583,14 +471,12 @@ export const scheduledNewsCollection = onSchedule(
   async () => {
     const db = admin.firestore();
     const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
-
     for (const companyDoc of companiesSnapshot.docs) {
       try {
         const runtime = await getCompanyRuntimeConfig(companyDoc.id);
         await Promise.all([
           processRssSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
           processScrapingSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
-          processPuppeteerSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
           processApiSources({ companyId: runtime.companyId, filters: runtime.filters, aiConfig: runtime.ai }),
         ]);
         await processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
@@ -602,14 +488,12 @@ export const scheduledNewsCollection = onSchedule(
     }
   }
 );
-
 // ─────────────────────────────────────────
 // Scheduled: Briefing generation (daily 22:00)
 // ─────────────────────────────────────────
 export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => {
   const db = admin.firestore();
   const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
-
   for (const companyDoc of companiesSnapshot.docs) {
     try {
       const runtime = await getCompanyRuntimeConfig(companyDoc.id);
@@ -624,7 +508,6 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
     }
   }
 });
-
 // ─────────────────────────────────────────
 // runFullPipeline: Full manual pipeline trigger
 // ─────────────────────────────────────────
@@ -632,12 +515,10 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
-
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   const db = admin.firestore();
   const pipelineRef = db.collection('pipelineRuns').doc();
   const pipelineId = pipelineRef.id;
-
   await pipelineRef.set({
     id: pipelineId,
     companyId: runtime.companyId,
@@ -648,7 +529,6 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
     startedAt: admin.firestore.FieldValue.serverTimestamp(),
     steps: {},
   });
-
   const updateStep = async (
     step: string,
     status: 'running' | 'completed' | 'failed' | 'skipped',
@@ -662,30 +542,25 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       },
     });
   };
-
   try {
     await updateStep('collection', 'running');
     const collectionStart = Date.now();
-    const [rssResult, scrapingResult, puppeteerResult, apiResult] = await Promise.all([
+    const [rssResult, scrapingResult, apiResult] = await Promise.all([
       processRssSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
       processScrapingSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
-      processPuppeteerSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
       processApiSources({ companyId: runtime.companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
     ]);
     const totalCollected =
       (rssResult.totalCollected || 0) +
       (scrapingResult.totalCollected || 0) +
-      (puppeteerResult.totalCollected || 0) +
       (apiResult.totalCollected || 0);
     await updateStep('collection', 'completed', {
       duration: Date.now() - collectionStart,
       rss: rssResult,
       scraping: scrapingResult,
-      puppeteer: puppeteerResult,
       api: apiResult,
       totalCollected,
     });
-
     await updateStep('filtering', 'running');
     const filteringStart = Date.now();
     const filteringResult = await processRelevanceFiltering({
@@ -694,7 +569,6 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       aiConfig: runtime.ai,
     });
     await updateStep('filtering', 'completed', { duration: Date.now() - filteringStart, ...filteringResult });
-
     await updateStep('analysis', 'running');
     const analysisStart = Date.now();
     const analysisResult = await processDeepAnalysis({
@@ -703,7 +577,6 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       aiConfig: runtime.ai,
     });
     await updateStep('analysis', 'completed', { duration: Date.now() - analysisStart, ...analysisResult });
-
     await updateStep('output', 'running');
     const outputStart = Date.now();
     const outputResult = await createDailyBriefing({
@@ -717,10 +590,8 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       duration: Date.now() - outputStart,
       ...outputResult,
     });
-
     const finalStatus = outputResult.success ? 'completed' : 'failed';
     await pipelineRef.update({ status: finalStatus, completedAt: admin.firestore.FieldValue.serverTimestamp() });
-
     return {
       success: outputResult.success,
       pipelineId,
@@ -735,91 +606,5 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       error: error.message || String(error),
     });
     throw new HttpsError('internal', `Pipeline failed: ${error.message}`);
-  }
-});
-
-// ─────────────────────────────────────────
-// [NEW] MarketInsight Premium Member Access (Superadmin)
-// ─────────────────────────────────────────
-
-/** MarketInsight 유료 회원 로그인 (Superadmin) */
-export const marketinsightLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  try {
-    const result = await loginMarketInsight();
-    if (!result.success) {
-      throw new HttpsError('internal', result.message);
-    }
-    return { success: true, message: result.message };
-  } catch (err: any) {
-    console.error('marketinsightLogin error:', err);
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-/** MarketInsight MNA 섹션 스크래핑 (Superadmin) */
-export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  try {
-    const articles = await scrapeMarketInsightMNA();
-    return { success: true, articlesFound: articles.length, articles };
-  } catch (err: any) {
-    console.error('marketinsightScrape error:', err);
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-// ─────────────────────────────────────────
-// [NEW] Thebell Premium Member Access (Superadmin)
-// ─────────────────────────────────────────
-
-/** Thebell 유료 회원 로그인 (Superadmin) */
-export const thebellLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  try {
-    const result = await loginThebell();
-    if (!result.success) {
-      throw new HttpsError('internal', result.message);
-    }
-    return { success: true, message: result.message };
-  } catch (err: any) {
-    console.error('thebellLogin error:', err);
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-/** Thebell 기사 스크래핑 (Superadmin) */
-export const thebellScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  try {
-    const articles = await scrapeThebell();
-    return { success: true, articlesFound: articles.length, articles };
-  } catch (err: any) {
-    console.error('thebellScrape error:', err);
-    throw new HttpsError('internal', err.message);
   }
 });
