@@ -12,6 +12,7 @@ export interface ScrapingResult {
     date: string;
     content?: string;
   }[];
+  message?: string;
   error?: string;
 }
 
@@ -79,41 +80,65 @@ export class ThebellService {
     }
   }
 
-  async scrapeArticles(category: string = 'news'): Promise<ScrapingResult> {
+  async scrapeArticles(categories: string[] = ['news'], keywords: string[] = []): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
     const page = await this.browser!.newPage();
     try {
-      const url = `https://www.thebell.co.kr/front/${category}.asp`;
-      await page.goto(url, {
-        waitUntil: 'networkidle2',
-        timeout: 30000,
-      });
+      // 기본 카테고리가 없으면 news 사용
+      const targetCategories = categories && categories.length > 0 ? categories : ['news'];
 
-      // 기사 목록 추출
-      const articles = await page.evaluate(() => {
-        const items: any[] = [];
-        const tableRows = document.querySelectorAll('table tr, .article-item, [class*="news-list"] > div');
+      const allArticles: any[] = [];
 
-        tableRows.forEach((row) => {
-          const titleEl = row.querySelector('td > a, [class*="title"] > a, a[href*="index"]');
-          const dateEl = row.querySelector('td:last-child, .date, [class*="date"]');
-
-          if (titleEl && titleEl instanceof HTMLAnchorElement) {
-            items.push({
-              title: titleEl.textContent?.trim() || '',
-              link: titleEl.href,
-              date: dateEl?.textContent?.trim() || new Date().toISOString().split('T')[0],
-            });
-          }
+      // 각 카테고리별로 스크래핑
+      for (const category of targetCategories) {
+        const url = `https://www.thebell.co.kr/front/${category.toLowerCase()}.asp`;
+        await page.goto(url, {
+          waitUntil: 'networkidle2',
+          timeout: 30000,
         });
 
-        return items;
-      });
+        // 기사 목록 추출
+        const articles = await page.evaluate(() => {
+          const items: any[] = [];
+          const tableRows = document.querySelectorAll('table tr, .article-item, [class*="news-list"] > div');
+
+          tableRows.forEach((row) => {
+            const titleEl = row.querySelector('td > a, [class*="title"] > a, a[href*="index"]');
+            const dateEl = row.querySelector('td:last-child, .date, [class*="date"]');
+
+            if (titleEl && titleEl instanceof HTMLAnchorElement) {
+              items.push({
+                title: titleEl.textContent?.trim() || '',
+                link: titleEl.href,
+                date: dateEl?.textContent?.trim() || new Date().toISOString().split('T')[0],
+              });
+            }
+          });
+
+          return items;
+        });
+
+        allArticles.push(...articles);
+      }
+
+      // 키워드 필터링
+      let filtered = allArticles;
+      if (keywords && keywords.length > 0) {
+        filtered = allArticles.filter(article =>
+          keywords.some(kw => article.title.toLowerCase().includes(kw.toLowerCase()))
+        );
+      }
+
+      // 중복 제거
+      const uniqueArticles = Array.from(
+        new Map(filtered.map(item => [item.link, item])).values()
+      );
 
       return {
         success: true,
-        data: articles,
+        data: uniqueArticles,
+        message: `${uniqueArticles.length}개 기사 수집`,
       };
     } catch (error) {
       return {

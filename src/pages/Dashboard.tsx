@@ -35,14 +35,20 @@ export default function Dashboard() {
   }, [user]);
 
   const fetchDashboardData = async () => {
+    if (!user) return;
+    if (!isSuperadmin && !companyId) {
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const today = new Date();
       const startOfToday = startOfDay(today);
       const articlesRef = collection(db, 'articles');
 
-      // BUG-04 FIX: companyId 필터 추가 (superadmin은 전체 조회)
-      const baseConstraints = companyId && !isSuperadmin
+      // rules-fix: non-superadmin은 companyId 필터가 없으면 broad query로 간주되어 권한 거절됨
+      const baseConstraints = !isSuperadmin 
         ? [where('companyId', '==', companyId), where('collectedAt', '>=', startOfToday)]
         : [where('collectedAt', '>=', startOfToday)];
 
@@ -50,7 +56,7 @@ export default function Dashboard() {
       const collectedSnap = await getCountFromServer(todayCollectedQuery);
       const todayCollected = collectedSnap.data().count;
 
-      const passedConstraints = companyId && !isSuperadmin
+      const passedConstraints = !isSuperadmin
         ? [where('companyId', '==', companyId), where('collectedAt', '>=', startOfToday), where('status', 'in', ['analyzed', 'published'])]
         : [where('collectedAt', '>=', startOfToday), where('status', 'in', ['analyzed', 'published'])];
 

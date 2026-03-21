@@ -40,8 +40,12 @@ async function mergeUserProfile(firebaseUser: User): Promise<AppUser> {
         primaryCompanyId: companyIds[0] || managedCompanyIds[0] || profile.companyId || null,
       } as AppUser;
     }
-  } catch (err) {
-    console.warn('Could not load user profile from Firestore:', err);
+  } catch (err: any) {
+    if (err.code === 'permission-denied') {
+      console.error(`Missing or insufficient permissions reading user profile from /users/${firebaseUser.uid}. Please check Firestore Security Rules.`, err);
+    } else {
+      console.error('Unexpected error loading user profile:', err);
+    }
   }
   // Firestore 문서 없거나 오류 시 Firebase Auth 유저만 반환
   return firebaseUser as AppUser;

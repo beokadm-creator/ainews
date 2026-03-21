@@ -49,8 +49,10 @@ app.post('/api/marketinsight/login', async (req: Request, res: Response) => {
 
 app.get('/api/marketinsight/scrape', async (req: Request, res: Response) => {
   try {
-    const { category = 'mna' } = req.query;
-    const result = await marketInsightService.scrapeArticles(category as string);
+    const categories = req.query.categories ? (req.query.categories as string).split(',').filter(c => c) : ['M&A'];
+    const keywords = req.query.keywords ? (req.query.keywords as string).split(',').filter(k => k) : [];
+
+    const result = await marketInsightService.scrapeArticles(categories, keywords);
     res.json(result);
   } catch (error) {
     res.status(500).json({
@@ -79,8 +81,10 @@ app.post('/api/thebell/login', async (req: Request, res: Response) => {
 
 app.get('/api/thebell/scrape', async (req: Request, res: Response) => {
   try {
-    const { category = 'news' } = req.query;
-    const result = await thebellService.scrapeArticles(category as string);
+    const categories = req.query.categories ? (req.query.categories as string).split(',').filter(c => c) : ['news'];
+    const keywords = req.query.keywords ? (req.query.keywords as string).split(',').filter(k => k) : [];
+
+    const result = await thebellService.scrapeArticles(categories, keywords);
     res.json(result);
   } catch (error) {
     res.status(500).json({

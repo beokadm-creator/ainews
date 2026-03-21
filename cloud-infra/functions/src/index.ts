@@ -1,6 +1,7 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import * as admin from 'firebase-admin';
+import axios from 'axios';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing } from './services/briefingService';
@@ -606,5 +607,205 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
       error: error.message || String(error),
     });
     throw new HttpsError('internal', `Pipeline failed: ${error.message}`);
+  }
+});
+
+// ─────────────────────────────────────────
+// [NEW] Scraping Rules Management (로컬 PC)
+// ─────────────────────────────────────────
+/**
+ * 스크래핑 규칙 조회 (Superadmin만)
+ * Firestore의 scrapingRules 컬렉션에서 모든 규칙 조회
+ */
+export const getScrapingRules = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  try {
+    const db = admin.firestore();
+    const snap = await db.collection('scrapingRules').get();
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return { data };
+  } catch (err: any) {
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/**
+ * 스크래핑 규칙 저장 (Superadmin만)
+ * sourceId: 'thebell' | 'marketinsight'
+ * keywords: string[]
+ * categories: string[]
+ */
+export const saveScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { sourceId, keywords, categories } = request.data || {};
+  if (!sourceId || !keywords || !categories) {
+    throw new HttpsError('invalid-argument', 'sourceId, keywords, categories required');
+  }
+
+  try {
+    const db = admin.firestore();
+
+    // 같은 sourceId의 기존 규칙 찾기
+    const existingSnap = await db.collection('scrapingRules')
+      .where('sourceId', '==', sourceId)
+      .get();
+
+    const sourceName = sourceId === 'thebell' ? '더벨 (The Bell)' : '마켓인사이트 (M&A)';
+    const ruleData = {
+      sourceId,
+      sourceName,
+      keywords,
+      categories,
+      enabled: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    let ruleId: string;
+    if (existingSnap.empty) {
+      // 새로운 규칙 생성
+      const newRef = db.collection('scrapingRules').doc();
+      await newRef.set({
+        ...ruleData,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      ruleId = newRef.id;
+    } else {
+      // 기존 규칙 업데이트
+      const docId = existingSnap.docs[0].id;
+      await db.collection('scrapingRules').doc(docId).update(ruleData);
+      ruleId = docId;
+    }
+
+    return { success: true, ruleId };
+  } catch (err: any) {
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/**
+ * 스크래핑 규칙 삭제 (Superadmin만)
+ */
+export const deleteScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { ruleId } = request.data || {};
+  if (!ruleId) throw new HttpsError('invalid-argument', 'ruleId required');
+
+  try {
+    await admin.firestore().collection('scrapingRules').doc(ruleId).delete();
+    return { success: true };
+  } catch (err: any) {
+    throw new HttpsError('internal', err.message);
+  }
+});
+
+/**
+ * 스크래핑 규칙 실행 (Superadmin만)
+ * 로컬 Windows PC의 Puppeteer 서버를 호출
+ * 환경변수: LOCAL_PC_SCRAPER_URL (예: http://192.168.1.100:3001)
+ */
+export const executeScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { sourceId } = request.data || {};
+  if (!sourceId) throw new HttpsError('invalid-argument', 'sourceId required');
+
+  try {
+    const db = admin.firestore();
+
+    // 규칙 조회
+    const ruleSnap = await db.collection('scrapingRules')
+      .where('sourceId', '==', sourceId)
+      .get();
+
+    if (ruleSnap.empty) {
+      throw new Error(`No scraping rule found for sourceId: ${sourceId}`);
+    }
+
+    const rule = ruleSnap.docs[0].data();
+    const scraperUrl = process.env.LOCAL_PC_SCRAPER_URL;
+
+    if (!scraperUrl) {
+      throw new Error('LOCAL_PC_SCRAPER_URL environment variable not set');
+    }
+
+    // 로컬 PC 서버 호출
+    const endpoint = sourceId === 'thebell'
+      ? `${scraperUrl}/api/thebell/scrape`
+      : `${scraperUrl}/api/marketinsight/scrape`;
+
+    const response = await axios.get(endpoint, {
+      params: {
+        keywords: rule.keywords.join(','),
+        categories: rule.categories.join(','),
+      },
+      timeout: 60000,
+    });
+
+    if (!response.data.success) {
+      throw new Error(response.data.message || 'Scraping failed');
+    }
+
+    // 수집된 기사를 Firestore에 저장
+    const articles = response.data.data || [];
+    const batchSize = 500;
+
+    for (let i = 0; i < articles.length; i += batchSize) {
+      const batch = db.batch();
+      const chunk = articles.slice(i, i + batchSize);
+
+      for (const article of chunk) {
+        const articleRef = db.collection('articles').doc();
+        batch.set(articleRef, {
+          ...article,
+          source: sourceId === 'thebell' ? '더벨' : '마켓인사이트',
+          sourceId,
+          collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+          status: 'new',
+        });
+      }
+
+      await batch.commit();
+    }
+
+    return {
+      data: {
+        sourceId,
+        success: true,
+        articlesFound: articles.length,
+        message: `${articles.length}개 기사 수집 완료`,
+        executedAt: new Date().toISOString(),
+      },
+    };
+  } catch (err: any) {
+    return {
+      data: {
+        sourceId,
+        success: false,
+        message: err.message || 'Execution failed',
+      },
+    };
   }
 });

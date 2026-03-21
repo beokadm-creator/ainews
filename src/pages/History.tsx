@@ -21,14 +21,24 @@ export default function History() {
   const categories = ['all', 'M&A', 'PEF', 'VC', 'IPO', 'other'];
 
   const fetchHistory = async (isLoadMore = false) => {
+    // 1. User profile 로딩 대기 가드
+    if (!user) return;
+    
+    // 2. 비-슈퍼어드민인 경우 primaryCompanyId가 로드된 후에만 수행 (broad query 방지)
+    if (!isSuperadmin && !companyId) {
+      console.warn('History: No companyId found for non-superadmin user. Waiting for profile...');
+      setLoading(false);
+      return;
+    }
+
     if (!isLoadMore) setLoading(true);
 
     try {
       const articlesRef = collection(db, 'articles');
       const constraints: any[] = [where('status', '==', 'published')];
 
-      // BUG-06 FIX: companyId 필터 추가
-      if (companyId && !isSuperadmin) {
+      // 필터링: 슈퍼어드민이면 전체, 아니면 자기 회사 것만
+      if (!isSuperadmin) {
         constraints.push(where('companyId', '==', companyId));
       }
 
@@ -50,14 +60,20 @@ export default function History() {
       setArticles(prev => isLoadMore ? [...prev, ...fetchedArticles] : fetchedArticles);
       setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
       setHasMore(querySnapshot.docs.length === 20);
+    } catch (err: any) {
+      console.error('Failed to fetch history:', err);
+      // 권한 오류 시 사용자에게 알림 또는 빈 목록 처리
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchHistory();
-  }, [selectedCategory, showOnlyBookmarked]);
+    // user 정보가 있을 때만 실행
+    if (user) {
+      fetchHistory();
+    }
+  }, [selectedCategory, showOnlyBookmarked, user, companyId]);
 
   const toggleBookmark = async (articleId: string, currentStatus: boolean) => {
     const articleRef = doc(db, 'articles', articleId);

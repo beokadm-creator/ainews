@@ -13,7 +13,8 @@ import {
   Library,
   Newspaper,
   ShieldCheck,
-  TrendingUp
+  TrendingUp,
+  Database
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -64,6 +65,7 @@ export default function Layout({ children }: LayoutProps) {
   const superadminNav = [
     { name: 'Media Library', href: '/admin/media', icon: ShieldCheck },
     { name: 'Company & Users', href: '/admin/management', icon: ShieldCheck },
+    { name: 'Scraping Rules', href: '/admin/scraping', icon: Database },
   ];
 
   const handleLogout = async () => {
