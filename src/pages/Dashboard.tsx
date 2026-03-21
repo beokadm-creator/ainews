@@ -151,12 +151,34 @@ export default function Dashboard() {
       const outputsSnap = await getDocs(outputsQ);
       setRecentOutputs(outputsSnap.docs.map(d => ({ id: d.id, ...d.data() as any })));
 
-      // Recent articles
-      const artQ = companyId && !isSuperadmin
-        ? query(articlesRef, where('companyId', '==', companyId), orderBy('collectedAt', 'desc'), limit(8))
-        : query(articlesRef, orderBy('collectedAt', 'desc'), limit(8));
-      const artSnap = await getDocs(artQ);
-      setRecentArticles(artSnap.docs.map(d => ({ id: d.id, ...d.data() as any })));
+      // Recent Pipeline Runs (Replaces Recent Articles)
+      const runsQ = companyId && !isSuperadmin
+        ? query(collection(db, 'pipelineRuns'), where('companyId', '==', companyId), orderBy('startedAt', 'desc'), limit(8))
+        : query(collection(db, 'pipelineRuns'), orderBy('startedAt', 'desc'), limit(8));
+      const runsSnap = await getDocs(runsQ);
+      
+      let userMap: Record<string, string> = {};
+      if (companyId && (!isSuperadmin)) {
+        try {
+          const fn = httpsCallable(functions, 'getCompanyUsers');
+          const result = await fn({ companyId }) as any;
+          if (Array.isArray(result.data)) {
+            result.data.forEach((u: any) => userMap[u.uid] = u.email);
+          }
+        } catch (e) { console.warn('Could not load user map', e); }
+      }
+      
+      setRecentArticles(runsSnap.docs.map(d => {
+        const data = d.data() as any;
+        return {
+          id: d.id,
+          title: `분석 ${data.status === 'completed' ? '완료' : data.status === 'failed' ? '실패' : '진행중'}`,
+          sourceName: isSuperadmin ? (data.companyName || 'Unknown Company') : (userMap[data.triggeredBy] || data.triggeredBy || '시스템_자동'),
+          collectedAt: data.startedAt,
+          status: data.status,
+          configSnapshot: data.configSnapshot
+        };
+      }));
     } catch (err) {
       console.error('Dashboard load error:', err);
     } finally {
@@ -450,10 +472,10 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Recent articles */}
+            {/* Recent Pipeline Runs (Activities) */}
             <div className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
               <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">최근 수집 기사</h2>
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">최근 작업 내역 (AI 파이프라인)</h2>
                 <button
                   onClick={() => navigate('/history')}
                   className="text-xs text-[#1e3a5f] dark:text-blue-400 hover:underline"
@@ -463,20 +485,31 @@ export default function Dashboard() {
               </div>
               <div className="divide-y divide-gray-100 dark:divide-gray-700 overflow-y-auto max-h-64">
                 {recentArticles.length === 0 ? (
-                  <div className="px-5 py-8 text-center text-sm text-gray-400">수집된 기사가 없습니다.</div>
+                  <div className="px-5 py-8 text-center text-sm text-gray-400">작업 내역이 없습니다.</div>
                 ) : recentArticles.map(art => (
                   <div key={art.id} className="px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                    <p className="text-sm font-medium text-gray-900 dark:text-white line-clamp-1">{art.title || '제목 없음'}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[11px] text-gray-400">{art.sourceName || art.sourceId}</span>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white line-clamp-1">{art.title || '작업'}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="text-[11px] text-gray-500 font-medium">{isSuperadmin ? '🏢' : '👤'} {art.sourceName}</span>
                       <span className="text-[11px] text-gray-300">·</span>
+                      <span className="text-[11px] text-gray-400 border border-gray-200 dark:border-gray-600 px-1 rounded">
+                        [{art.configSnapshot?.filters?.dateRange?.mode || art.configSnapshot?.filters?.dateRange || 'today'}]
+                      </span>
+                      {art.configSnapshot?.filters?.includeKeywords?.length > 0 && (
+                        <span className="text-[11px] text-gray-400 line-clamp-1 ml-1">
+                          키워드: {art.configSnapshot.filters.includeKeywords.join(', ')}
+                        </span>
+                      )}
+                      
+                      <div className="flex-1" />
                       <span className="text-[11px] text-gray-400">
                         {art.collectedAt?.toDate ? format(art.collectedAt.toDate(), 'MM/dd HH:mm') : ''}
                       </span>
                       {art.status && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                          art.status === 'analyzed' ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400' :
-                          art.status === 'pending' ? 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ml-2 ${
+                          art.status === 'completed' ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400' :
+                          art.status === 'running' ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' :
+                          art.status === 'failed' ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' :
                           'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
                         }`}>
                           {art.status}
