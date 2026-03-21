@@ -60,8 +60,8 @@ const TYPE_META: Record<SourceType, { label: string; icon: any; color: string; b
 
 const PRICING_META: Record<PricingTier, { label: string; color: string }> = {
   free: { label: '무료', color: 'text-green-600 dark:text-green-400' },
-  paid: { label: '유료', color: 'text-red-500 dark:text-red-400' },
-  requires_subscription: { label: '구독 필요', color: 'text-yellow-600 dark:text-yellow-400' },
+  paid: { label: '유료', color: 'text-white bg-red-500 rounded px-1 font-bold' },
+  requires_subscription: { label: '구독 필요', color: 'text-white bg-amber-500 rounded px-1 font-bold' },
 };
 
 const BLANK_SOURCE: Partial<GlobalSource> = {
@@ -500,7 +500,7 @@ export default function MediaAdmin() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold text-gray-900 dark:text-white">{source.name}</span>
                       <StarRating score={source.relevanceScore} />
-                      <span className={`text-xs font-medium ${pricingMeta.color}`}>
+                      <span className={`text-[10px] font-bold uppercase py-0.5 px-1.5 rounded-full shadow-sm ${pricingMeta.color}`}>
                         {pricingMeta.label}
                       </span>
                       <span className="text-xs text-gray-400 uppercase">{source.language}</span>

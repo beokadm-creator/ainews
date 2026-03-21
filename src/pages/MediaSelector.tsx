@@ -145,13 +145,14 @@ export default function MediaSelector() {
 
   // Group by category
   const groups: Record<string, GlobalSource[]> = {};
-  const categoryOrder = ['domestic', 'asian', 'global', 'tech', 'startup'];
+  const categoryOrder = ['tech', 'startup', 'domestic', 'asian', 'global', 'other'];
   const categoryLabel: Record<string, string> = {
+    tech: '💻 테크 매체',
+    startup: '🚀 스타트업/PE·VC',
     domestic: '🇰🇷 국내 매체',
     asian: '🌏 아시아 매체',
     global: '🌐 글로벌 매체',
-    tech: '💻 테크 매체',
-    startup: '🚀 스타트업/PE·VC',
+    other: '📁 기타',
   };
 
   filtered.forEach(s => {
@@ -313,10 +314,10 @@ export default function MediaSelector() {
                             <span className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-1.5 py-0.5 rounded-full">무료</span>
                           )}
                           {source.pricingTier === 'paid' && (
-                            <span className="text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-1.5 py-0.5 rounded-full">유료</span>
+                            <span className="text-xs text-white bg-red-500 dark:bg-red-600 px-1.5 py-0.5 rounded-full font-bold shadow-sm">유료</span>
                           )}
                           {source.pricingTier === 'requires_subscription' && (
-                            <span className="text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-1.5 py-0.5 rounded-full">구독 필요</span>
+                            <span className="text-xs text-white bg-amber-500 dark:bg-amber-600 px-1.5 py-0.5 rounded-full font-bold shadow-sm">구독 필요</span>
                           )}
                           {source.loginRequired && (
                             <span className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-full">로그인 필요</span>

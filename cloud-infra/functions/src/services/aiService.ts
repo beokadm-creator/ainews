@@ -481,6 +481,9 @@ export async function processRelevanceFiltering(options?: {
   if (options?.companyId) queryRef = queryRef.where('companyId', '==', options.companyId);
   if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
 
+  // We need the filters to do keyword matching
+  const filters = options?.filters;
+
   const pendingArticlesSnapshot = await queryRef.limit(getDynamicBatchSize(baseBatchSize)).get();
   if (pendingArticlesSnapshot.empty) return { success: true, processed: 0, passed: 0 };
 
@@ -493,12 +496,24 @@ export async function processRelevanceFiltering(options?: {
     try {
       // ── 사전 필터링 (mustIncludeKeywords AND 조건) ──
       let fastRejectReason: string | null = null;
-      const mustKeywords = options?.filters?.mustIncludeKeywords || [];
+      const mustKeywords = filters?.mustIncludeKeywords || [];
       if (mustKeywords.length > 0) {
         const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
         for (const kw of mustKeywords) {
-          if (!textToSearch.includes(kw.toLowerCase())) {
-            fastRejectReason = `Mising required keyword: ${kw}`;
+          if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
+            fastRejectReason = `Missing required keyword: ${kw}`;
+            break;
+          }
+        }
+      }
+
+      // ── 사전 필터링 (excludeKeywords 조건) ──
+      const excludeKeywords = filters?.excludeKeywords || [];
+      if (!fastRejectReason && excludeKeywords.length > 0) {
+        const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+        for (const kw of excludeKeywords) {
+          if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
+            fastRejectReason = `Contains excluded keyword: ${kw}`;
             break;
           }
         }
@@ -512,7 +527,7 @@ export async function processRelevanceFiltering(options?: {
           { title: article.title, content: article.content, source: article.source },
           options!.aiConfig,
           { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
-          options?.filters
+          filters
         );
       }
       

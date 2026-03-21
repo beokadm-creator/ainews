@@ -678,6 +678,7 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 5
       companyId: runtime.companyId,
       pipelineRunId: pipelineId,
       aiConfig: runtime.ai,
+      filters: runtime.filters,
     });
     await updateStep('filtering', 'completed', { duration: Date.now() - filteringStart, ...filteringResult });
     await updateStep('analysis', 'running');
