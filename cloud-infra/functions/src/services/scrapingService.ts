@@ -31,6 +31,7 @@ interface DynamicSourceConfig {
 }
 
 const scraperMap: Record<string, (html: string, baseUrl: string) => ScrapedArticle[]> = {
+  // ─── 한경 마이뉴스 (hankyung_ma) ──────────────────────────
   hankyung_ma: (html: string, baseUrl: string) => {
     const $ = cheerio.load(html);
     const articles: ScrapedArticle[] = [];
@@ -58,6 +59,8 @@ const scraperMap: Record<string, (html: string, baseUrl: string) => ScrapedArtic
 
     return articles;
   },
+
+  // ─── Default ──────────────────────────────────────────────
   default: (html: string, baseUrl: string) => {
     const $ = cheerio.load(html);
     const articles: ScrapedArticle[] = [];
@@ -247,10 +250,11 @@ export async function processScrapingSources(options?: {
 
     try {
       let articles: any[] = [];
+      // 더벨/마켓인사이트는 로컬 PC 스크래퍼에서 처리되므로 Firestore에서만 조회
       if (sourceId === 'thebell' || sourceId === 'marketinsight') {
         const snap = await db.collection('articles')
           .where('sourceId', '==', sourceId)
-          .where('status', '==', 'new')
+          .where('status', '==', 'pending')
           .limit(100)
           .get();
         articles = snap.docs.map(d => d.data());

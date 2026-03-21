@@ -124,43 +124,41 @@ export async function collectAllArticles(
   return result;
 }
 
-// ─── 마켓인사이트 수집 ────────────────────────────────────────────
+// ─── 마켓인사이트 수집 (모든 페이지) ────────────────────────────────────
 async function collectMarketInsight(
   service: MarketInsightService,
   companies: string[],
   stats: SourceResult,
 ): Promise<void> {
   try {
-    console.log('[Collection] MarketInsight: fetching article list...');
-    const listResult = await service.scrapeArticles('mna', 1);
+    console.log('[Collection] MarketInsight: fetching all pages...');
+    // scrapeArticlesAllPages 메서드로 모든 페이지 수집
+    const listResult = await (service as any).scrapeArticlesAllPages('mna', 100);
     if (!listResult.success || !listResult.data) {
       stats.errors.push(listResult.error || 'No data returned');
       return;
     }
 
     stats.found = listResult.data.length;
+    console.log(`[Collection] MarketInsight: ${stats.found} total articles found`);
 
-    // 관련도 점수 계산 후 정렬 → 상위 MAX_DETAIL_FETCH개만 detail 수집
+    // 모든 기사를 관련도 점수 기반으로 정렬 (유료 매체이므로 모두 스캔)
     const scored = listResult.data
       .map(a => ({
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
         category: (a as any).category || 'mna',
       }))
-      .filter(a => a.score > 0) // 0점(완전 무관)은 제외
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_DETAIL_FETCH);
+      .sort((a, b) => b.score - a.score);
 
     stats.relevant = scored.length;
-    console.log(`[Collection] MarketInsight: ${stats.found} found → ${stats.relevant} relevant (top ${MAX_DETAIL_FETCH})`);
+    console.log(`[Collection] MarketInsight: processing all ${stats.relevant} articles for detail fetch`);
 
+    // 모든 기사에 대해 detail 수집 (유료 매체 우선 처리)
     for (let i = 0; i < scored.length; i++) {
       const article = scored[i];
 
-      // 기사 간 자연스러운 대기 (처음 제외)
-      if (i > 0) {
-        await humanDelay(3000, 9000);
-      }
+      if (i > 0) await humanDelay(2000, 5000);
 
       try {
         console.log(`[Collection] MI detail [${i + 1}/${scored.length}]: ${article.title.slice(0, 40)}...`);
@@ -174,6 +172,7 @@ async function collectMarketInsight(
           publishedAt: new Date(),
           source: 'MarketInsight',
           sourceId: 'marketinsight',
+          isPaid: true, // 마켓인사이트는 모두 유료로 표시
           category: article.category,
           subtitle: detail?.subtitle || '',
           date: detail?.date || '',
@@ -195,38 +194,40 @@ async function collectMarketInsight(
   }
 }
 
-// ─── 더벨 수집 ───────────────────────────────────────────────────
+// ─── 더벨 수집 (마이페이지 키워드 뉴스 모든 페이지) ───────────────────
 async function collectTheBell(
   service: ThebellService,
   companies: string[],
   stats: SourceResult,
 ): Promise<void> {
   try {
-    console.log('[Collection] TheBell: fetching deal article list...');
-    // TheBell은 자체 키워드 필터 내장 (filterKeywords=true)
-    const listResult = await service.scrapeArticles('deal', true);
+    console.log('[Collection] TheBell: fetching keyword news (all pages)...');
+    // 마이페이지 키워드 뉴스에서 모든 기사 수집
+    const listResult = await (service as any).scrapeKeywordNews(50);
     if (!listResult.success || !listResult.data) {
       stats.errors.push(listResult.error || 'No data returned');
       return;
     }
 
     stats.found = listResult.data.length;
+    console.log(`[Collection] TheBell: ${stats.found} articles found in MyKeywordNews`);
 
-    // 관련도 점수로 재정렬 → 상위 MAX_DETAIL_FETCH개만
+    // 모든 기사를 관련도 점수 기반으로 정렬 (유료 매체)
     const scored = listResult.data
-      .map(a => ({ ...a, score: scoreRelevance(a.title, (a as any).summary || '') }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_DETAIL_FETCH);
+      .map(a => ({
+        ...a,
+        score: scoreRelevance(a.title, (a as any).summary || ''),
+      }))
+      .sort((a, b) => b.score - a.score);
 
     stats.relevant = scored.length;
-    console.log(`[Collection] TheBell: ${stats.found} keyword-filtered → top ${stats.relevant} by relevance score`);
+    console.log(`[Collection] TheBell: processing all ${stats.relevant} articles for detail fetch`);
 
+    // 모든 기사에 대해 detail 수집
     for (let i = 0; i < scored.length; i++) {
       const article = scored[i];
 
-      if (i > 0) {
-        await humanDelay(4000, 10000);
-      }
+      if (i > 0) await humanDelay(3000, 7000);
 
       try {
         console.log(
@@ -243,8 +244,8 @@ async function collectTheBell(
           publishedAt: new Date(),
           source: 'TheBell',
           sourceId: 'thebell',
-          category: article.category || 'deal',
-          isPaid: article.isPaid,
+          category: article.category || 'keyword',
+          isPaid: article.isPaid || true,
           subtitle: detail?.subtitle || '',
           author: detail?.author || '',
           date: detail?.date || '',

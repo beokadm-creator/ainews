@@ -163,6 +163,110 @@ export class ThebellService {
     }
   }
 
+  // ─── 마이페이지 키워드 뉴스 (모든 페이지) ───────────────────────────
+  async scrapeKeywordNews(maxPages: number = 50): Promise<ScrapingResult> {
+    if (!this.browser) await this.init();
+
+    const allArticles: any[] = [];
+    const seen = new Set<string>();
+
+    try {
+      const savedCookies = this.loadCookies();
+      let loginSuccess = false;
+
+      // 기존 쿠키로 시도
+      if (savedCookies.length > 0) {
+        const page = await this.browser!.newPage();
+        try {
+          await page.setCookie(...savedCookies);
+          await page.goto('https://www.thebell.co.kr/Member/MyKeywordNews.asp?mbrmenu=02', {
+            waitUntil: 'domcontentloaded',
+            timeout: 45000,
+          });
+          const currentUrl = page.url();
+          loginSuccess = !currentUrl.includes('Login.asp');
+        } finally {
+          await page.close();
+        }
+      }
+
+      if (!loginSuccess) {
+        return { success: false, error: 'Not logged in - please login to MyKeywordNews first' };
+      }
+
+      // 모든 페이지 순회
+      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+        const page = await this.browser!.newPage();
+        try {
+          if (savedCookies.length > 0) {
+            await page.setCookie(...savedCookies);
+          }
+
+          const url = `https://www.thebell.co.kr/Member/MyKeywordNews.asp?mbrmenu=02&page=${pageNum}`;
+          console.log(`[Thebell] Scraping keyword news page ${pageNum}: ${url}`);
+
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000)); // 자연스러운 로딩
+
+          const pageArticles = await page.evaluate(() => {
+            const items: any[] = [];
+
+            // .newsList.tp1 > ul > li 구조
+            document.querySelectorAll('.newsList.tp1 ul li').forEach((li: Element) => {
+              const titleEl = li.querySelector('dl dt a') as HTMLAnchorElement;
+              const summaryEl = li.querySelector('dl dd a');
+              const dateEl = li.querySelector('.userBox .date');
+
+              if (titleEl && titleEl.href) {
+                items.push({
+                  title: titleEl.textContent?.trim() || '',
+                  link: titleEl.href,
+                  date: dateEl?.textContent?.trim() || new Date().toISOString().split('T')[0],
+                  isPaid: true, // 키워드 뉴스는 대부분 유료
+                  summary: summaryEl?.textContent?.trim() || '',
+                  category: 'keyword',
+                });
+              }
+            });
+
+            return items;
+          });
+
+          if (pageArticles.length === 0) {
+            console.log(`[Thebell] No articles on page ${pageNum} — stopping`);
+            break;
+          }
+
+          // 중복 제거
+          pageArticles.forEach((a: any) => {
+            if (!seen.has(a.link)) {
+              seen.add(a.link);
+              allArticles.push(a);
+            }
+          });
+
+          console.log(`[Thebell] Page ${pageNum}: ${pageArticles.length} articles (${allArticles.length} total)`);
+          await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000)); // 페이지 간 대기
+        } catch (error: any) {
+          console.warn(`[Thebell] Page ${pageNum} failed:`, error.message);
+          if (pageNum === 1) throw error; // 첫 페이지 실패는 치명적
+          break;
+        } finally {
+          await page.close();
+        }
+      }
+
+      console.log(`[Thebell] Total keyword news articles: ${allArticles.length}`);
+      return { success: true, data: allArticles };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  // ─── 메인 페이지 기사 (구 로직, 호환성 유지) ─────────────────────────
   async scrapeArticles(category: string = 'deal', filterKeywords: boolean = true): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
@@ -175,7 +279,7 @@ export class ThebellService {
 
       // deal 페이지 (Code=01)
       const url = `https://www.thebell.co.kr/front/NewsMain.asp?Code=01`;
-      console.log(`[Thebell] Scraping: ${url}`);
+      console.log(`[Thebell] Scraping main: ${url}`);
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
         timeout: 45000,

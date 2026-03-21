@@ -147,6 +147,78 @@ export class MarketInsightService {
     }
   }
 
+  // ─── 모든 페이지 수집 ────────────────────────────────────────────────
+  async scrapeArticlesAllPages(section: string = 'mna', maxPages: number = 100): Promise<ScrapingResult> {
+    if (!this.browser) await this.init();
+
+    const allArticles: any[] = [];
+    const seen = new Set<string>();
+
+    try {
+      const savedCookies = this.loadCookies();
+
+      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+        const page = await this.browser!.newPage();
+        try {
+          if (savedCookies.length > 0) await page.setCookie(...savedCookies);
+
+          const url = `https://marketinsight.hankyung.com/${section}?page=${pageNum}`;
+          console.log(`[MarketInsight] Scraping page ${pageNum}: ${url}`);
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000)); // 자연스러운 로딩
+
+          const pageArticles = await page.evaluate(() => {
+            const items: any[] = [];
+            document.querySelectorAll('.news-list li').forEach((li: Element) => {
+              const titleEl = li.querySelector('.news-tit a') as HTMLAnchorElement;
+              const categoryEl = li.querySelector('.news-category a');
+              const leadEl = li.querySelector('.lead');
+
+              if (titleEl && titleEl.href) {
+                items.push({
+                  title: titleEl.textContent?.trim() || '',
+                  link: titleEl.href,
+                  date: new Date().toISOString().split('T')[0],
+                  category: categoryEl?.textContent?.trim() || '',
+                  summary: leadEl?.textContent?.trim().slice(0, 200) || '',
+                });
+              }
+            });
+            return items;
+          });
+
+          if (pageArticles.length === 0) {
+            console.log(`[MarketInsight] No articles on page ${pageNum} — stopping`);
+            break;
+          }
+
+          // 중복 제거
+          pageArticles.forEach((a: any) => {
+            if (!seen.has(a.link)) {
+              seen.add(a.link);
+              allArticles.push(a);
+            }
+          });
+
+          console.log(`[MarketInsight] Page ${pageNum}: ${pageArticles.length} articles (${allArticles.length} total)`);
+          await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500)); // 페이지 간 대기
+        } catch (error: any) {
+          console.warn(`[MarketInsight] Page ${pageNum} failed:`, error.message);
+          if (pageNum === 1) throw error; // 첫 페이지 실패는 치명적
+          break;
+        } finally {
+          await page.close();
+        }
+      }
+
+      console.log(`[MarketInsight] Total articles: ${allArticles.length}`);
+      return { success: true, data: allArticles };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  // ─── 단일 페이지 수집 (호환성 유지) ──────────────────────────────────
   async scrapeArticles(section: string = 'mna', pageNum: number = 1): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
@@ -156,7 +228,7 @@ export class MarketInsightService {
       if (savedCookies.length > 0) await page.setCookie(...savedCookies);
 
       const url = `https://marketinsight.hankyung.com/${section}?page=${pageNum}`;
-      console.log(`[MarketInsight] Scraping: ${url}`);
+      console.log(`[MarketInsight] Scraping single page: ${url}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
       const articles = await page.evaluate(() => {

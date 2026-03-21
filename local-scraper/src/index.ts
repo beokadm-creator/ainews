@@ -101,6 +101,16 @@ app.get('/api/marketinsight/scrape', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/marketinsight/scrape-all', async (req: Request, res: Response) => {
+  try {
+    const { section = 'mna', maxPages = '100' } = req.query;
+    const result = await (marketInsightService as any).scrapeArticlesAllPages(section as string, parseInt(maxPages as string));
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
 app.get('/api/marketinsight/article', async (req: Request, res: Response) => {
   try {
     const { url } = req.query;
@@ -147,6 +157,18 @@ app.get('/api/thebell/scrape', async (req: Request, res: Response) => {
   try {
     const { category = 'news' } = req.query;
     const result = await thebellService.scrapeArticles(category as string);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+app.get('/api/thebell/keyword-news', async (req: Request, res: Response) => {
+  try {
+    const { maxPages = '50' } = req.query;
+    const result = await (thebellService as any).scrapeKeywordNews(parseInt(maxPages as string));
     res.json(result);
   } catch (error) {
     res.status(500).json({
