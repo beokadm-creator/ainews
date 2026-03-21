@@ -1,6 +1,7 @@
 import { MarketInsightService } from './marketInsightService';
 import { ThebellService } from './thebellService';
-import { getAuthorizedCompanyIds, saveArticleForCompany, isFirestoreReady, getCollectedUrlHashes, hashUrl } from './firestoreService';
+import { saveArticleGlobal, isFirestoreReady, getCollectedUrlHashes, hashUrl, reportScraperStatus } from './firestoreService';
+import { sendScraperErrorAlert } from './emailAlertService';
 
 // ─── 관련도 키워드 ───────────────────────────────────────────────
 // 점수가 높을수록 핵심 딜 기사 (가중치별 분류)
@@ -91,27 +92,13 @@ export async function collectAllArticles(
     firestoreEnabled: isFirestoreReady(),
   };
 
-  const [miCompanies, tbCompanies] = await Promise.all([
-    getAuthorizedCompanyIds('marketinsight'),
-    getAuthorizedCompanyIds('thebell'),
-  ]);
-
-  console.log(`[Collection] Authorized — MI: ${miCompanies.length} companies | TB: ${tbCompanies.length} companies`);
-
-  // ─── MarketInsight ───────────────────────────────────────────
-  if (miCompanies.length > 0) {
-    await collectMarketInsight(marketInsightService, miCompanies, result.marketinsight);
-  }
+  // 슈퍼어드민이 전체 수집 — 회사 구분 없음
+  await collectMarketInsight(marketInsightService, result.marketinsight);
 
   // 소스 간 자연스러운 간격 (5~15초)
-  if (miCompanies.length > 0 && tbCompanies.length > 0) {
-    await humanDelay(5000, 15000);
-  }
+  await humanDelay(5000, 15000);
 
-  // ─── TheBell ─────────────────────────────────────────────────
-  if (tbCompanies.length > 0) {
-    await collectTheBell(thebellService, tbCompanies, result.thebell);
-  }
+  await collectTheBell(thebellService, result.thebell);
 
   result.totalCollected = result.marketinsight.collected + result.thebell.collected;
   console.log(
@@ -127,21 +114,24 @@ export async function collectAllArticles(
 // ─── 마켓인사이트 수집 (모든 페이지) ────────────────────────────────────
 async function collectMarketInsight(
   service: MarketInsightService,
-  companies: string[],
   stats: SourceResult,
 ): Promise<void> {
+  const startedAt = new Date();
   try {
+    await reportScraperStatus({ source: 'marketinsight', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
+
     console.log('[Collection] MarketInsight: fetching all pages...');
     const listResult = await (service as any).scrapeArticlesAllPages('mna', 100);
     if (!listResult.success || !listResult.data) {
-      stats.errors.push(listResult.error || 'No data returned');
+      const errMsg = listResult.error || 'No data returned';
+      stats.errors.push(errMsg);
+      await reportScraperStatus({ source: 'marketinsight', status: 'error', found: 0, collected: 0, skipped: 0, errorMessage: errMsg, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
       return;
     }
 
     stats.found = listResult.data.length;
     console.log(`[Collection] MarketInsight: ${stats.found} total articles found`);
 
-    // 이미 수집한 URL 해시 사전 로드 (detail fetch 전 필터링)
     const existingHashes = await getCollectedUrlHashes('marketinsight');
     console.log(`[Collection] MarketInsight: ${existingHashes.size} already collected URLs loaded`);
 
@@ -151,19 +141,20 @@ async function collectMarketInsight(
         score: scoreRelevance(a.title, (a as any).summary || ''),
         category: (a as any).category || 'mna',
       }))
-      .filter((a: any) => !existingHashes.has(hashUrl(a.link))) // 이미 수집한 URL 제외
+      .filter((a: any) => !existingHashes.has(hashUrl(a.link)))
       .sort((a: any, b: any) => b.score - a.score);
 
     stats.relevant = scored.length;
     const skippedCount = stats.found - scored.length;
     console.log(`[Collection] MarketInsight: ${scored.length} new articles (${skippedCount} already collected, skipped)`);
 
-    if (scored.length === 0) return;
+    if (scored.length === 0) {
+      await reportScraperStatus({ source: 'marketinsight', status: 'success', found: stats.found, collected: 0, skipped: skippedCount, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
+      return;
+    }
 
-    // 신규 기사에 대해서만 detail 수집
     for (let i = 0; i < scored.length; i++) {
       const article = scored[i];
-
       if (i > 0) await humanDelay(2000, 5000);
 
       try {
@@ -171,53 +162,56 @@ async function collectMarketInsight(
         const detail = await service.scrapeArticleDetail(article.link);
         stats.detailFetched++;
 
-        const articleData = {
+        const saved = await saveArticleGlobal({
           title: detail?.title || article.title,
           url: article.link,
           content: detail?.content || (article as any).summary || '',
           publishedAt: new Date(),
           source: 'MarketInsight',
           sourceId: 'marketinsight',
-          isPaid: true, // 마켓인사이트는 모두 유료로 표시
+          isPaid: true,
           category: article.category,
           subtitle: detail?.subtitle || '',
           date: detail?.date || '',
-        };
-
-        for (const companyId of companies) {
-          const saved = await saveArticleForCompany(articleData, companyId);
-          if (saved) stats.collected++;
-          else stats.skipped++;
-        }
+        });
+        if (saved) stats.collected++;
+        else stats.skipped++;
       } catch (e: any) {
         console.warn(`[Collection] MI detail failed: ${e.message}`);
         stats.errors.push(`detail: ${e.message}`);
       }
     }
+
+    await reportScraperStatus({ source: 'marketinsight', status: 'success', found: stats.found, collected: stats.collected, skipped: stats.skipped, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
   } catch (e: any) {
     console.error('[Collection] MarketInsight list error:', e.message);
     stats.errors.push(e.message);
+    await reportScraperStatus({ source: 'marketinsight', status: 'error', found: stats.found, collected: stats.collected, skipped: stats.skipped, errorMessage: e.message, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
+    await sendScraperErrorAlert('MarketInsight', e.message, { found: stats.found, collected: stats.collected });
   }
 }
 
 // ─── 더벨 수집 (마이페이지 키워드 뉴스 모든 페이지) ───────────────────
 async function collectTheBell(
   service: ThebellService,
-  companies: string[],
   stats: SourceResult,
 ): Promise<void> {
+  const startedAt = new Date();
   try {
+    await reportScraperStatus({ source: 'thebell', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
+
     console.log('[Collection] TheBell: fetching keyword news (all pages)...');
     const listResult = await (service as any).scrapeKeywordNews(50);
     if (!listResult.success || !listResult.data) {
-      stats.errors.push(listResult.error || 'No data returned');
+      const errMsg = listResult.error || 'No data returned';
+      stats.errors.push(errMsg);
+      await reportScraperStatus({ source: 'thebell', status: 'error', found: 0, collected: 0, skipped: 0, errorMessage: errMsg, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
       return;
     }
 
     stats.found = listResult.data.length;
     console.log(`[Collection] TheBell: ${stats.found} articles found in MyKeywordNews`);
 
-    // 이미 수집한 URL 해시 사전 로드
     const existingHashes = await getCollectedUrlHashes('thebell');
     console.log(`[Collection] TheBell: ${existingHashes.size} already collected URLs loaded`);
 
@@ -226,19 +220,20 @@ async function collectTheBell(
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
       }))
-      .filter((a: any) => !existingHashes.has(hashUrl(a.link))) // 이미 수집한 URL 제외
+      .filter((a: any) => !existingHashes.has(hashUrl(a.link)))
       .sort((a: any, b: any) => b.score - a.score);
 
     stats.relevant = scored.length;
     const skippedCount = stats.found - scored.length;
     console.log(`[Collection] TheBell: ${scored.length} new articles (${skippedCount} already collected, skipped)`);
 
-    if (scored.length === 0) return;
+    if (scored.length === 0) {
+      await reportScraperStatus({ source: 'thebell', status: 'success', found: stats.found, collected: 0, skipped: skippedCount, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
+      return;
+    }
 
-    // 모든 기사에 대해 detail 수집
     for (let i = 0; i < scored.length; i++) {
       const article = scored[i];
-
       if (i > 0) await humanDelay(3000, 7000);
 
       try {
@@ -249,7 +244,7 @@ async function collectTheBell(
         const detail = await service.scrapeArticleDetail(article.link);
         stats.detailFetched++;
 
-        const articleData = {
+        const saved = await saveArticleGlobal({
           title: detail?.title || article.title,
           url: article.link,
           content: detail?.content || (article as any).summary || '',
@@ -257,24 +252,24 @@ async function collectTheBell(
           source: 'TheBell',
           sourceId: 'thebell',
           category: article.category || 'keyword',
-          isPaid: article.isPaid || true,
+          isPaid: true,
           subtitle: detail?.subtitle || '',
           author: detail?.author || '',
           date: detail?.date || '',
-        };
-
-        for (const companyId of companies) {
-          const saved = await saveArticleForCompany(articleData, companyId);
-          if (saved) stats.collected++;
-          else stats.skipped++;
-        }
+        });
+        if (saved) stats.collected++;
+        else stats.skipped++;
       } catch (e: any) {
         console.warn(`[Collection] TB detail failed: ${e.message}`);
         stats.errors.push(`detail: ${e.message}`);
       }
     }
+
+    await reportScraperStatus({ source: 'thebell', status: 'success', found: stats.found, collected: stats.collected, skipped: stats.skipped, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
   } catch (e: any) {
     console.error('[Collection] TheBell list error:', e.message);
     stats.errors.push(e.message);
+    await reportScraperStatus({ source: 'thebell', status: 'error', found: stats.found, collected: stats.collected, skipped: stats.skipped, errorMessage: e.message, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
+    await sendScraperErrorAlert('TheBell', e.message, { found: stats.found, collected: stats.collected });
   }
 }

@@ -10,6 +10,7 @@ import {
   collection, query, where, orderBy, limit,
   getDocs, onSnapshot, doc, getCountFromServer, getDoc
 } from 'firebase/firestore';
+import { Monitor, Wifi, WifiOff } from 'lucide-react';
 import { format, subDays, startOfDay } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -71,6 +72,17 @@ interface CompanyStat {
   today: number;
 }
 
+interface PcScraperStatus {
+  source: string;
+  status: 'success' | 'error' | 'running' | 'idle';
+  found: number;
+  collected: number;
+  skipped: number;
+  errorMessage?: string;
+  updatedAt?: any;
+  durationMs?: number;
+}
+
 export default function AdminDashboard() {
   const [activeType, setActiveType] = useState<string>('all');
   const [sources, setSources] = useState<any[]>([]);
@@ -84,6 +96,7 @@ export default function AdminDashboard() {
     errorSources: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [pcScrapers, setPcScrapers] = useState<PcScraperStatus[]>([]);
 
   // 파이프라인 실행
   const [recentRuns, setRecentRuns] = useState<any[]>([]);
@@ -106,6 +119,7 @@ export default function AdminDashboard() {
         loadTrendData(),
         loadRecentRuns(),
         loadCompanies(),
+        loadPcScraperStatus(),
       ]);
     } finally {
       setLoading(false);
@@ -200,6 +214,20 @@ export default function AdminDashboard() {
       trend.push({ name: format(d, 'MM/dd'), articles: dSnap.data().count });
     }
     setTrendData(trend);
+  };
+
+  const loadPcScraperStatus = async () => {
+    const sources = ['thebell', 'marketinsight'];
+    const results = await Promise.all(sources.map(async src => {
+      try {
+        const d = await getDoc(doc(db, 'scraperStatus', src));
+        if (d.exists()) return { source: src, ...d.data() } as PcScraperStatus;
+        return { source: src, status: 'idle' as const, found: 0, collected: 0, skipped: 0 };
+      } catch {
+        return { source: src, status: 'idle' as const, found: 0, collected: 0, skipped: 0 };
+      }
+    }));
+    setPcScrapers(results);
   };
 
   const loadRecentRuns = async () => {
@@ -401,6 +429,76 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
+
+          {/* 로컬 PC 스크래퍼 상태 */}
+          <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-white/5 flex items-center gap-2">
+              <Monitor className="w-4 h-4 text-white/30" />
+              <h2 className="text-sm font-semibold text-white/70">로컬 PC 스크래퍼 상태</h2>
+              <span className="ml-auto text-[10px] text-white/25">더벨 · 마켓인사이트</span>
+            </div>
+            <div className="divide-y divide-white/5">
+              {pcScrapers.length === 0 ? (
+                <div className="py-8 text-center text-white/25 text-sm">
+                  스크래퍼 상태 없음 — 아직 수집이 실행된 적 없거나 PC가 오프라인입니다.
+                </div>
+              ) : pcScrapers.map(sc => {
+                const isOk = sc.status === 'success';
+                const isErr = sc.status === 'error';
+                const isRunning = sc.status === 'running';
+                const label = sc.source === 'thebell' ? '더벨' : '마켓인사이트';
+                const updatedStr = sc.updatedAt?.toDate
+                  ? format(sc.updatedAt.toDate(), 'MM/dd HH:mm')
+                  : sc.updatedAt?._seconds
+                  ? format(new Date(sc.updatedAt._seconds * 1000), 'MM/dd HH:mm')
+                  : '—';
+                const durStr = sc.durationMs != null
+                  ? sc.durationMs < 60000
+                    ? `${Math.round(sc.durationMs / 1000)}s`
+                    : `${Math.floor(sc.durationMs / 60000)}m ${Math.round((sc.durationMs % 60000) / 1000)}s`
+                  : null;
+                return (
+                  <div key={sc.source} className="px-5 py-4 flex items-start gap-4">
+                    <div className={`w-8 h-8 rounded-lg border flex items-center justify-center flex-shrink-0 ${
+                      isErr ? 'bg-red-500/10 border-red-500/20' :
+                      isRunning ? 'bg-blue-500/10 border-blue-500/20' :
+                      isOk ? 'bg-green-500/10 border-green-500/20' :
+                      'bg-white/5 border-white/10'
+                    }`}>
+                      {isErr ? <WifiOff className="w-4 h-4 text-red-400" />
+                        : isOk ? <Wifi className="w-4 h-4 text-green-400" />
+                        : <Monitor className="w-4 h-4 text-white/30" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-sm font-medium text-white/80">{label}</p>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${
+                          isErr ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+                          isRunning ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' :
+                          isOk ? 'bg-green-500/10 border-green-500/20 text-green-400' :
+                          'bg-white/5 border-white/10 text-white/30'
+                        }`}>
+                          {sc.status === 'success' ? '정상' : sc.status === 'error' ? '오류' : sc.status === 'running' ? '실행중' : '대기'}
+                        </span>
+                        {updatedStr !== '—' && <span className="text-[10px] text-white/25">마지막 업데이트: {updatedStr}</span>}
+                      </div>
+                      <div className="flex items-center gap-4 text-xs text-white/40">
+                        <span>발견 <span className="text-white/60 font-medium">{sc.found}</span>건</span>
+                        <span>저장 <span className="text-green-400 font-medium">{sc.collected}</span>건</span>
+                        <span>스킵 <span className="text-white/40">{sc.skipped}</span>건</span>
+                        {durStr && <span>소요 {durStr}</span>}
+                      </div>
+                      {isErr && sc.errorMessage && (
+                        <p className="mt-1.5 text-xs text-red-400/80 font-mono bg-red-500/5 border border-red-500/10 rounded px-2 py-1 truncate">
+                          {sc.errorMessage}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
           {/* 수집 방식 탭 + 매체 목록 */}
           <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">

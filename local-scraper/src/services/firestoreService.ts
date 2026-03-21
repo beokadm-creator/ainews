@@ -61,18 +61,6 @@ export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Pro
   return hashes;
 }
 
-/**
- * paidSourceAccess/{sourceId} 컬렉션에서 해당 소스에 접근 허용된 회사 ID 목록을 반환.
- * 컬렉션/문서가 없으면 빈 배열 반환.
- */
-export async function getAuthorizedCompanyIds(sourceId: string): Promise<string[]> {
-  if (!initialized) return [];
-  const db = admin.firestore();
-  const doc = await db.collection('paidSourceAccess').doc(sourceId).get();
-  if (!doc.exists) return [];
-  return (doc.data()?.authorizedCompanyIds as string[]) || [];
-}
-
 export interface ArticleData {
   title: string;
   url: string;
@@ -88,13 +76,11 @@ export interface ArticleData {
 }
 
 /**
- * 특정 회사에 기사를 저장. urlHash + companyId 조합으로 중복 체크.
+ * 기사를 전역으로 저장 (companyId 없음 — 슈퍼어드민이 전체 수집).
+ * urlHash로 중복 체크.
  * @returns true=저장됨, false=중복 스킵
  */
-export async function saveArticleForCompany(
-  article: ArticleData,
-  companyId: string,
-): Promise<boolean> {
+export async function saveArticleGlobal(article: ArticleData): Promise<boolean> {
   if (!initialized) return false;
 
   const db = admin.firestore();
@@ -102,7 +88,6 @@ export async function saveArticleForCompany(
 
   const existing = await db.collection('articles')
     .where('urlHash', '==', urlHash)
-    .where('companyId', '==', companyId)
     .limit(1)
     .get();
 
@@ -118,11 +103,11 @@ export async function saveArticleForCompany(
     source: article.source,
     sourceId: article.sourceId,
     sourceCategory: article.category || null,
-    isPaid: article.isPaid ?? null,
+    isPaid: article.isPaid ?? true, // 로컬 스크래퍼 기사는 유료
     author: article.author || null,
     subtitle: article.subtitle || null,
     date: article.date || null,
-    companyId,
+    companyId: null, // 전역 기사 — 특정 회사 소속 아님
     collectedAt: admin.firestore.FieldValue.serverTimestamp(),
     status: 'pending',
     urlHash,
@@ -130,4 +115,39 @@ export async function saveArticleForCompany(
   });
 
   return true;
+}
+
+export interface ScraperStatusData {
+  source: 'thebell' | 'marketinsight';
+  status: 'success' | 'error' | 'running';
+  found: number;
+  collected: number;
+  skipped: number;
+  errorMessage?: string;
+  startedAt: Date;
+  finishedAt?: Date;
+  durationMs?: number;
+}
+
+/**
+ * 수집 실행 결과를 scraperStatus 컬렉션에 기록.
+ * 슈퍼어드민 대시보드에서 PC 스크래퍼 상태 확인용.
+ */
+export async function reportScraperStatus(data: ScraperStatusData): Promise<void> {
+  if (!initialized) return;
+  const db = admin.firestore();
+
+  // 최신 상태 문서 (source별 1개 — 덮어쓰기)
+  await db.collection('scraperStatus').doc(data.source).set({
+    ...data,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // 이력 로그 (최근 100개 유지)
+  const logRef = db.collection('scraperStatus').doc(data.source)
+    .collection('history').doc();
+  await logRef.set({
+    ...data,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
 }

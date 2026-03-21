@@ -1,47 +1,49 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Filter, ChevronDown, ChevronUp, ExternalLink,
-  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw,
-  Eye, Building2, Calendar, Tag
+  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import {
   collection, query, where, orderBy, limit, getDocs,
-  startAfter, QueryDocumentSnapshot, DocumentData
+  startAfter, QueryDocumentSnapshot, DocumentData, getCountFromServer
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 
 // ─── Types ────────────────────────────────────────────────
 interface Article {
   id: string;
-  companyId: string;
   title: string;
   source: string;
+  sourceId: string;
   url: string;
-  status: 'collected' | 'filtered' | 'analyzed' | 'published' | 'rejected';
+  status: string;
   relevanceScore?: number;
   filterReason?: string;
   category?: string;
   tags?: string[];
   summary?: string[];
   publishedAt?: any;
-  analyzedAt?: any;
-  createdAt?: any;
-}
-
-interface Company {
-  id: string;
-  name: string;
+  collectedAt?: any;
+  isPaid?: boolean;
 }
 
 // ─── Status config ────────────────────────────────────────
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
-  collected:  { label: '수집됨',    color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/30',   icon: Clock },
+  pending:    { label: '수집됨',    color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/30',    icon: Clock },
+  collected:  { label: '수집됨',    color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/30',    icon: Clock },
   filtered:   { label: '필터링됨',  color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30', icon: Filter },
   analyzed:   { label: '분석완료',  color: 'text-green-400',  bg: 'bg-green-500/10 border-green-500/30',  icon: CheckCircle },
   published:  { label: '발행됨',    color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30', icon: CheckCircle },
   rejected:   { label: '제외됨',    color: 'text-red-400',    bg: 'bg-red-500/10 border-red-500/30',       icon: XCircle },
 };
+
+const SOURCE_OPTIONS = [
+  { value: '', label: '모든 매체' },
+  { value: 'thebell', label: '더벨' },
+  { value: 'marketinsight', label: '마켓인사이트' },
+  { value: 'hankyung_ma', label: '한경 M&A' },
+];
 
 const PAGE_SIZE = 30;
 
@@ -60,18 +62,15 @@ function ScoreBar({ score }: { score: number }) {
 }
 
 // ─── Article row ─────────────────────────────────────────
-function ArticleRow({ article, companies, expanded, onToggle }: {
+function ArticleRow({ article, expanded, onToggle }: {
   article: Article;
-  companies: Record<string, string>;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const status = STATUS_CONFIG[article.status] || STATUS_CONFIG.collected;
+  const status = STATUS_CONFIG[article.status] || STATUS_CONFIG.pending;
   const StatusIcon = status.icon;
-  const pubDate = article.publishedAt?.toDate
-    ? format(article.publishedAt.toDate(), 'MM.dd HH:mm')
-    : article.publishedAt
-    ? format(new Date(article.publishedAt), 'MM.dd HH:mm')
+  const collectedDate = article.collectedAt?.toDate
+    ? format(article.collectedAt.toDate(), 'MM.dd HH:mm')
     : '—';
 
   return (
@@ -88,18 +87,19 @@ function ArticleRow({ article, companies, expanded, onToggle }: {
         </td>
         <td className="px-4 py-3 max-w-xs">
           <p className="text-sm text-white/90 truncate leading-snug">{article.title}</p>
-          <p className="text-[10px] text-white/30 mt-0.5">{article.source}</p>
+          <p className="text-[10px] text-white/30 mt-0.5 flex items-center gap-1">
+            {article.source}
+            {article.isPaid && <span className="px-1 py-0 bg-amber-500/20 text-amber-400 rounded text-[9px] font-bold">유료</span>}
+          </p>
         </td>
-        <td className="px-4 py-3 text-xs text-white/50">
-          {companies[article.companyId] || article.companyId}
-        </td>
+        <td className="px-4 py-3 text-xs text-white/40 whitespace-nowrap">{article.category || '—'}</td>
         <td className="px-4 py-3 w-28">
           {article.relevanceScore != null
             ? <ScoreBar score={article.relevanceScore} />
             : <span className="text-xs text-white/20">—</span>
           }
         </td>
-        <td className="px-4 py-3 text-[11px] text-white/40 whitespace-nowrap">{pubDate}</td>
+        <td className="px-4 py-3 text-[11px] text-white/40 whitespace-nowrap">{collectedDate}</td>
         <td className="px-4 py-3">
           {expanded
             ? <ChevronUp className="w-3.5 h-3.5 text-white/30" />
@@ -145,12 +145,6 @@ function ArticleRow({ article, companies, expanded, onToggle }: {
                     </div>
                   </div>
                 )}
-                {article.category && (
-                  <div>
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-white/25 mb-1">카테고리</p>
-                    <span className="text-xs text-white/50">{article.category}</span>
-                  </div>
-                )}
                 {article.url && (
                   <a
                     href={article.url}
@@ -175,8 +169,6 @@ function ArticleRow({ article, companies, expanded, onToggle }: {
 // ─── Main ─────────────────────────────────────────────────
 export default function AdminArticles() {
   const [articles, setArticles] = useState<Article[]>([]);
-  const [companies, setCompanies] = useState<Record<string, string>>({});
-  const [companyList, setCompanyList] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -185,67 +177,41 @@ export default function AdminArticles() {
 
   // Filters
   const [search, setSearch] = useState('');
-  const [selectedCompany, setSelectedCompany] = useState('');
+  const [selectedSource, setSelectedSource] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [dateRange, setDateRange] = useState<'today' | '3d' | '7d' | '30d' | ''>('');
 
   // Stats
-  const [stats, setStats] = useState({ total: 0, analyzed: 0, rejected: 0, collected: 0 });
-
-  // ─── Load companies ─────────────────────────────────────
-  useEffect(() => {
-    async function loadCompanies() {
-      const snap = await getDocs(collection(db, 'companies'));
-      const map: Record<string, string> = {};
-      const list: Company[] = [];
-      snap.docs.forEach(d => {
-        const data = d.data();
-        map[d.id] = data.name || d.id;
-        list.push({ id: d.id, name: data.name || d.id });
-      });
-      setCompanies(map);
-      setCompanyList(list);
-    }
-    loadCompanies();
-  }, []);
+  const [stats, setStats] = useState({ total: 0, pending: 0, analyzed: 0, rejected: 0 });
 
   // ─── Load articles ───────────────────────────────────────
   const loadArticles = useCallback(async (reset = true) => {
-    if (reset) setLoading(true);
+    if (reset) { setLoading(true); setLastDoc(null); }
     else setLoadingMore(true);
 
     try {
-      let q = query(
-        collection(db, 'articles'),
-        orderBy('createdAt', 'desc'),
-        limit(PAGE_SIZE + 1)
-      );
-
       const conditions: any[] = [];
-      if (selectedCompany) conditions.push(where('companyId', '==', selectedCompany));
+      if (selectedSource) conditions.push(where('sourceId', '==', selectedSource));
       if (selectedStatus) conditions.push(where('status', '==', selectedStatus));
 
       if (dateRange) {
-        const now = new Date();
         const days = dateRange === 'today' ? 1 : dateRange === '3d' ? 3 : dateRange === '7d' ? 7 : 30;
-        const since = new Date(now.getTime() - days * 86400000);
-        conditions.push(where('createdAt', '>=', since));
+        const since = new Date(Date.now() - days * 86400000);
+        conditions.push(where('collectedAt', '>=', since));
       }
 
-      if (conditions.length > 0 || selectedCompany || selectedStatus || dateRange) {
-        q = query(
-          collection(db, 'articles'),
-          ...conditions,
-          orderBy('createdAt', 'desc'),
-          limit(PAGE_SIZE + 1)
-        );
-      }
+      let q = query(
+        collection(db, 'articles'),
+        ...conditions,
+        orderBy('collectedAt', 'desc'),
+        limit(PAGE_SIZE + 1)
+      );
 
       if (!reset && lastDoc) {
         q = query(
           collection(db, 'articles'),
           ...conditions,
-          orderBy('createdAt', 'desc'),
+          orderBy('collectedAt', 'desc'),
           startAfter(lastDoc),
           limit(PAGE_SIZE + 1)
         );
@@ -256,47 +222,48 @@ export default function AdminArticles() {
       const hasMoreDocs = docs.length > PAGE_SIZE;
       const sliced = hasMoreDocs ? docs.slice(0, PAGE_SIZE) : docs;
 
-      const loaded: Article[] = sliced.map(d => ({ id: d.id, ...d.data() } as Article));
+      let loaded: Article[] = sliced.map(d => ({ id: d.id, ...d.data() } as Article));
 
-      // Client-side text search
-      const filtered = search
-        ? loaded.filter(a =>
-            a.title?.toLowerCase().includes(search.toLowerCase()) ||
-            a.source?.toLowerCase().includes(search.toLowerCase())
-          )
-        : loaded;
-
-      if (reset) {
-        setArticles(filtered);
-      } else {
-        setArticles(prev => [...prev, ...filtered]);
+      if (search) {
+        const lower = search.toLowerCase();
+        loaded = loaded.filter(a =>
+          a.title?.toLowerCase().includes(lower) ||
+          a.source?.toLowerCase().includes(lower)
+        );
       }
+
+      if (reset) setArticles(loaded);
+      else setArticles(prev => [...prev, ...loaded]);
+
       setLastDoc(sliced[sliced.length - 1] ?? null);
       setHasMore(hasMoreDocs);
 
-      // Quick stats from first load
+      // Stats from recent 500 articles
       if (reset) {
-        const totalSnap = await getDocs(query(collection(db, 'articles'), orderBy('createdAt', 'desc'), limit(200)));
-        let analyzed = 0, rejected = 0, collected = 0;
-        totalSnap.docs.forEach(d => {
-          const s = d.data().status;
-          if (s === 'analyzed' || s === 'published') analyzed++;
-          else if (s === 'rejected') rejected++;
-          else collected++;
+        const [totalSnap, pendingSnap, analyzedSnap, rejectedSnap] = await Promise.all([
+          getCountFromServer(collection(db, 'articles')),
+          getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'pending'))),
+          getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'analyzed'))),
+          getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'rejected'))),
+        ]);
+        setStats({
+          total: totalSnap.data().count,
+          pending: pendingSnap.data().count,
+          analyzed: analyzedSnap.data().count,
+          rejected: rejectedSnap.data().count,
         });
-        setStats({ total: totalSnap.size, analyzed, rejected, collected });
       }
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [selectedCompany, selectedStatus, dateRange, search, lastDoc]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSource, selectedStatus, dateRange, search]);
 
   useEffect(() => {
     loadArticles(true);
-  }, [selectedCompany, selectedStatus, dateRange]);
+  }, [selectedSource, selectedStatus, dateRange]);
 
-  // Debounced search
   useEffect(() => {
     const t = setTimeout(() => loadArticles(true), 400);
     return () => clearTimeout(t);
@@ -308,7 +275,7 @@ export default function AdminArticles() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">수집 기사 검증</h1>
-          <p className="text-sm text-white/40 mt-0.5">전체 기사 조회 & AI 검증 현황</p>
+          <p className="text-sm text-white/40 mt-0.5">전체 수집 기사 조회 & AI 검증 현황</p>
         </div>
         <button
           onClick={() => loadArticles(true)}
@@ -323,8 +290,8 @@ export default function AdminArticles() {
       <div className="grid grid-cols-4 gap-3">
         {[
           { label: '전체 기사', value: stats.total, color: 'text-white/80' },
+          { label: '수집/처리중', value: stats.pending, color: 'text-blue-400' },
           { label: '분석완료', value: stats.analyzed, color: 'text-green-400' },
-          { label: '수집/처리중', value: stats.collected, color: 'text-blue-400' },
           { label: '제외됨', value: stats.rejected, color: 'text-red-400' },
         ].map(s => (
           <div key={s.label} className="bg-gray-800/60 border border-white/5 rounded-xl p-4">
@@ -349,24 +316,20 @@ export default function AdminArticles() {
             />
           </div>
 
-          {/* Company filter */}
-          <div className="relative">
-            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/25 pointer-events-none" />
-            <select
-              value={selectedCompany}
-              onChange={e => setSelectedCompany(e.target.value)}
-              className="pl-8 pr-8 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white/70 focus:outline-none focus:border-[#d4af37]/50 appearance-none"
-            >
-              <option value="">모든 회사</option>
-              {companyList.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
+          {/* Source filter */}
+          <select
+            value={selectedSource}
+            onChange={e => setSelectedSource(e.target.value)}
+            className="px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white/70 focus:outline-none focus:border-[#d4af37]/50"
+          >
+            {SOURCE_OPTIONS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
 
           {/* Status filter */}
-          <div className="flex gap-1">
-            {['', ...Object.keys(STATUS_CONFIG)].map(s => (
+          <div className="flex gap-1 flex-wrap">
+            {(['', 'pending', 'filtered', 'analyzed', 'published', 'rejected'] as const).map(s => (
               <button
                 key={s}
                 onClick={() => setSelectedStatus(s)}
@@ -376,7 +339,7 @@ export default function AdminArticles() {
                     : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80'
                 }`}
               >
-                {s === '' ? '전체' : STATUS_CONFIG[s].label}
+                {s === '' ? '전체' : STATUS_CONFIG[s]?.label || s}
               </button>
             ))}
           </div>
@@ -419,9 +382,9 @@ export default function AdminArticles() {
                   <tr className="border-b border-white/5">
                     <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-24">상태</th>
                     <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25">제목 / 매체</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-32">회사</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-28">카테고리</th>
                     <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-36">관련성 점수</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-28">발행일</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-widest text-white/25 w-28">수집일</th>
                     <th className="px-4 py-3 w-8" />
                   </tr>
                 </thead>
@@ -430,7 +393,6 @@ export default function AdminArticles() {
                     <ArticleRow
                       key={article.id}
                       article={article}
-                      companies={companies}
                       expanded={expandedId === article.id}
                       onToggle={() => setExpandedId(expandedId === article.id ? null : article.id)}
                     />
