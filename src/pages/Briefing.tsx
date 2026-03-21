@@ -27,6 +27,7 @@ export default function Briefing() {
   const pdfRef = useRef<HTMLDivElement>(null);
   const { user } = useAuthStore();
   const companyId = (user as any)?.primaryCompanyId || null;
+  const isSuperadmin = (user as any)?.role === 'superadmin';
 
   const fetchOutput = async (outputId: string) => {
     setLoading(true);
@@ -43,7 +44,9 @@ export default function Briefing() {
 
       const articlesQuery = query(
         collection(db, 'articles'),
-        where('publishedInOutputId', '==', outputId)
+        where('publishedInOutputId', '==', outputId),
+        // rules-fix: non-superadmin은 query 시 companyId 필터가 없으면 권한 거부됨
+        ...(!isSuperadmin && companyId ? [where('companyId', '==', companyId)] : [])
       );
       const articlesSnap = await getDocs(articlesQuery);
       setArticles(articlesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
