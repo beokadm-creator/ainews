@@ -743,7 +743,7 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
 // ─────────────────────────────────────────
 
 /** MarketInsight 유료 회원 로그인 (Superadmin) */
-export const marketinsightLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const marketinsightLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -764,7 +764,7 @@ export const marketinsightLogin = onCall({ region: 'us-central1', cors: true, in
 });
 
 /** MarketInsight MNA 섹션 스크래핑 (Superadmin) */
-export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -786,7 +786,7 @@ export const marketinsightScrape = onCall({ region: 'us-central1', cors: true, i
 // ─────────────────────────────────────────
 
 /** Thebell 유료 회원 로그인 (Superadmin) */
-export const thebellLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const thebellLogin = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -807,7 +807,7 @@ export const thebellLogin = onCall({ region: 'us-central1', cors: true, invoker:
 });
 
 /** Thebell 기사 스크래핑 (Superadmin) */
-export const thebellScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const thebellScrape = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB', timeoutSeconds: 120 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();

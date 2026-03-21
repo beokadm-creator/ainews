@@ -264,6 +264,7 @@ export async function processScrapingSources(options?: {
         if (!matchesRuntimeFilters(article.title, article.content, {
           anyKeywords,
           includeKeywords: options?.filters?.includeKeywords,
+          mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
           excludeKeywords: options?.filters?.excludeKeywords,
           sectors: options?.filters?.sectors
         })) {

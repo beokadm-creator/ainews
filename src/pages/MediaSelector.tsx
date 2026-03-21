@@ -24,6 +24,7 @@ interface GlobalSource {
   lastTestResult?: { success: boolean; message: string; articlesFound?: number };
   notes?: string;
   loginRequired?: boolean;
+  allowedCompanyIds?: string[];
 }
 
 const TYPE_ICON: Record<SourceType, any> = {
@@ -55,7 +56,8 @@ function StarRating({ score }: { score: number }) {
 export default function MediaSelector() {
   const { user } = useAuthStore();
   const companyId = (user as any)?.primaryCompanyId || null;
-  const canEdit = ['superadmin', 'company_admin'].includes((user as any)?.role);
+  const isSuperadmin = (user as any)?.role === 'superadmin';
+  const canEdit = isSuperadmin || (user as any)?.role === 'company_admin';
 
   const [allSources, setAllSources] = useState<GlobalSource[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -122,7 +124,17 @@ export default function MediaSelector() {
   };
 
   const filtered = allSources.filter(s => {
-    if (s.status === 'inactive' && !selectedIds.has(s.id)) return false; // inactive는 이미 선택한 것만 표시
+    // 1. Inactive는 이미 선택한 구독 목록에 있는 것만 노출
+    if (s.status === 'inactive' && !selectedIds.has(s.id)) return false; 
+    
+    // 2. 유료(paid, requires_subscription) 매체의 경우 승인된 회사(allowedCompanyIds에 포함)이거나 Superadmin일 때만 노출
+    const isPremium = s.pricingTier === 'paid' || s.pricingTier === 'requires_subscription';
+    if (isPremium && !isSuperadmin) {
+      if (!s.allowedCompanyIds || !s.allowedCompanyIds.includes(companyId)) {
+        return false;
+      }
+    }
+
     const matchSearch = !searchTerm || s.name.toLowerCase().includes(searchTerm.toLowerCase());
     const matchType = filterType === 'all' || s.type === filterType;
     const matchCat = filterCategory === 'all' || s.category === filterCategory;

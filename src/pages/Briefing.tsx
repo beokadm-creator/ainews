@@ -169,6 +169,7 @@ export default function Briefing() {
 
   const structured = output.structuredOutput || {};
   const highlights = structured.highlights || [];
+  const trends = structured.trends || []; // ★ Added
   const themes = structured.themes || [];
   const risks = structured.risks || [];
   const opportunities = structured.opportunities || [];
@@ -210,19 +211,52 @@ export default function Briefing() {
 
           {structured.summary && (
             <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] mb-4">Executive Summary</h2>
+              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">핵심 요약 (Executive Summary)</h2>
               <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{structured.summary}</p>
             </section>
           )}
 
           {highlights.length > 0 && (
             <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] mb-4">Highlights</h2>
+              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 뉴스 (Highlights)</h2>
               <div className="space-y-4">
                 {highlights.map((highlight: any, index: number) => (
                   <div key={index} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                    <h3 className="font-bold text-gray-900 mb-2">{highlight.title}</h3>
+                    <div className="flex justify-between items-start mb-2">
+                      <h3 className="font-bold text-gray-900">{highlight.title}</h3>
+                      {highlight.articleIndex && (
+                        <a 
+                          href={`#article-${highlight.articleIndex}`} 
+                          className="text-[10px] bg-[#1e3a5f] text-white px-2 py-0.5 rounded hover:bg-[#2a4a73]"
+                        >
+                          Source [{highlight.articleIndex}]
+                        </a>
+                      )}
+                    </div>
                     <p className="text-gray-700 text-sm leading-relaxed">{highlight.description}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {trends.length > 0 && (
+            <section>
+              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">최신 시장 동향 (Market Trends)</h2>
+              <div className="space-y-4">
+                {trends.map((trend: any, index: number) => (
+                  <div key={index} className="bg-blue-50/30 p-4 rounded-lg border border-blue-100 dark:border-blue-900/20">
+                    <div className="flex justify-between items-start mb-2">
+                      <h3 className="font-bold text-blue-900">{trend.topic}</h3>
+                      <div className="flex gap-1">
+                        {(trend.relatedArticles || []).map((idx: number) => (
+                          <a key={idx} href={`#article-${idx}`} className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded hover:bg-blue-700">
+                             [{idx}]
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-700 leading-relaxed">{trend.description}</p>
                   </div>
                 ))}
               </div>
@@ -231,7 +265,7 @@ export default function Briefing() {
 
           {themes.length > 0 && (
             <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] mb-4">Themes</h2>
+              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 테마 (Key Themes)</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {themes.map((theme: any, index: number) => (
                   <div key={index} className="border border-gray-200 p-4 rounded-lg">
@@ -245,7 +279,11 @@ export default function Briefing() {
 
           {(risks.length > 0 || opportunities.length > 0 || nextSteps.length > 0) && (
             <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[['Risks', risks], ['Opportunities', opportunities], ['Next Steps', nextSteps]].map(([title, items]: any) => (
+              {[
+                ['리스크 (Risks)', risks], 
+                ['기회 요인 (Opportunities)', opportunities], 
+                ['향후 전략 (Next Steps)', nextSteps]
+              ].map(([title, items]: any) => (
                 <div key={title} className="border border-gray-200 rounded-lg p-4">
                   <h3 className="font-bold text-[#1e3a5f] mb-3">{title}</h3>
                   <ul className="list-disc pl-5 space-y-2 text-sm text-gray-700">
@@ -257,7 +295,7 @@ export default function Briefing() {
           )}
 
           <section>
-            <h2 className="text-xl font-bold text-[#1e3a5f] mb-4">Articles</h2>
+            <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">참고 기사 전문 (Reference Articles)</h2>
             {articles.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-200 dark:border-gray-700 pb-3">
                 {SECTION_TABS.filter(tab => tab.key === 'all' || articles.some(a => a.sourceCategory === tab.key)).map(tab => (
@@ -276,26 +314,31 @@ export default function Briefing() {
               </div>
             )}
             <div className="space-y-6">
-              {visibleArticles.map((article: any) => (
-                <div key={article.id} className="border-b border-gray-100 pb-6 last:border-0">
+              {visibleArticles.map((article: any, index: number) => (
+                <div key={article.id} id={`article-${index + 1}`} className="border-b border-gray-100 pb-6 last:border-0 scroll-mt-20">
                   <div className="flex items-start justify-between">
-                    <div>
-                      <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded mb-2">
-                        {article.category || 'other'}
-                      </span>
-                      <h3 className="text-lg font-bold text-gray-900 mb-2">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="inline-block px-1.5 py-0.5 bg-[#1e3a5f] text-white text-[10px] font-bold rounded">
+                          [{index + 1}]
+                        </span>
+                        <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 text-[10px] rounded">
+                          {article.category || '기타'}
+                        </span>
+                        <span className="text-[10px] text-gray-500">{article.source}</span>
+                      </div>
+                      <h3 className="text-base font-bold text-gray-900 mb-2">
                         <a href={article.url} target="_blank" rel="noreferrer" className="hover:text-[#1e3a5f] hover:underline">
                           {article.title}
                         </a>
                       </h3>
+                      <ul className="list-disc pl-5 space-y-1 text-sm text-gray-700">
+                        {(article.summary || []).map((line: string, idx: number) => (
+                          <li key={idx}>{line}</li>
+                        ))}
+                      </ul>
                     </div>
-                    <span className="text-xs text-gray-500">{article.source}</span>
                   </div>
-                  <ul className="list-disc pl-5 space-y-1 text-sm text-gray-700">
-                    {(article.summary || []).map((line: string, index: number) => (
-                      <li key={index}>{line}</li>
-                    ))}
-                  </ul>
                 </div>
               ))}
             </div>

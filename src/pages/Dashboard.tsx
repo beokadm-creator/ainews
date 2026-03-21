@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { LayoutDashboard, TrendingUp, Clock, CheckCircle, AlertTriangle, Play } from 'lucide-react';
+import { LayoutDashboard, TrendingUp, Clock, CheckCircle, AlertTriangle, Play, Database, Cpu, FileText, RefreshCw, XCircle, Search, Filter as FilterIcon, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
-import { collection, query, where, getDocs, orderBy, limit, getCountFromServer } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, limit, getCountFromServer, onSnapshot, doc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { format, subDays, startOfDay } from 'date-fns';
@@ -24,6 +24,7 @@ export default function Dashboard() {
     todayPassed: 0,
     successRate: 0,
   });
+  const [pipelineRun, setPipelineRun] = useState<any>(null); // ★ New: Current pipeline run track
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [trendData, setTrendData] = useState<any[]>([]);
@@ -121,19 +122,34 @@ export default function Dashboard() {
     }
     setRunningPipeline(true);
     setPipelineMsg('');
+    setPipelineRun(null);
+
     try {
       const runFn = httpsCallable(functions, 'runFullPipeline');
       const result = await runFn({ companyId }) as any;
-      setPipelineMsg(
-        result.data.success
-          ? `✅ Pipeline completed! Output ID: ${result.data.outputId}`
-          : '⚠️ Pipeline completed with warnings.'
-      );
-      await fetchDashboardData();
+      const pipelineId = result.data.pipelineId;
+
+      if (pipelineId) {
+        // Subscribe to real-time status
+        const unsubscribeResult = onSnapshot(doc(db, 'pipelineRuns', pipelineId), (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setPipelineRun(data);
+            if (data.status === 'completed' || data.status === 'failed') {
+              setRunningPipeline(false);
+              if (data.status === 'completed') fetchDashboardData();
+              setTimeout(() => unsubscribeResult(), 10000); // Wait 10s before unsub
+            }
+          }
+        });
+      } else {
+        setRunningPipeline(false);
+        setPipelineMsg(result.data.success ? '✅ Pipeline completed' : '⚠️ Pipeline warn');
+        await fetchDashboardData();
+      }
     } catch (err: any) {
-      setPipelineMsg(`❌ Pipeline failed: ${err.message}`);
-    } finally {
       setRunningPipeline(false);
+      setPipelineMsg(`❌ Pipeline failed: ${err.message}`);
     }
   };
 
@@ -152,23 +168,71 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
           <p className="text-gray-600 dark:text-gray-400 mt-1">Pipeline status and output summary.</p>
         </div>
-        {/* MISSING-01 FIX: 파이프라인 수동 실행 버튼 */}
-        <div className="flex flex-col items-end gap-2">
+        <div className="flex flex-col items-end gap-1">
           <button
             onClick={handleRunPipeline}
             disabled={runningPipeline}
             className="flex items-center px-5 py-2.5 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#2a4a73] transition-colors shadow-sm disabled:opacity-50"
           >
             {runningPipeline
-              ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />Running...</>
-              : <><Play className="w-4 h-4 mr-2" />Run Pipeline</>
+              ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Running...</>
+              : <><Play className="w-4 h-4 mr-2" />지금 즉시 분석 실행</>
             }
           </button>
-          {pipelineMsg && (
-            <p className="text-sm text-gray-700 dark:text-gray-300 max-w-xs text-right">{pipelineMsg}</p>
-          )}
+          <p className="text-xs text-gray-500 dark:text-gray-400 mr-1 hidden sm:block">자동 분석 루틴은 매일 밤 10시에 실행됩니다.</p>
         </div>
       </div>
+
+      {/* Pipeline Progress Monitor */}
+      {(runningPipeline || pipelineRun) && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border-2 border-[#1e3a5f]/20 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold text-[#1e3a5f] dark:text-blue-400 flex items-center gap-2">
+              <RefreshCw className={`w-4 h-4 ${pipelineRun?.status === 'running' ? 'animate-spin' : ''}`} />
+              Pipeline Execution Progress
+            </h3>
+            <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${
+              pipelineRun?.status === 'completed' ? 'bg-green-100 text-green-700' :
+              pipelineRun?.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+            }`}>
+              {pipelineRun?.status || 'Initiating...'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {[
+              { id: 'collection', label: 'Aggregation', icon: Database },
+              { id: 'filtering', label: 'AI Filtering', icon: FilterIcon },
+              { id: 'analysis', label: 'Deep Analysis', icon: Cpu },
+              { id: 'output', label: 'Briefing Output', icon: FileText },
+            ].map((step, idx) => {
+              const stepData = pipelineRun?.steps?.[step.id];
+              const isCompleted = stepData?.status === 'completed';
+              const isRunning = stepData?.status === 'running';
+              const isFailed = stepData?.status === 'failed';
+
+              return (
+                <div key={step.id} className={`relative flex flex-col items-center p-4 rounded-lg border transition-all ${isCompleted ? 'bg-green-50 border-green-200 dark:bg-green-900/10' : isRunning ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/10 ring-2 ring-blue-500/20' : 'bg-gray-50 border-gray-100 dark:bg-gray-700/30'}`}>
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center mb-2 ${isCompleted ? 'bg-green-500 text-white' : isRunning ? 'bg-blue-500 text-white animate-pulse' : isFailed ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-400'}`}>
+                    {isCompleted ? <CheckCircle className="w-6 h-6" /> : isFailed ? <XCircle className="w-6 h-6" /> : <step.icon className="w-5 h-5" />}
+                  </div>
+                  <span className="text-xs font-bold text-center">{step.label}</span>
+                  {stepData?.result?.totalCollected !== undefined && (
+                    <span className="text-[10px] text-green-600 font-bold mt-1">+{stepData.result.totalCollected} articles</span>
+                  )}
+                  {stepData?.duration && <span className="text-[8px] text-gray-400 mt-1">{Math.round(stepData.duration / 1000)}s</span>}
+                </div>
+              );
+            })}
+          </div>
+          {pipelineRun?.error && (
+            <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-xs font-mono overflow-auto max-h-24">
+              Error: {pipelineRun.error}
+            </div>
+          )}
+          {pipelineMsg && <p className="mt-4 text-center text-sm font-medium text-gray-600">{pipelineMsg}</p>}
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

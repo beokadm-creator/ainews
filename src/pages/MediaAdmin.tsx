@@ -47,6 +47,7 @@ interface GlobalSource {
   };
   notes?: string;
   pricingTier: PricingTier;
+  allowedCompanyIds?: string[]; // 유료 매체 권한
 }
 
 const TYPE_META: Record<SourceType, { label: string; icon: any; color: string; bg: string }> = {
@@ -623,6 +624,24 @@ export default function MediaAdmin() {
                   </select>
                 </div>
               </div>
+
+              {/* Premium Access List */}
+              {(editingSource.pricingTier === 'paid' || editingSource.pricingTier === 'requires_subscription') && (
+                <div className="col-span-2 pt-2">
+                  <label className="block text-sm font-medium text-purple-700 dark:text-purple-400 mb-1">허용된 회사 ID 목록 (쉼표로 구분)</label>
+                  <p className="text-xs text-gray-500 mb-2">유료 매체는 이 목록에 기재된 회사(Company ID)만 구독/선택할 수 있습니다.</p>
+                  <input
+                    type="text"
+                    value={(editingSource.allowedCompanyIds || []).join(', ')}
+                    onChange={e => {
+                      const ids = e.target.value.split(',').map(id => id.trim()).filter(Boolean);
+                      setEditingSource(s => ({ ...s, allowedCompanyIds: ids }));
+                    }}
+                    placeholder="company_1, company_2..."
+                    className="w-full px-3 py-2 border border-purple-300 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-sm outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+              )}
 
               {/* Type-specific fields */}
               {editingSource.type === 'rss' && (

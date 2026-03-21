@@ -174,6 +174,7 @@ async function collectFromNewsApi(
     if (!matchesRuntimeFilters(title, content, {
       anyKeywords,
       includeKeywords: options?.filters?.includeKeywords,
+      mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
       excludeKeywords: options?.filters?.excludeKeywords,
       sectors: options?.filters?.sectors,
     })) {
