@@ -388,9 +388,24 @@ export async function logPromptExecution(
 export async function checkRelevance(
   article: { title: string; content: string; source: string },
   aiConfig: RuntimeAiConfig,
-  context?: PromptExecutionContext
+  context?: PromptExecutionContext,
+  filters?: any // RuntimeFilters
 ): Promise<RelevanceResult> {
+  let extraGuidelines = '';
+  if (filters) {
+    const include = filters.includeKeywords || [];
+    const exclude = filters.excludeKeywords || [];
+    if (include.length > 0) {
+      extraGuidelines += `\nThe article IS MORE LIKELY RELEVANT if it contains any of these keywords: ${include.join(', ')}.`;
+    }
+    if (exclude.length > 0) {
+      extraGuidelines += `\nThe article IS HIGHLY IRRELEVANT if it focuses primarily on: ${exclude.join(', ')}.`;
+    }
+  }
+
   const prompt = `${aiConfig.relevancePrompt || DEFAULT_RELEVANCE_PROMPT}
+
+${extraGuidelines}
 
 Title: ${article.title}
 Content: ${article.content.substring(0, 2000)}
@@ -453,6 +468,7 @@ export async function processRelevanceFiltering(options?: {
   companyId?: string;
   pipelineRunId?: string;
   aiConfig: RuntimeAiConfig;
+  filters?: any; // RuntimeFilters
 }) {
   const db = admin.firestore();
   const baseBatchSize = options?.aiConfig.maxPendingBatch || 20;
@@ -471,11 +487,31 @@ export async function processRelevanceFiltering(options?: {
   for (const doc of pendingArticlesSnapshot.docs) {
     const article = doc.data() as any;
     try {
-      const result = await checkRelevance(
-        { title: article.title, content: article.content, source: article.source },
-        options!.aiConfig,
-        { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId }
-      );
+      // ── 사전 필터링 (mustIncludeKeywords AND 조건) ──
+      let fastRejectReason: string | null = null;
+      const mustKeywords = options?.filters?.mustIncludeKeywords || [];
+      if (mustKeywords.length > 0) {
+        const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+        for (const kw of mustKeywords) {
+          if (!textToSearch.includes(kw.toLowerCase())) {
+            fastRejectReason = `Mising required keyword: ${kw}`;
+            break;
+          }
+        }
+      }
+
+      let result: RelevanceResult;
+      if (fastRejectReason) {
+        result = { isRelevant: false, confidence: 0, reason: fastRejectReason };
+      } else {
+        result = await checkRelevance(
+          { title: article.title, content: article.content, source: article.source },
+          options!.aiConfig,
+          { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
+          options?.filters
+        );
+      }
+      
       batch.update(doc.ref, {
         status: result.isRelevant ? 'filtered' : 'rejected',
         filteredAt: admin.firestore.FieldValue.serverTimestamp(),

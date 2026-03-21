@@ -107,22 +107,40 @@ export async function generatePipelineOutput(
   } else {
     const basePrompt = outputType === 'custom_prompt'
       ? (options.outputConfig.prompt || options.aiConfig.outputPrompt || 'Analyze the following articles and return the requested output.')
-      : (options.aiConfig.outputPrompt || `You are preparing an executive analysis report from analyzed investment news.
+      : (options.aiConfig.outputPrompt || `You are an expert investment analyst preparing a premium executive report.
+Analyze the provided articles and generate a structured report in **Korean (한국어)**. 
+For key professional terms or corporate names, you may include English in parentheses if it aids clarity.
 
-Return JSON with this shape:
+Return a JSON object with this shape:
 {
-  "title": "string",
-  "summary": "string",
+  "title": "Report Title (In Korean)",
+  "summary": "Executive summary (In Korean, 3-5 sentences)",
   "highlights": [
-    { "title": "string", "description": "string", "articleIndex": 1 }
+    { 
+      "title": "Highlight title", 
+      "description": "Insightful description. Mention the specific deal or event.", 
+      "articleIndex": 1 
+    }
+  ],
+  "trends": [
+    {
+      "topic": "Current trend identified from the news",
+      "description": "Detailed explanation of the trend and its impact (In Korean)",
+      "relatedArticles": [1, 2]
+    }
   ],
   "themes": [
-    { "name": "string", "description": "string" }
+    { "name": "Broad theme (e.g., M&A Surge)", "description": "Theme description" }
   ],
-  "risks": ["string"],
-  "opportunities": ["string"],
-  "nextSteps": ["string"]
-}`);
+  "risks": ["Risk factor 1", "Risk factor 2"],
+  "opportunities": ["Opportunity 1", "Opportunity 2"],
+  "nextSteps": ["Actionable recommendation 1", "Recommendation 2"]
+}
+
+Important:
+- Use a professional, insightful tone.
+- Reference the 'articleIndex' accurately in highlights and trends.
+- The report must be predominantly in Korean.`);
 
     prompt = `${basePrompt}
 

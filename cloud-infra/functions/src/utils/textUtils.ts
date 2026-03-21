@@ -155,6 +155,7 @@ export function matchesRuntimeFilters(
   options?: {
     anyKeywords?: string[];
     includeKeywords?: string[];
+    mustIncludeKeywords?: string[];
     excludeKeywords?: string[];
     sectors?: string[];
   }
@@ -163,7 +164,8 @@ export function matchesRuntimeFilters(
 
   return (
     matchesKeywords(title, content, options.anyKeywords) &&
-    matchesAllKeywords(title, content, options.includeKeywords) &&
+    matchesKeywords(title, content, options.includeKeywords) && // OR 조건
+    matchesAllKeywords(title, content, options.mustIncludeKeywords) && // AND 조건
     matchesNoneKeywords(title, content, options.excludeKeywords) &&
     matchesSectors(title, content, options.sectors)
   );

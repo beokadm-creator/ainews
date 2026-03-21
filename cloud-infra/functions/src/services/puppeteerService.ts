@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import chromium from '@sparticuz/chromium';
 import * as admin from 'firebase-admin';
 import { isDuplicateArticle, hashUrl } from './duplicateService';
 import { sendErrorNotificationToAdmin } from './telegramService';
@@ -9,6 +10,19 @@ import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
 puppeteer.use(StealthPlugin());
+
+/** Cloud Functions(서버리스) 환경에 맞는 브라우저 launch 옵션 */
+async function getLaunchOptions() {
+  const executablePath = await chromium.executablePath();
+  return {
+    executablePath,
+    headless: true,
+    args: [
+      ...chromium.args,
+      '--disable-blink-features=AutomationControlled',
+    ],
+  };
+}
 
 interface ScrapedArticle {
   title: string;
@@ -211,13 +225,7 @@ export async function processPuppeteerSources(options?: {
 
   try {
     browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
+      ...(await getLaunchOptions())
     });
 
     for (const { id: sourceId, data: source, isGlobal } of allSourcesToProcess) {
@@ -362,8 +370,7 @@ export async function loginMarketInsight(): Promise<{ success: boolean; cookies?
   try {
     console.log('[MarketInsight] Starting new login...');
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      ...(await getLaunchOptions()),
       timeout: 60000
     });
 
@@ -540,8 +547,7 @@ export async function scrapeMarketInsightMNA(): Promise<ScrapedArticle[]> {
   try {
     console.log('[MarketInsight] Starting scrape with session');
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      ...(await getLaunchOptions()),
       timeout: 60000
     });
 
@@ -712,8 +718,7 @@ export async function loginThebell(): Promise<{ success: boolean; cookies?: any[
   try {
     console.log('[Thebell] Starting new login...');
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      ...(await getLaunchOptions()),
       timeout: 60000
     });
 
@@ -828,8 +833,7 @@ export async function scrapeThebell(): Promise<ScrapedArticle[]> {
 
   try {
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+      ...(await getLaunchOptions()),
       timeout: 60000
     });
 

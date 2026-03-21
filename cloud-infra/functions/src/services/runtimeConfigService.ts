@@ -12,14 +12,12 @@ import {
 
 const DEFAULT_FILTERS: RuntimeFilters = {
   keywords: [],
+  mustIncludeKeywords: [],
   includeKeywords: [],
   excludeKeywords: [],
   sectors: [],
   sourceIds: [],
-  dateRange: {
-    mode: 'relative_days',
-    days: 1
-  }
+  dateRange: 'today'
 };
 
 const DEFAULT_AI_CONFIG: RuntimeAiConfig = {
@@ -40,18 +38,18 @@ const DEFAULT_OUTPUT_CONFIG: RuntimeOutputConfig = {
 const DEFAULT_TIMEZONE = 'Asia/Seoul';
 
 function mergeFilters(base: RuntimeFilters, override?: Partial<RuntimeFilters>): RuntimeFilters {
+  const mergedDateRange = override?.dateRange ?? base.dateRange ?? DEFAULT_FILTERS.dateRange;
+
   return {
     ...base,
     ...override,
     keywords: override?.keywords ?? base.keywords ?? [],
+    mustIncludeKeywords: override?.mustIncludeKeywords ?? base.mustIncludeKeywords ?? [],
     includeKeywords: override?.includeKeywords ?? base.includeKeywords ?? [],
     excludeKeywords: override?.excludeKeywords ?? base.excludeKeywords ?? [],
     sectors: override?.sectors ?? base.sectors ?? [],
     sourceIds: override?.sourceIds ?? base.sourceIds ?? [],
-    dateRange: {
-      ...(base.dateRange ?? DEFAULT_FILTERS.dateRange),
-      ...(override?.dateRange ?? {})
-    }
+    dateRange: mergedDateRange,
   };
 }
 
@@ -93,18 +91,22 @@ export async function getCompanyRuntimeConfig(
   const settingsDoc = await db.collection('companySettings').doc(companyId).get();
   const runtimeSettings = (settingsDoc.data() || {}) as any;
 
-  const settings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
+  // 구형 settings 구조 (companies/{id}/settings)
+  const legacySettings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
 
-  // AI Config 병합 (companySettings의 aiModels, aiBaseUrls 우선)
+  // AI Config 병합 (companySettings -> legacySettings -> Default)
   const aiConfig: RuntimeAiConfig = {
     ...DEFAULT_AI_CONFIG,
-    ...(settings.ai ?? {}),
-    model: runtimeSettings.aiModels?.[settings.ai?.provider || 'glm'] || settings.ai?.model || DEFAULT_AI_CONFIG.model,
-    baseUrl: runtimeSettings.aiBaseUrls?.[settings.ai?.provider || 'glm'] || settings.ai?.baseUrl || null,
+    ...(legacySettings.ai ?? {}),
+    ...(runtimeSettings.ai ?? {}), // 신규 필드 (객체 통째로 덮어쓰기 권장)
+    model: runtimeSettings.aiModels?.[runtimeSettings.ai?.provider || legacySettings.ai?.provider || 'glm'] || 
+           runtimeSettings.ai?.model || legacySettings.ai?.model || DEFAULT_AI_CONFIG.model,
+    baseUrl: runtimeSettings.aiBaseUrls?.[runtimeSettings.ai?.provider || legacySettings.ai?.provider || 'glm'] || 
+             runtimeSettings.ai?.baseUrl || legacySettings.ai?.baseUrl || null,
   };
 
-  // ── 구독 소스 목록 병합
-  let subscribedSourceIds: string[] = settings.filters?.sourceIds ?? [];
+  // Filters 병합 (companySettings -> legacySettings -> Subscriptions -> Default)
+  let subscribedSourceIds: string[] = runtimeSettings.filters?.sourceIds ?? legacySettings.filters?.sourceIds ?? [];
   if (subscribedSourceIds.length === 0) {
     const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
     if (subDoc.exists) {
@@ -114,23 +116,25 @@ export async function getCompanyRuntimeConfig(
 
   const baseFilters: RuntimeFilters = {
     ...DEFAULT_FILTERS,
-    ...(settings.filters ?? {}),
+    ...(legacySettings.filters ?? {}),
+    ...(runtimeSettings.filters ?? {}),
     sourceIds: subscribedSourceIds,
+  };
+
+  // Output Config 병합
+  const baseOutput: RuntimeOutputConfig = {
+    ...DEFAULT_OUTPUT_CONFIG,
+    ...(legacySettings.output ?? {}),
+    ...(runtimeSettings.output ?? {}),
   };
 
   return {
     companyId,
     companyName: company.name,
-    timezone: settings.timezone || DEFAULT_TIMEZONE,
+    timezone: runtimeSettings.timezone || legacySettings.timezone || DEFAULT_TIMEZONE,
     filters: mergeFilters(baseFilters, overrides?.filters),
     ai: mergeAiConfig(aiConfig, overrides?.ai),
-    output: mergeOutputConfig(
-      {
-        ...DEFAULT_OUTPUT_CONFIG,
-        ...(settings.output ?? {})
-      },
-      overrides?.output
-    )
+    output: mergeOutputConfig(baseOutput, overrides?.output)
   };
 }
 
@@ -185,16 +189,23 @@ export function getDateRangeBounds(dateRange?: RuntimeFilters['dateRange']): {
     return { startDate: null, endDate: null };
   }
 
-  if (dateRange.mode === 'absolute') {
-    const startDate = dateRange.startDate ? new Date(dateRange.startDate) : null;
-    const endDate = dateRange.endDate ? new Date(dateRange.endDate) : null;
-    return {
-      startDate: startDate && !isNaN(startDate.getTime()) ? startDate : null,
-      endDate: endDate && !isNaN(endDate.getTime()) ? endDate : null
-    };
+  let days = 1;
+  if (typeof dateRange === 'string') {
+    if (dateRange === 'week') days = 7;
+    else if (dateRange === 'month') days = 30;
+    // 'today' is 1
+  } else {
+    if (dateRange.mode === 'absolute') {
+      const startDate = dateRange.startDate ? new Date(dateRange.startDate) : null;
+      const endDate = dateRange.endDate ? new Date(dateRange.endDate) : null;
+      return {
+        startDate: startDate && !isNaN(startDate.getTime()) ? startDate : null,
+        endDate: endDate && !isNaN(endDate.getTime()) ? endDate : null
+      };
+    }
+    days = Math.max(1, dateRange.days || 1);
   }
 
-  const days = Math.max(1, dateRange.days || 1);
   const endDate = new Date();
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);

@@ -20,11 +20,12 @@ export interface RuntimeDateRange {
 
 export interface RuntimeFilters {
   keywords?: string[];
+  mustIncludeKeywords?: string[];
   includeKeywords?: string[];
   excludeKeywords?: string[];
   sectors?: string[];
   sourceIds?: string[];
-  dateRange?: RuntimeDateRange;
+  dateRange?: RuntimeDateRange | 'today' | 'week' | 'month';
 }
 
 export interface RuntimeAiConfig {
