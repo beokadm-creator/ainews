@@ -120,9 +120,9 @@ function PaidSourceAccessPanel() {
         accessMap[d.id] = data.authorizedCompanyIds || [];
       });
 
-      // globalSources where pricingTier === 'paid'
+      // globalSources where pricingTier === 'paid' or 'requires_subscription'
       const paid = gsSnap.docs
-        .filter(d => d.data().pricingTier === 'paid')
+        .filter(d => ['paid', 'requires_subscription'].includes(d.data().pricingTier))
         .map(d => ({
           id: d.id,
           name: d.data().name as string,

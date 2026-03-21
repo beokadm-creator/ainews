@@ -66,7 +66,8 @@ export default function ScrapingRuleAdmin() {
     try {
       const fn = httpsCallable(functions, 'getScrapingRules');
       const result = (await fn()) as any;
-      setRules(result.data || []);
+      const fetchedRules = result.data?.data || result.data || [];
+      setRules(Array.isArray(fetchedRules) ? fetchedRules : []);
     } catch (err) {
       console.error('Failed to load rules:', err);
     } finally {
