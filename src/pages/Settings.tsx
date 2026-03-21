@@ -223,11 +223,18 @@ export default function Settings() {
     if (!companyId) return;
     setSavingPrompt(true);
     try {
-      await setDoc(
-        doc(db, 'companySettings', companyId),
-        { ai: { relevancePrompt } },
-        { merge: true }
-      );
+      const ref = doc(db, 'companySettings', companyId);
+      // updateDoc + dot notation: ai.relevancePrompt만 업데이트 (provider/model 보존)
+      try {
+        await updateDoc(ref, { 'ai.relevancePrompt': relevancePrompt });
+      } catch (e: any) {
+        if (e.code === 'not-found') {
+          // 문서가 없으면 새로 생성
+          await setDoc(ref, { ai: { relevancePrompt } }, { merge: true });
+        } else {
+          throw e;
+        }
+      }
       alert('판단 기준 프롬프트가 저장되었습니다.');
     } catch (err: any) {
       alert('저장 실패: ' + err.message);

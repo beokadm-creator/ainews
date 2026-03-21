@@ -982,26 +982,27 @@ export const searchArticles = onCall(
       offset: offsetNum = 0,
     } = request.data || {};
 
-    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
-    await assertCompanyAccess(request.auth.uid, companyId);
+    // companyId는 더 이상 기사 필터에 사용하지 않음 (기사는 전역 저장)
+    // 인증만 확인
+    if (!request.auth.uid) throw new HttpsError('unauthenticated', 'Authentication required');
 
     const db = admin.firestore();
-    let q: admin.firestore.Query = db.collection('articles').where('companyId', '==', companyId);
+    let q: admin.firestore.Query = db.collection('articles');
 
     // 상태 필터
-    if (statuses.length > 0) {
+    if (statuses && statuses.length > 0) {
       q = q.where('status', 'in', statuses.slice(0, 10));
     }
 
-    // 날짜 필터
+    // 날짜 필터 (collectedAt 기준)
     if (startDate) {
-      q = q.where('publishedAt', '>=', new Date(startDate));
+      q = q.where('collectedAt', '>=', new Date(startDate));
     }
     if (endDate) {
-      q = q.where('publishedAt', '<=', new Date(endDate));
+      q = q.where('collectedAt', '<=', new Date(endDate));
     }
 
-    q = q.orderBy('publishedAt', 'desc').limit(200);
+    q = q.orderBy('collectedAt', 'desc').limit(200);
 
     const snap = await q.get();
     let articles = snap.docs.map(d => {
