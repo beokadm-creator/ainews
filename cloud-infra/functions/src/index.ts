@@ -53,7 +53,7 @@ async function resolveRuntime(uid: string, companyId?: string, overrides?: Pipel
 // [NEW] Global Source Management (Superadmin)
 // ─────────────────────────────────────────
 /** 글로벌 소스 목록 조회 (모든 인증 사용자) */
-export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const getGlobalSources = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
     const db = admin.firestore();
@@ -65,7 +65,7 @@ export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invo
   }
 });
 /** 글로벌 소스 생성/수정 (Superadmin만) */
-export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const upsertGlobalSource = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
@@ -89,7 +89,7 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
   return { success: true, id: docRef.id };
 });
 /** 글로벌 소스 삭제 (Superadmin만) */
-export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const deleteGlobalSource = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
@@ -143,7 +143,7 @@ export const testSourceConnectionHttp = onRequest(
   }
 );
 /** 회사가 구독 소스 선택 저장 */
-export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -167,7 +167,7 @@ export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', 
 // [NEW] Company & User Management
 // ─────────────────────────────────────────
 /** 회사 목록 조회 (Superadmin만) */
-export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const getCompanies = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
     const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -186,7 +186,7 @@ export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker:
   }
 });
 /** 회사 생성/수정 (Superadmin만) */
-export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const upsertCompany = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role !== 'superadmin') {
@@ -207,7 +207,7 @@ export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker
   return { success: true, id: docRef.id };
 });
 /** 사용자 생성 (Superadmin 또는 Company Admin) */
-export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const adminCreateUser = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { email, password, displayName, role, companyId: targetCompanyId } = request.data || {};
   if (!email || !password || !role || !targetCompanyId) {
@@ -251,7 +251,7 @@ export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invok
   }
 });
 /** 특정 회사 사용자 목록 조회 */
-export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const getCompanyUsers = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId } = request.data || {};
   if (!companyId) throw new HttpsError('invalid-argument', 'Company ID required');
@@ -278,7 +278,7 @@ export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invok
 // ─────────────────────────────────────────
 // [NEW] Save AI Provider API Key
 // ─────────────────────────────────────────
-export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const saveAiApiKey = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
@@ -315,7 +315,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
   return { success: true, message: `Settings for ${provider} saved to company ${companyId}` };
 });
 /** 회사별 파이프라인 설정 (필터, 출력 등) 업데이트 */
-export const updateCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const updateCompanySettings = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId, filters, output, timezone } = request.data || {};
   const targetCompanyId = companyId || await getPrimaryCompanyId(request.auth.uid);
@@ -332,7 +332,7 @@ export const updateCompanySettings = onCall({ region: 'us-central1', cors: true,
 // ─────────────────────────────────────────
 // [NEW] Test AI Provider Connection
 // ─────────────────────────────────────────
-export const testAiConnection = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const testAiConnection = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
@@ -360,7 +360,7 @@ export const testAiConnection = onCall({ region: 'us-central1', cors: true, invo
 // ─────────────────────────────────────────
 // Analyze Manual Article
 // ─────────────────────────────────────────
-export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const analyzeManualArticle = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
@@ -428,17 +428,17 @@ export const triggerScrapingCollection = onRequest({ region: 'us-central1' }, as
 // ─────────────────────────────────────────
 // Callable triggers (AI pipeline steps)
 // ─────────────────────────────────────────
-export const triggerAiFiltering = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerAiFiltering = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   return processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai });
 });
-export const triggerDeepAnalysis = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerDeepAnalysis = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   return processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
 });
-export const triggerBriefingGeneration = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerBriefingGeneration = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
   return createDailyBriefing({
@@ -448,7 +448,7 @@ export const triggerBriefingGeneration = onCall({ region: 'us-central1', cors: t
     timezone: runtime.timezone,
   });
 });
-export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerEmailSend = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
   await assertCompanyAccess(request.auth.uid, companyId);
@@ -456,7 +456,7 @@ export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invo
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingEmails(outputId);
 });
-export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerTelegramSend = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
   await assertCompanyAccess(request.auth.uid, companyId);
@@ -512,7 +512,7 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
 // ─────────────────────────────────────────
 // runFullPipeline: Full manual pipeline trigger
 // ─────────────────────────────────────────
-export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
+export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
@@ -617,7 +617,7 @@ export const runFullPipeline = onCall({ region: 'us-central1', cors: true, invok
  * 스크래핑 규칙 조회 (Superadmin만)
  * Firestore의 scrapingRules 컬렉션에서 모든 규칙 조회
  */
-export const getScrapingRules = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const getScrapingRules = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -641,7 +641,7 @@ export const getScrapingRules = onCall({ region: 'us-central1', cors: true, invo
  * keywords: string[]
  * categories: string[]
  */
-export const saveScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const saveScrapingRule = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -697,7 +697,7 @@ export const saveScrapingRule = onCall({ region: 'us-central1', cors: true, invo
 /**
  * 스크래핑 규칙 삭제 (Superadmin만)
  */
-export const deleteScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const deleteScrapingRule = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -721,7 +721,7 @@ export const deleteScrapingRule = onCall({ region: 'us-central1', cors: true, in
  * 로컬 Windows PC의 Puppeteer 서버를 호출
  * 환경변수: LOCAL_PC_SCRAPER_URL (예: http://192.168.1.100:3001)
  */
-export const executeScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const executeScrapingRule = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
