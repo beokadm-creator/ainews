@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
-import { createDailyBriefing } from './services/briefingService';
+import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processScrapingSources } from './services/scrapingService';
@@ -920,3 +920,133 @@ export const executeScrapingRule = onCall({ region: 'us-central1' }, async (requ
     };
   }
 });
+
+// ─────────────────────────────────────────
+// [NEW] generateReport: 사용자 선택 기사 + 프롬프트 → HTML 분석 보고서
+// ─────────────────────────────────────────
+export const generateReport = onCall(
+  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const {
+      companyId: rawCompanyId,
+      articleIds,
+      keywords = [],
+      analysisPrompt = '',
+      reportTitle,
+    } = request.data || {};
+
+    if (!Array.isArray(articleIds) || articleIds.length === 0) {
+      throw new HttpsError('invalid-argument', 'articleIds 배열이 필요합니다');
+    }
+
+    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+    const runtime = await getCompanyRuntimeConfig(companyId);
+
+    try {
+      const result = await generateCustomReport({
+        companyId,
+        articleIds,
+        keywords,
+        analysisPrompt,
+        reportTitle,
+        requestedBy: request.auth.uid,
+        aiConfig: runtime.ai,
+      });
+      return result;
+    } catch (err: any) {
+      console.error('generateReport error:', err);
+      throw new HttpsError('internal', err.message || 'Report generation failed');
+    }
+  }
+);
+
+// ─────────────────────────────────────────
+// [NEW] searchArticles: 기사 검색 (키워드/날짜/매체)
+// ─────────────────────────────────────────
+export const searchArticles = onCall(
+  { region: 'us-central1', timeoutSeconds: 60 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const {
+      companyId: rawCompanyId,
+      keywords = [],
+      startDate,
+      endDate,
+      sourceIds = [],
+      statuses = ['analyzed', 'published'],
+      limit: limitNum = 50,
+      offset: offsetNum = 0,
+    } = request.data || {};
+
+    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const db = admin.firestore();
+    let q: admin.firestore.Query = db.collection('articles').where('companyId', '==', companyId);
+
+    // 상태 필터
+    if (statuses.length > 0) {
+      q = q.where('status', 'in', statuses.slice(0, 10));
+    }
+
+    // 날짜 필터
+    if (startDate) {
+      q = q.where('publishedAt', '>=', new Date(startDate));
+    }
+    if (endDate) {
+      q = q.where('publishedAt', '<=', new Date(endDate));
+    }
+
+    q = q.orderBy('publishedAt', 'desc').limit(200);
+
+    const snap = await q.get();
+    let articles = snap.docs.map(d => {
+      const data = d.data() as any;
+      return {
+        id: d.id,
+        title: data.title || '',
+        source: data.source || '',
+        globalSourceId: data.globalSourceId || null,
+        publishedAt: data.publishedAt,
+        collectedAt: data.collectedAt,
+        status: data.status,
+        summary: data.summary || [],
+        category: data.category || '',
+        tags: data.tags || [],
+        relevanceScore: data.relevanceScore || 0,
+        content: data.content || '',
+        url: data.url || '',
+        companyId: data.companyId,
+      };
+    });
+
+    // 매체 필터 (메모리)
+    if (sourceIds.length > 0) {
+      articles = articles.filter(a => sourceIds.includes(a.globalSourceId) || sourceIds.includes(a.source));
+    }
+
+    // 키워드 필터 (메모리: 제목/내용/태그/요약에서 검색)
+    if (keywords.length > 0) {
+      const kwLower = (keywords as string[]).map((k: string) => k.toLowerCase());
+      articles = articles.filter(article => {
+        const text = [
+          article.title,
+          article.content,
+          ...(article.summary || []),
+          ...(article.tags || []),
+        ].join(' ').toLowerCase();
+        return kwLower.some(kw => text.includes(kw));
+      });
+    }
+
+    // 페이지네이션
+    const total = articles.length;
+    const paged = articles.slice(offsetNum, offsetNum + limitNum);
+
+    return { articles: paged, total, hasMore: offsetNum + limitNum < total };
+  }
+);

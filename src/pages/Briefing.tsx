@@ -1,27 +1,344 @@
-import { useState, useEffect, useRef } from 'react';
-import { Download, Calendar, Loader2, Mail, Send, Clock } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Download, Calendar, Loader2, Mail, Send, Clock,
+  ArrowLeft, Tag, Newspaper, FileText, X, ChevronRight,
+  Eye, ExternalLink, Search
+} from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
-import { collection, query, where, getDocs, doc, getDoc, orderBy, limit } from 'firebase/firestore';
+import {
+  collection, query, where, getDocs, doc, getDoc, orderBy, limit
+} from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { useSearchParams, Link } from 'react-router-dom';
-import html2pdf from 'html2pdf.js';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
+import { format } from 'date-fns';
 import { useAuthStore } from '@/store/useAuthStore';
 
-const SECTION_TABS = [
-  { key: 'all', label: '전체' },
-  { key: 'domestic', label: '🇰🇷 국내' },
-  { key: 'asian', label: '🌏 아시아' },
-  { key: 'global', label: '🌐 글로벌' },
-  { key: 'tech', label: '💻 테크' },
-  { key: 'startup', label: '🚀 스타트업/PE·VC' },
-];
+// html2pdf.js 동적 임포트 (타입 선언)
+declare const html2pdf: any;
 
+// ─────────────────────────────────────────
+// 기사 원문 팝업 컴포넌트
+// ─────────────────────────────────────────
+interface ArticleModalProps {
+  article: any;
+  refNumber: number;
+  onClose: () => void;
+}
+
+function ArticleModal({ article, refNumber, onClose }: ArticleModalProps) {
+  const formatDate = (ts: any) => {
+    if (!ts) return '';
+    try {
+      const d = ts?.toDate ? ts.toDate() : new Date(ts);
+      return format(d, 'yyyy.MM.dd HH:mm');
+    } catch { return ''; }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-start justify-between bg-gray-50 dark:bg-gray-900/50">
+          <div className="flex-1 min-w-0 pr-4">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-6 h-6 rounded-full bg-[#1e3a5f] text-white text-xs font-bold flex items-center justify-center flex-shrink-0">
+                {refNumber}
+              </span>
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">{article.source}</span>
+              <span className="text-xs text-gray-400">{formatDate(article.publishedAt)}</span>
+              {article.category && (
+                <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
+                  {article.category}
+                </span>
+              )}
+            </div>
+            <h3 className="font-bold text-gray-900 dark:text-white text-sm leading-snug line-clamp-2">
+              {article.title}
+            </h3>
+          </div>
+          <button onClick={onClose} className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 ml-2">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          {(article.summary || []).length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">AI 요약</p>
+              <ul className="space-y-1.5 pl-2">
+                {article.summary.map((s: string, i: number) => (
+                  <li key={i} className="text-sm text-gray-700 dark:text-gray-300 flex items-start gap-1.5">
+                    <span className="text-gray-400 mt-0.5">·</span>{s}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {article.content && (
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">기사 원문</p>
+              <div className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 max-h-64 overflow-y-auto">
+                {article.content}
+              </div>
+            </div>
+          )}
+          {!article.content && (!article.summary || article.summary.length === 0) && (
+            <p className="text-sm text-gray-400 text-center py-4">원문 내용이 없습니다.</p>
+          )}
+        </div>
+
+        {article.url && (
+          <div className="px-6 py-3 border-t border-gray-100 dark:border-gray-700 flex items-center gap-3">
+            <a
+              href={article.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-[#1e3a5f] dark:text-blue-400 hover:underline"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              원문 링크
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────
+// HTML 보고서 렌더러 컴포넌트
+// ─────────────────────────────────────────
+interface HtmlReportRendererProps {
+  htmlContent: string;
+  articles: any[];
+  onFootnoteClick: (refNum: number) => void;
+}
+
+function HtmlReportRenderer({ htmlContent, articles, onFootnoteClick }: HtmlReportRendererProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    // 각주 링크에 클릭 핸들러 주입
+    const links = containerRef.current.querySelectorAll('a[data-ref], a.footnote-ref');
+    links.forEach(link => {
+      const refNum = parseInt((link as HTMLElement).dataset.ref || link.getAttribute('href')?.replace('#ref-', '') || '0');
+      if (refNum > 0 && articles[refNum - 1]) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          onFootnoteClick(refNum);
+        });
+        (link as HTMLElement).style.cursor = 'pointer';
+      }
+    });
+
+    // ref-N id를 가진 anchor 클릭도 처리
+    const refAnchors = containerRef.current.querySelectorAll('[id^="ref-"]');
+    refAnchors.forEach(anchor => {
+      const refNum = parseInt(anchor.id.replace('ref-', '') || '0');
+      if (refNum > 0 && articles[refNum - 1]) {
+        anchor.addEventListener('click', (e) => {
+          e.preventDefault();
+          onFootnoteClick(refNum);
+        });
+        (anchor as HTMLElement).style.cursor = 'pointer';
+      }
+    });
+  }, [htmlContent, articles, onFootnoteClick]);
+
+  // HTML에서 <body> 내부 또는 <article> 태그 내용만 추출
+  const extractBody = (html: string) => {
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) return bodyMatch[1];
+    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+    if (articleMatch) return articleMatch[0];
+    return html;
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="report-html-content prose prose-gray dark:prose-invert max-w-none"
+      dangerouslySetInnerHTML={{ __html: extractBody(htmlContent) }}
+    />
+  );
+}
+
+// ─────────────────────────────────────────
+// 구조화 출력 보고서 (기존 형식)
+// ─────────────────────────────────────────
+function StructuredReport({ output, articles }: { output: any; articles: any[] }) {
+  const structured = output.structuredOutput || {};
+  const highlights = structured.highlights || [];
+  const trends = structured.trends || [];
+  const themes = structured.themes || [];
+  const risks = structured.risks || [];
+  const opportunities = structured.opportunities || [];
+  const nextSteps = structured.nextSteps || [];
+
+  const [articleModal, setArticleModal] = useState<{ article: any; refNum: number } | null>(null);
+
+  const openRef = (idx: number) => {
+    const article = articles[idx - 1];
+    if (article) setArticleModal({ article, refNum: idx });
+  };
+
+  return (
+    <div className="space-y-8">
+      {articleModal && (
+        <ArticleModal
+          article={articleModal.article}
+          refNumber={articleModal.refNum}
+          onClose={() => setArticleModal(null)}
+        />
+      )}
+
+      {structured.summary && (
+        <section>
+          <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">핵심 요약</h2>
+          <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">{structured.summary}</p>
+        </section>
+      )}
+
+      {highlights.length > 0 && (
+        <section>
+          <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 이슈</h2>
+          <div className="space-y-4">
+            {highlights.map((h: any, i: number) => (
+              <div key={i} className="bg-gray-50 dark:bg-gray-700/30 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex justify-between items-start mb-2">
+                  <h3 className="font-bold text-gray-900 dark:text-white">{h.title}</h3>
+                  {h.articleIndex && articles[h.articleIndex - 1] && (
+                    <button
+                      onClick={() => openRef(h.articleIndex)}
+                      className="text-[10px] bg-[#1e3a5f] text-white px-2 py-0.5 rounded hover:bg-[#2a4a73] flex-shrink-0 ml-2"
+                    >
+                      [{h.articleIndex}]
+                    </button>
+                  )}
+                </div>
+                <p className="text-gray-700 dark:text-gray-300 text-sm leading-relaxed">{h.description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {trends.length > 0 && (
+        <section>
+          <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">시장 동향</h2>
+          <div className="space-y-4">
+            {trends.map((t: any, i: number) => (
+              <div key={i} className="bg-blue-50/30 dark:bg-blue-900/10 p-4 rounded-lg border border-blue-100 dark:border-blue-900/20">
+                <div className="flex justify-between items-start mb-2">
+                  <h3 className="font-bold text-blue-900 dark:text-blue-300">{t.topic}</h3>
+                  <div className="flex gap-1 ml-2">
+                    {(t.relatedArticles || []).map((idx: number) => articles[idx - 1] ? (
+                      <button key={idx} onClick={() => openRef(idx)}
+                        className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded hover:bg-blue-700">
+                        [{idx}]
+                      </button>
+                    ) : null)}
+                  </div>
+                </div>
+                <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{t.description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {themes.length > 0 && (
+        <section>
+          <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 테마</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {themes.map((t: any, i: number) => (
+              <div key={i} className="border border-gray-200 dark:border-gray-700 p-4 rounded-lg">
+                <h3 className="font-bold text-[#1e3a5f] dark:text-blue-400 mb-2">{t.name}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{t.description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {(risks.length > 0 || opportunities.length > 0 || nextSteps.length > 0) && (
+        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {[
+            ['리스크', risks, 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-900/30'],
+            ['기회요인', opportunities, 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/30'],
+            ['향후 전망', nextSteps, 'bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-900/30'],
+          ].map(([title, items, cls]: any) => items.length > 0 ? (
+            <div key={title} className={`border rounded-lg p-4 ${cls}`}>
+              <h3 className="font-bold text-gray-800 dark:text-gray-200 mb-3">{title}</h3>
+              <ul className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
+                {items.map((item: string, i: number) => (
+                  <li key={i} className="flex items-start gap-1.5">
+                    <span className="text-gray-400 mt-0.5">·</span>{item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null)}
+        </section>
+      )}
+
+      {/* 참고 기사 */}
+      {articles.length > 0 && (
+        <section>
+          <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">참고 기사</h2>
+          <div className="space-y-3">
+            {articles.map((article: any, idx: number) => (
+              <div key={article.id} id={`article-${idx + 1}`}
+                className="flex items-start gap-3 p-4 border border-gray-200 dark:border-gray-700 rounded-lg scroll-mt-20 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                <span className="w-7 h-7 rounded-full bg-[#1e3a5f] text-white text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
+                  {idx + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{article.source}</span>
+                    {article.category && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 rounded">
+                        {article.category}
+                      </span>
+                    )}
+                    {article.publishedAt && (
+                      <span className="text-xs text-gray-400">
+                        {format(article.publishedAt?.toDate ? article.publishedAt.toDate() : new Date(article.publishedAt), 'yyyy.MM.dd')}
+                      </span>
+                    )}
+                  </div>
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">{article.title}</h4>
+                  {(article.summary || []).slice(0, 2).map((s: string, i: number) => (
+                    <p key={i} className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">· {s}</p>
+                  ))}
+                </div>
+                <button
+                  onClick={() => openRef(idx + 1)}
+                  className="flex-shrink-0 text-xs text-[#1e3a5f] dark:text-blue-400 border border-[#1e3a5f]/30 dark:border-blue-400/30 px-2.5 py-1 rounded hover:bg-[#1e3a5f]/5 transition-colors"
+                >
+                  원문 보기
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────
+// 메인 Briefing 컴포넌트
+// ─────────────────────────────────────────
 export default function Briefing() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [output, setOutput] = useState<any>(null);
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [articles, setArticles] = useState<any[]>([]);
-  const [sectionFilter, setSectionFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const pdfRef = useRef<HTMLDivElement>(null);
@@ -29,33 +346,44 @@ export default function Briefing() {
   const companyId = (user as any)?.primaryCompanyId || null;
   const isSuperadmin = (user as any)?.role === 'superadmin';
 
+  // 각주 팝업 상태
+  const [activeRefArticle, setActiveRefArticle] = useState<{ article: any; refNum: number } | null>(null);
+
+  const handleFootnoteClick = useCallback((refNum: number) => {
+    const article = articles[refNum - 1];
+    if (article) setActiveRefArticle({ article, refNum });
+  }, [articles]);
+
   const fetchOutput = async (outputId: string) => {
     setLoading(true);
     setOutput(null);
     setArticles([]);
-
     try {
-      const docRef = doc(db, 'outputs', outputId);
-      const docSnap = await getDoc(docRef);
-      if (!docSnap.exists()) return;
-
+      const docSnap = await getDoc(doc(db, 'outputs', outputId));
+      if (!docSnap.exists()) { setLoading(false); return; }
       const data = docSnap.data();
       setOutput({ id: docSnap.id, ...data });
 
-      const articlesQuery = query(
-        collection(db, 'articles'),
-        where('publishedInOutputId', '==', outputId),
-        // rules-fix: non-superadmin은 query 시 companyId 필터가 없으면 권한 거부됨
-        ...(!isSuperadmin && companyId ? [where('companyId', '==', companyId)] : [])
-      );
-      const articlesSnap = await getDocs(articlesQuery);
-      setArticles(articlesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      // 기사 로드: articleIds로 직접 조회 (custom_report) 또는 publishedInOutputId로 조회
+      if (data.articleIds && data.articleIds.length > 0) {
+        const articleDocs = await Promise.all(
+          data.articleIds.map((id: string) => getDoc(doc(db, 'articles', id)))
+        );
+        setArticles(articleDocs.filter(d => d.exists()).map(d => ({ id: d.id, ...d.data() })));
+      } else {
+        const q = query(
+          collection(db, 'articles'),
+          where('publishedInOutputId', '==', outputId),
+          ...(!isSuperadmin && companyId ? [where('companyId', '==', companyId)] : [])
+        );
+        const snap = await getDocs(q);
+        setArticles(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // M-01 FIX: outputId 없이 접속 시 최신 output 목록 자동 로드
   const fetchRecentOutputs = async () => {
     if (!companyId) { setLoading(false); return; }
     setLoading(true);
@@ -64,12 +392,11 @@ export default function Briefing() {
         collection(db, 'outputs'),
         where('companyId', '==', companyId),
         orderBy('createdAt', 'desc'),
-        limit(5)
+        limit(10)
       );
       const snap = await getDocs(q);
       const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setRecentOutputs(items);
-      // 가장 최신 output 자동 로드
       if (items.length > 0) {
         await fetchOutput(items[0].id);
         return;
@@ -81,22 +408,26 @@ export default function Briefing() {
 
   useEffect(() => {
     const outputId = searchParams.get('outputId');
-    if (outputId) {
-      fetchOutput(outputId);
-    } else {
-      fetchRecentOutputs();
-    }
+    if (outputId) fetchOutput(outputId);
+    else fetchRecentOutputs();
   }, [searchParams, companyId]);
 
-  const downloadPDF = () => {
+  const downloadPDF = async () => {
     if (!pdfRef.current || !output) return;
-
+    // html2pdf.js 동적 로드
+    if (typeof html2pdf === 'undefined') {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+      document.head.appendChild(script);
+      await new Promise(resolve => { script.onload = resolve; });
+    }
+    const title = output.title || 'report';
     html2pdf().from(pdfRef.current).set({
-      margin: 10,
-      filename: `output_${output.id}.pdf`,
-      image: { type: 'jpeg' as const, quality: 0.98 },
+      margin: [10, 10, 10, 10],
+      filename: `${title}_${format(new Date(), 'yyyyMMdd')}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const }
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
     }).save();
   };
 
@@ -104,9 +435,10 @@ export default function Briefing() {
     if (!output) return;
     setSending(true);
     try {
-      const sendEmailFn = httpsCallable(functions, 'triggerEmailSend');
-      await sendEmailFn({ id: output.id, companyId: output.companyId });
-      alert('Email queued.');
+      await httpsCallable(functions, 'triggerEmailSend')({ id: output.id, companyId: output.companyId });
+      alert('이메일 발송이 요청되었습니다.');
+    } catch (err: any) {
+      alert('이메일 발송 실패: ' + err.message);
     } finally {
       setSending(false);
     }
@@ -116,13 +448,16 @@ export default function Briefing() {
     if (!output) return;
     setSending(true);
     try {
-      const sendTelegramFn = httpsCallable(functions, 'triggerTelegramSend');
-      await sendTelegramFn({ id: output.id, companyId: output.companyId });
-      alert('Telegram sent.');
+      await httpsCallable(functions, 'triggerTelegramSend')({ id: output.id, companyId: output.companyId });
+      alert('텔레그램 발송이 완료되었습니다.');
+    } catch (err: any) {
+      alert('텔레그램 발송 실패: ' + err.message);
     } finally {
       setSending(false);
     }
   };
+
+  const isHtmlReport = output?.type === 'custom_report' || (output?.htmlContent && output.htmlContent.length > 100);
 
   if (loading) {
     return (
@@ -132,37 +467,68 @@ export default function Briefing() {
     );
   }
 
+  // 보고서 없음 → 목록 표시
   if (!output) {
     return (
-      <div className="space-y-4 max-w-5xl mx-auto">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Output</h1>
+      <div className="space-y-5 max-w-5xl mx-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">보고서</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">생성된 분석 보고서 목록</p>
+          </div>
+          <Link
+            to="/articles"
+            className="flex items-center gap-2 px-4 py-2 bg-[#d4af37] text-white rounded-lg font-semibold text-sm hover:bg-[#b8942d] transition-colors"
+          >
+            <Search className="w-4 h-4" />
+            기사 검색 · 새 보고서
+          </Link>
+        </div>
+
         {recentOutputs.length > 0 ? (
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
-            <p className="px-6 py-4 text-sm font-semibold text-gray-500 dark:text-gray-400">최근 Output 목록</p>
             {recentOutputs.map(o => (
               <Link
                 key={o.id}
                 to={`/briefing?outputId=${o.id}`}
                 className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
               >
-                <div>
-                  <p className="font-medium text-gray-900 dark:text-white">{o.title || 'Pipeline Output'}</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    {o.createdAt?.toDate ? o.createdAt.toDate().toLocaleString('ko-KR') : o.id}
-                    {o.articleCount ? ` · ${o.articleCount}건` : ''}
-                  </p>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-gray-900 dark:text-white truncate">{o.title || '분석 보고서'}</p>
+                  <div className="flex flex-wrap items-center gap-2 mt-1">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {o.createdAt?.toDate ? format(o.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : o.id}
+                    </p>
+                    {o.articleCount && (
+                      <span className="text-xs text-gray-400">· 기사 {o.articleCount}건</span>
+                    )}
+                    {o.type && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
+                        {o.type === 'custom_report' ? 'AI 분석 보고서' : o.type}
+                      </span>
+                    )}
+                    {(o.keywords || []).slice(0, 3).map((k: string) => (
+                      <span key={k} className="text-[10px] px-1.5 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded">
+                        {k}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-                <Clock className="w-4 h-4 text-gray-400" />
+                <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0 ml-3" />
               </Link>
             ))}
           </div>
         ) : (
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center text-gray-500">
-            <Clock className="w-10 h-10 mx-auto mb-3 opacity-30" />
-            <p className="font-medium">생성된 Output이 없습니다.</p>
-            <p className="text-sm mt-1">Dashboard에서 파이프라인을 실행하면 여기에 결과가 표시됩니다.</p>
-            <Link to="/" className="inline-block mt-4 px-4 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors">
-              Dashboard로 이동
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center">
+            <FileText className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
+            <p className="font-medium text-gray-500 dark:text-gray-400">생성된 보고서가 없습니다.</p>
+            <p className="text-sm text-gray-400 mt-1">기사를 검색하고 선택하여 첫 보고서를 만들어보세요.</p>
+            <Link
+              to="/articles"
+              className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors"
+            >
+              <Search className="w-4 h-4" />
+              기사 검색하기
             </Link>
           </div>
         )}
@@ -170,184 +536,155 @@ export default function Briefing() {
     );
   }
 
-  const structured = output.structuredOutput || {};
-  const highlights = structured.highlights || [];
-  const trends = structured.trends || []; // ★ Added
-  const themes = structured.themes || [];
-  const risks = structured.risks || [];
-  const opportunities = structured.opportunities || [];
-  const nextSteps = structured.nextSteps || [];
-  const visibleArticles = sectionFilter === 'all' ? articles : articles.filter(a => a.sourceCategory === sectionFilter);
-
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-5 max-w-5xl mx-auto">
+      {/* 각주 팝업 */}
+      {activeRefArticle && (
+        <ArticleModal
+          article={activeRefArticle.article}
+          refNumber={activeRefArticle.refNum}
+          onClose={() => setActiveRefArticle(null)}
+        />
+      )}
+
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{output.title || 'Pipeline Output'}</h1>
-          <p className="text-gray-600 mt-1">Generated output from the company-specific AI pipeline.</p>
+          <button
+            onClick={() => navigate('/briefing')}
+            className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 mb-2"
+          >
+            <ArrowLeft className="w-4 h-4" />보고서 목록
+          </button>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white leading-snug">
+            {output.title || '분석 보고서'}
+          </h1>
+          <div className="flex flex-wrap items-center gap-2 mt-1.5">
+            <span className="flex items-center gap-1 text-xs text-gray-400">
+              <Calendar className="w-3.5 h-3.5" />
+              {output.createdAt?.toDate ? format(output.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : ''}
+            </span>
+            <span className="text-xs text-gray-400">· 기사 {articles.length}건</span>
+            {(output.keywords || []).map((k: string) => (
+              <span key={k} className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded">
+                <Tag className="w-2.5 h-2.5" />{k}
+              </span>
+            ))}
+          </div>
+          {output.analysisPrompt && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 italic line-clamp-1">
+              분석 방향: {output.analysisPrompt}
+            </p>
+          )}
         </div>
 
-        <div className="flex items-center px-4 py-2 font-medium text-gray-800 bg-white rounded-lg border border-gray-200">
-          <Calendar className="w-4 h-4 mr-2" />
-          {output.createdAt?.toDate ? output.createdAt.toDate().toLocaleString() : output.id}
+        {/* Action buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={downloadPDF}
+            className="flex items-center gap-1.5 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+          >
+            <Download className="w-4 h-4" />PDF
+          </button>
+          <button
+            onClick={handleSendEmail}
+            disabled={sending}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] disabled:opacity-50 transition-colors"
+          >
+            <Mail className="w-4 h-4" />이메일
+          </button>
+          <button
+            onClick={handleSendTelegram}
+            disabled={sending}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#2CA5E0] text-white rounded-lg text-sm font-medium hover:bg-[#1f8cbf] disabled:opacity-50 transition-colors"
+          >
+            <Send className="w-4 h-4" />텔레그램
+          </button>
+          <Link
+            to="/articles"
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#d4af37] text-white rounded-lg text-sm font-medium hover:bg-[#b8942d] transition-colors"
+          >
+            <Search className="w-4 h-4" />새 보고서
+          </Link>
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3 justify-end">
-        <button onClick={downloadPDF} className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50">
-          <Download className="w-4 h-4 mr-2" /> PDF Download
-        </button>
-        <button onClick={handleSendEmail} disabled={sending} className="flex items-center px-4 py-2 bg-[#1e3a5f] text-white rounded-lg shadow-sm text-sm font-medium hover:bg-[#2a4a73] disabled:opacity-50">
-          <Mail className="w-4 h-4 mr-2" /> Email
-        </button>
-        <button onClick={handleSendTelegram} disabled={sending} className="flex items-center px-4 py-2 bg-[#2CA5E0] text-white rounded-lg shadow-sm text-sm font-medium hover:bg-[#1f8cbf] disabled:opacity-50">
-          <Send className="w-4 h-4 mr-2" /> Telegram
-        </button>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div ref={pdfRef} className="p-8 bg-white space-y-10">
-          <div className="text-center pb-8 border-b-2 border-[#1e3a5f]">
-            <h1 className="text-3xl font-bold text-[#1e3a5f] mb-2">{output.title || 'AI Output'}</h1>
-            <p className="text-lg text-gray-600 font-medium">{output.type}</p>
+      {/* 보고서 본문 */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+        <div ref={pdfRef} className="p-6 sm:p-10 space-y-2">
+          {/* PDF 헤더 */}
+          <div className="text-center pb-6 border-b-2 border-[#1e3a5f] mb-8 print-only hidden">
+            <h1 className="text-2xl font-bold text-[#1e3a5f]">{output.title || '분석 보고서'}</h1>
+            <p className="text-gray-500 text-sm mt-1">
+              생성일: {output.createdAt?.toDate ? format(output.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : ''}
+              {articles.length > 0 ? ` · 참고 기사 ${articles.length}건` : ''}
+            </p>
           </div>
 
-          {structured.summary && (
-            <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">핵심 요약 (Executive Summary)</h2>
-              <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{structured.summary}</p>
-            </section>
+          {isHtmlReport ? (
+            <>
+              {/* 보고서 스타일 */}
+              <style>{`
+                .report-html-content h1 { font-size: 1.5rem; font-weight: 700; color: #1e3a5f; border-bottom: 2px solid #1e3a5f; padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
+                .report-html-content h2 { font-size: 1.15rem; font-weight: 700; color: #1e3a5f; border-left: 4px solid #1e3a5f; padding-left: 0.75rem; margin: 1.75rem 0 1rem; }
+                .report-html-content h3 { font-size: 1rem; font-weight: 700; color: #1f2937; margin: 1rem 0 0.5rem; }
+                .report-html-content p { color: #374151; line-height: 1.75; margin-bottom: 0.75rem; }
+                .report-html-content ul { list-style: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+                .report-html-content li { color: #374151; line-height: 1.7; margin-bottom: 0.3rem; }
+                .report-html-content .section-summary { background: #f0f4f8; border-left: 4px solid #1e3a5f; padding: 1.25rem 1.5rem; border-radius: 0 0.5rem 0.5rem 0; margin-bottom: 2rem; }
+                .report-html-content .section-highlights .highlight, .report-html-content .highlight-item { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+                .report-html-content .section-trends .trend-item, .report-html-content .trend-item { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+                .report-html-content .section-risks .risk-item { background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
+                .report-html-content .section-references .reference-item { border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; margin-bottom: 0.75rem; }
+                .report-html-content a.footnote-ref, .report-html-content sup a { display: inline-block; background: #1e3a5f; color: white; font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 0.25rem; margin-left: 0.25rem; text-decoration: none; cursor: pointer; vertical-align: super; }
+                .report-html-content a.footnote-ref:hover, .report-html-content sup a:hover { background: #2a4a73; }
+                .dark .report-html-content h1, .dark .report-html-content h2 { color: #93c5fd; }
+                .dark .report-html-content h3 { color: #e5e7eb; }
+                .dark .report-html-content p, .dark .report-html-content li { color: #d1d5db; }
+                .dark .report-html-content .section-summary { background: #1e3a5f/20; }
+                .dark .report-html-content .highlight-item { background: #374151; border-color: #4b5563; }
+                .dark .report-html-content .trend-item { background: #1e3a5f/20; border-color: #1e40af; }
+                .dark .report-html-content .reference-item { border-color: #4b5563; }
+              `}</style>
+              <HtmlReportRenderer
+                htmlContent={output.htmlContent || output.rawOutput || ''}
+                articles={articles}
+                onFootnoteClick={handleFootnoteClick}
+              />
+            </>
+          ) : (
+            <StructuredReport output={output} articles={articles} />
           )}
-
-          {highlights.length > 0 && (
-            <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 뉴스 (Highlights)</h2>
-              <div className="space-y-4">
-                {highlights.map((highlight: any, index: number) => (
-                  <div key={index} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-bold text-gray-900">{highlight.title}</h3>
-                      {highlight.articleIndex && (
-                        <a 
-                          href={`#article-${highlight.articleIndex}`} 
-                          className="text-[10px] bg-[#1e3a5f] text-white px-2 py-0.5 rounded hover:bg-[#2a4a73]"
-                        >
-                          Source [{highlight.articleIndex}]
-                        </a>
-                      )}
-                    </div>
-                    <p className="text-gray-700 text-sm leading-relaxed">{highlight.description}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {trends.length > 0 && (
-            <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">최신 시장 동향 (Market Trends)</h2>
-              <div className="space-y-4">
-                {trends.map((trend: any, index: number) => (
-                  <div key={index} className="bg-blue-50/30 p-4 rounded-lg border border-blue-100 dark:border-blue-900/20">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-bold text-blue-900">{trend.topic}</h3>
-                      <div className="flex gap-1">
-                        {(trend.relatedArticles || []).map((idx: number) => (
-                          <a key={idx} href={`#article-${idx}`} className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded hover:bg-blue-700">
-                             [{idx}]
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-700 leading-relaxed">{trend.description}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {themes.length > 0 && (
-            <section>
-              <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">주요 테마 (Key Themes)</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {themes.map((theme: any, index: number) => (
-                  <div key={index} className="border border-gray-200 p-4 rounded-lg">
-                    <h3 className="font-bold text-[#1e3a5f] mb-2">{theme.name}</h3>
-                    <p className="text-sm text-gray-600 leading-relaxed">{theme.description}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {(risks.length > 0 || opportunities.length > 0 || nextSteps.length > 0) && (
-            <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {[
-                ['리스크 (Risks)', risks], 
-                ['기회 요인 (Opportunities)', opportunities], 
-                ['향후 전략 (Next Steps)', nextSteps]
-              ].map(([title, items]: any) => (
-                <div key={title} className="border border-gray-200 rounded-lg p-4">
-                  <h3 className="font-bold text-[#1e3a5f] mb-3">{title}</h3>
-                  <ul className="list-disc pl-5 space-y-2 text-sm text-gray-700">
-                    {items.map((item: string, index: number) => <li key={index}>{item}</li>)}
-                  </ul>
-                </div>
-              ))}
-            </section>
-          )}
-
-          <section>
-            <h2 className="text-xl font-bold text-[#1e3a5f] border-l-4 border-[#1e3a5f] pl-3 mb-4">참고 기사 전문 (Reference Articles)</h2>
-            {articles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-200 dark:border-gray-700 pb-3">
-                {SECTION_TABS.filter(tab => tab.key === 'all' || articles.some(a => a.sourceCategory === tab.key)).map(tab => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setSectionFilter(tab.key)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                      sectionFilter === tab.key
-                        ? 'bg-[#1e3a5f] text-white dark:bg-blue-600'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
-                    }`}
-                  >
-                    {tab.label} {tab.key !== 'all' ? `(${articles.filter(a => a.sourceCategory === tab.key).length})` : `(${articles.length})`}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="space-y-6">
-              {visibleArticles.map((article: any, index: number) => (
-                <div key={article.id} id={`article-${index + 1}`} className="border-b border-gray-100 pb-6 last:border-0 scroll-mt-20">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="inline-block px-1.5 py-0.5 bg-[#1e3a5f] text-white text-[10px] font-bold rounded">
-                          [{index + 1}]
-                        </span>
-                        <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 text-[10px] rounded">
-                          {article.category || '기타'}
-                        </span>
-                        <span className="text-[10px] text-gray-500">{article.source}</span>
-                      </div>
-                      <h3 className="text-base font-bold text-gray-900 mb-2">
-                        <a href={article.url} target="_blank" rel="noreferrer" className="hover:text-[#1e3a5f] hover:underline">
-                          {article.title}
-                        </a>
-                      </h3>
-                      <ul className="list-disc pl-5 space-y-1 text-sm text-gray-700">
-                        {(article.summary || []).map((line: string, idx: number) => (
-                          <li key={idx}>{line}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
         </div>
       </div>
+
+      {/* 관련 보고서 히스토리 */}
+      {recentOutputs.filter(o => o.id !== output.id).length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+            <span className="font-semibold text-sm text-gray-900 dark:text-white flex items-center gap-2">
+              <Clock className="w-4 h-4 text-gray-400" />다른 보고서
+            </span>
+          </div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">
+            {recentOutputs.filter(o => o.id !== output.id).slice(0, 5).map(o => (
+              <Link
+                key={o.id}
+                to={`/briefing?outputId=${o.id}`}
+                className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{o.title || '보고서'}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {o.createdAt?.toDate ? format(o.createdAt.toDate(), 'yyyy.MM.dd') : ''} · {o.articleCount || 0}건
+                  </p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0 ml-2" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

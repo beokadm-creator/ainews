@@ -4,25 +4,41 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 
-// Components
+// Layouts
 import Layout from '@/components/Layout';
+import AdminLayout from '@/components/AdminLayout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 
-// Pages
+// ─── Company user pages ────────────────────────────────────
 import Login from '@/pages/Login';
-import Dashboard from '@/pages/Dashboard';
-import History from '@/pages/History';
+import UserHome from '@/pages/UserHome';
+import Articles from '@/pages/Articles';
+import ReportNew from '@/pages/ReportNew';
 import Briefing from '@/pages/Briefing';
-import Settings from '@/pages/Settings';
+import History from '@/pages/History';
 import ManualEntry from '@/pages/ManualEntry';
-import MediaAdmin from '@/pages/MediaAdmin';
 import MediaSelector from '@/pages/MediaSelector';
-import AdminManagement from '@/pages/AdminManagement';
 import Team from '@/pages/Team';
+import Settings from '@/pages/Settings';
+
+// ─── Superadmin pages ──────────────────────────────────────
+import AdminDashboard from '@/pages/admin/AdminDashboard';
+import AdminArticles from '@/pages/admin/AdminArticles';
+import AdminManagement from '@/pages/AdminManagement';
+import MediaAdmin from '@/pages/MediaAdmin';
 import ScrapingRuleAdmin from '@/pages/ScrapingRuleAdmin';
 
+// ─── Role-based root redirect ──────────────────────────────
+function RootRedirect() {
+  const { user, loading } = useAuthStore();
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" replace />;
+  const role = (user as any)?.role;
+  if (role === 'superadmin') return <Navigate to="/admin" replace />;
+  return <Navigate to="/home" replace />;
+}
+
 export default function App() {
-  // BUG-07 FIX: setUserWithProfile로 변경 (Firestore role/companyIds 포함 로드)
   const { setUserWithProfile } = useAuthStore();
 
   useEffect(() => {
@@ -35,20 +51,85 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        {/* Public Routes */}
+        {/* Public */}
         <Route path="/login" element={<Login />} />
 
-        {/* Protected Routes */}
-        <Route path="/" element={<ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>} />
-        <Route path="/history" element={<ProtectedRoute><Layout><History /></Layout></ProtectedRoute>} />
-        <Route path="/briefing" element={<ProtectedRoute><Layout><Briefing /></Layout></ProtectedRoute>} />
-        <Route path="/manual-entry" element={<ProtectedRoute><Layout><ManualEntry /></Layout></ProtectedRoute>} />
-        <Route path="/media" element={<ProtectedRoute><Layout><MediaSelector /></Layout></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
-        <Route path="/team" element={<ProtectedRoute><Layout><Team /></Layout></ProtectedRoute>} />
-        <Route path="/admin/media" element={<ProtectedRoute><Layout><MediaAdmin /></Layout></ProtectedRoute>} />
-        <Route path="/admin/management" element={<ProtectedRoute><Layout><AdminManagement /></Layout></ProtectedRoute>} />
-        <Route path="/admin/scraping" element={<ProtectedRoute><Layout><ScrapingRuleAdmin /></Layout></ProtectedRoute>} />
+        {/* Root redirect based on role */}
+        <Route path="/" element={<RootRedirect />} />
+
+        {/* ── Company user routes ──────────────────────────── */}
+        <Route path="/home" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor', 'viewer']}>
+            <Layout><UserHome /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/articles" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor', 'viewer']}>
+            <Layout><Articles /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/reports/new" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+            <Layout><ReportNew /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/briefing" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor', 'viewer']}>
+            <Layout><Briefing /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/history" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+            <Layout><History /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/manual-entry" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+            <Layout><ManualEntry /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/media" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+            <Layout><MediaSelector /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/team" element={
+          <ProtectedRoute requiredRole={['company_admin']}>
+            <Layout><Team /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/settings" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+            <Layout><Settings /></Layout>
+          </ProtectedRoute>
+        } />
+
+        {/* ── Superadmin routes ────────────────────────────── */}
+        <Route path="/admin" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><AdminDashboard /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/articles" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><AdminArticles /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/sources" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><MediaAdmin /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/companies" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><AdminManagement /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/scraping" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><ScrapingRuleAdmin /></AdminLayout>
+          </ProtectedRoute>
+        } />
 
         {/* Catch all */}
         <Route path="*" element={<Navigate to="/" replace />} />

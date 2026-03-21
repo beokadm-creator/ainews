@@ -254,6 +254,131 @@ export async function createDailyBriefing(options?: OutputGenerationOptions) {
   return generatePipelineOutput(sorted, options);
 }
 
+// ─────────────────────────────────────────
+// generateCustomReport: 사용자가 선택한 기사 + 키워드 + 방향 프롬프트 → HTML 보고서
+// ─────────────────────────────────────────
+export interface CustomReportOptions {
+  companyId: string;
+  articleIds: string[];
+  keywords: string[];
+  analysisPrompt: string;
+  reportTitle?: string;
+  requestedBy: string;
+  aiConfig: RuntimeAiConfig;
+}
+
+export async function generateCustomReport(options: CustomReportOptions) {
+  const db = admin.firestore();
+
+  // 1. 선택한 기사들 로드
+  const articleDocs = await Promise.all(
+    options.articleIds.map(id => db.collection('articles').doc(id).get())
+  );
+  const articles = articleDocs
+    .filter(d => d.exists)
+    .map(d => ({ id: d.id, ...d.data() as any }));
+
+  if (articles.length === 0) {
+    throw new Error('선택한 기사를 찾을 수 없습니다.');
+  }
+
+  // 2. 기사 원문 digest 구성 (번호 포함)
+  const articleDigest = articles.map((article, index) => {
+    const pub = article.publishedAt?.toDate
+      ? article.publishedAt.toDate().toLocaleDateString('ko-KR')
+      : (article.publishedAt || '');
+    return [
+      `[기사 ${index + 1}]`,
+      `제목: ${article.title}`,
+      `매체: ${article.source || ''}`,
+      `날짜: ${pub}`,
+      `원문:\n${(article.content || (article.summary || []).join(' ')).substring(0, 3000)}`,
+    ].join('\n');
+  }).join('\n\n---\n\n');
+
+  const keywordsText = options.keywords.length > 0
+    ? `분석 초점 키워드: ${options.keywords.join(', ')}`
+    : '';
+
+  const reportTitle = options.reportTitle || `${options.keywords[0] || '시장'} 동향 분석 보고서`;
+
+  // 3. AI 프롬프트 구성
+  const systemPrompt = `당신은 국내 최고 수준의 투자·산업 분석 전문가입니다.
+제공된 기사들을 바탕으로 전문적인 분석 보고서를 HTML 형식으로 작성하세요.
+
+보고서 작성 규칙:
+- 반드시 완전한 HTML 구조로 작성 (<!DOCTYPE html>부터 </html>까지)
+- 보고서 내용은 100% 한국어로 작성
+- 기업명, 고유명사는 영문 병기 가능 (예: 삼성전자(Samsung Electronics))
+- 각 주요 주장/분석에는 반드시 근거 기사를 각주로 표시: <sup><a class="footnote-ref" data-ref="N">[N]</a></sup>
+- 각주 번호는 기사 번호와 일치 (기사 1 → [1], 기사 2 → [2])
+- 마지막 섹션은 반드시 참고 기사 원문 전체를 포함
+
+보고서 HTML 구조:
+<article class="report-content">
+  <header class="report-header">...</header>
+  <section class="section-summary"><h2>핵심 요약</h2>...</section>
+  <section class="section-highlights"><h2>주요 이슈</h2>...</section>
+  <section class="section-trends"><h2>시장 동향 분석</h2>...</section>
+  <section class="section-risks"><h2>리스크 & 기회요인</h2>...</section>
+  <section class="section-outlook"><h2>향후 전망</h2>...</section>
+  <section class="section-references">
+    <h2>참고 기사 원문</h2>
+    <div id="ref-N" class="reference-item">...</div>
+  </section>
+</article>`;
+
+  const userPrompt = `${keywordsText}
+${options.analysisPrompt ? `분석 방향: ${options.analysisPrompt}` : ''}
+보고서 제목: ${reportTitle}
+
+아래 ${articles.length}개의 기사를 분석하여 전문 보고서를 HTML로 작성하세요.
+
+${articleDigest}`;
+
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+  const response = await callAiProvider(
+    fullPrompt,
+    options.aiConfig,
+    { temperature: 0.3, maxTokens: 8000 },
+    options.companyId
+  );
+
+  const htmlContent = response.content;
+
+  // 4. outputs 컬렉션에 저장
+  const outputRef = db.collection('outputs').doc();
+  await outputRef.set({
+    id: outputRef.id,
+    companyId: options.companyId,
+    type: 'custom_report',
+    title: reportTitle,
+    keywords: options.keywords,
+    analysisPrompt: options.analysisPrompt,
+    articleIds: options.articleIds,
+    articleCount: articles.length,
+    htmlContent,
+    rawOutput: htmlContent,
+    structuredOutput: null,
+    requestedBy: options.requestedBy,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  await logPromptExecution(
+    'custom-output',
+    { articleCount: articles.length, keywords: options.keywords },
+    htmlContent,
+    options.aiConfig.model,
+    { companyId: options.companyId, prompt: userPrompt }
+  );
+
+  return {
+    success: true,
+    outputId: outputRef.id,
+    articleCount: articles.length,
+  };
+}
+
 export async function saveBriefingVersion(
   outputId: string,
   updatedData: Record<string, any>,

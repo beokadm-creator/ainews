@@ -3,7 +3,6 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   History,
-  FileText,
   Settings,
   LogOut,
   Menu,
@@ -12,10 +11,9 @@ import {
   Sun,
   Library,
   Newspaper,
-  ShieldCheck,
-  TrendingUp,
   Users,
-  Database
+  Search,
+  BookOpen
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -40,8 +38,7 @@ export default function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const role = (user as any)?.role;
-  const isSuperadmin = role === 'superadmin';
-  const isAdminOrAbove = isSuperadmin || role === 'company_admin';
+  const isAdminOrAbove = role === 'company_admin' || role === 'superadmin';
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
@@ -49,26 +46,17 @@ export default function Layout({ children }: LayoutProps) {
   }, [theme]);
 
   // ─────────────────────────────────────────
-  // Navigation: role-aware
+  // Navigation: company users only
   // ─────────────────────────────────────────
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard, show: true },
-    { name: 'History', href: '/history', icon: History, show: true },
-    { name: 'Output', href: '/briefing', icon: FileText, show: true },
-    { name: 'Manual Entry', href: '/manual-entry', icon: Newspaper, show: true },
-    // company_admin & above: 매체 구독 선택
+    { name: '대시보드', href: '/home', icon: LayoutDashboard, show: true },
+    { name: '기사 검색', href: '/articles', icon: Search, show: true },
+    { name: '보고서', href: '/briefing', icon: BookOpen, show: true },
+    { name: '실행 이력', href: '/history', icon: History, show: isAdminOrAbove },
+    { name: '수동 입력', href: '/manual-entry', icon: Newspaper, show: isAdminOrAbove },
     { name: '매체 구독', href: '/media', icon: Library, show: isAdminOrAbove },
-    // company_admin 전용: 팀 관리 (superadmin은 /admin/management 사용)
     { name: '팀 관리', href: '/team', icon: Users, show: role === 'company_admin' },
-    // Settings: company_admin & above
-    { name: 'Settings', href: '/settings', icon: Settings, show: isAdminOrAbove },
-  ];
-
-  // Superadmin-only section
-  const superadminNav = [
-    { name: 'Media Library', href: '/admin/media', icon: ShieldCheck },
-    { name: 'Company & Users', href: '/admin/management', icon: ShieldCheck },
-    { name: 'Scraping Rules', href: '/admin/scraping', icon: Database },
+    { name: '설정', href: '/settings', icon: Settings, show: isAdminOrAbove },
   ];
 
   const handleLogout = async () => {
@@ -118,31 +106,7 @@ export default function Layout({ children }: LayoutProps) {
           <nav className="flex-1 px-4 py-5 space-y-1 overflow-y-auto">
             {navigation.filter(i => i.show).map(item => <NavLink key={item.name} item={item} />)}
 
-            {/* Superadmin section */}
-            {isSuperadmin && (
-              <>
-                <div className="pt-4 pb-2">
-                  <p className="px-4 text-xs font-semibold text-white/40 uppercase tracking-wider">Superadmin</p>
-                </div>
-                {superadminNav.map(item => {
-                  const isActive = location.pathname === item.href;
-                  return (
-                    <Link
-                      key={item.name}
-                      to={item.href}
-                      className={`flex items-center px-4 py-2.5 text-sm font-medium rounded-lg transition-colors ${
-                        isActive ? 'bg-[#d4af37] text-white' : 'text-yellow-300/70 hover:bg-white/10 hover:text-yellow-300'
-                      }`}
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <item.icon className="w-4 h-4 mr-3" />
-                      {item.name}
-                    </Link>
-                  );
-                })}
-              </>
-            )}
-          </nav>
+            </nav>
 
           {/* User info */}
           <div className="p-4 border-t border-white/10 flex-shrink-0">
