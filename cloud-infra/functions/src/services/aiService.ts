@@ -445,6 +445,10 @@ export async function analyzeArticle(
 ) {
   const prompt = `${aiConfig.analysisPrompt || DEFAULT_ANALYSIS_PROMPT}
 
+[CRITICAL INSTRUCTION]
+All outputs (summary, categories, implications, company names) MUST be translated into perfectly natural Korean (한국어). 
+Do NOT output English sentences.
+
 Article title: ${article.title}
 Source: ${article.source}
 Published at: ${article.publishedAt}

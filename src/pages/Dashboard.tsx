@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Play, Database, Cpu, FileText, RefreshCw, CheckCircle, XCircle,
   AlertTriangle, Clock, TrendingUp, LayoutDashboard, Filter,
-  ChevronDown, ChevronUp, X, Plus, Calendar, Newspaper, Loader2
+  ChevronDown, ChevronUp, X, Plus, Calendar, Newspaper, Loader2, Info
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
@@ -250,7 +250,27 @@ export default function Dashboard() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">대시보드</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">수집된 기사를 분석하고 브리핑을 생성합니다.</p>
+        <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">업계 동향과 최신 기사를 수집 및 분석하여 맞춤형 브리핑을 제공합니다.</p>
+      </div>
+
+      {/* ── Info Guide ─────────────────────────── */}
+      <div className="bg-gradient-to-r from-[#1e3a5f] to-[#2a4a73] rounded-xl shadow-lg border-0 overflow-hidden mb-6">
+        <div className="px-6 py-5 text-white">
+          <h2 className="text-lg font-bold flex items-center gap-2 mb-2 text-yellow-300">
+            <Info className="w-5 h-5" />
+            EUM News 브리핑 시스템 이용 가이드
+          </h2>
+          <div className="text-sm text-blue-50 space-y-2 leading-relaxed">
+            <p className="font-medium">
+              본 시스템은 실시간으로 업데이트되는 업계 주요 기사를 수집하고, AI가 분석요약하여 제공하는 맞춤형 인텔리전스 환경입니다.
+            </p>
+            <ul className="list-disc list-inside space-y-1.5 ml-1 opacity-95">
+              <li><strong>정기 자동 브리핑:</strong> 매일 밤 10시에 새로운 기사를 자동으로 수집 및 분석합니다.</li>
+              <li><strong>실시간 즉시 분석:</strong> 특정 키워드의 기사나 최신 동향이 당장 필요할 때, 아래 <strong>[지금 분석 실행]</strong> 버튼을 통해 즉시 데이터를 추출할 수 있습니다.</li>
+              <li><strong>언어 기본 설정 (한국어):</strong> 수집되는 <strong>모든 해외 원문 기사는 '한국어 번역'이 기본(Default)</strong>으로 적용되어 제공되며, 원문 보기는 보조 기능으로 지원됩니다.</li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       {/* ── Pipeline Run Panel ─────────────────────────── */}

@@ -144,6 +144,10 @@ Important:
 
     prompt = `${basePrompt}
 
+[CRITICAL INSTRUCTION: TRANSLATION]
+You MUST generate the ENTIRE report (all titles, descriptions, trends, categories, and tags) in completely natural Korean (한국어). 
+Do NOT output English sentences unless you are citing proper nouns (e.g. "Apple Inc. (애플)"). This system is for Korean users and any un-translated English output will be considered a total failure.
+
 Company: ${options.companyId}
 Output title: ${options.outputConfig.title || 'AI News Output'}
 Article digest:
