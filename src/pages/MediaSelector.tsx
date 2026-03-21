@@ -124,9 +124,6 @@ export default function MediaSelector() {
   };
 
   const filtered = allSources.filter(s => {
-    // 0. 더벨과 마켓인사이트 제외 (별도 관리 페이지에서 관리)
-    if (s.name === '더벨 (The Bell)' || s.name === '마켓인사이트 (M&A)') return false;
-
     // 1. Inactive는 이미 선택한 구독 목록에 있는 것만 노출
     if (s.status === 'inactive' && !selectedIds.has(s.id)) return false;
 

@@ -246,9 +246,19 @@ export async function processScrapingSources(options?: {
       : db.collection('sources').doc(sourceId);
 
     try {
-      const articles = scraperMap[sourceId]
-        ? await scrapeWebsite(source.url, sourceId)
-        : await scrapeWebsiteDynamic(source.url, source);
+      let articles: any[] = [];
+      if (sourceId === 'thebell' || sourceId === 'marketinsight') {
+        const snap = await db.collection('articles')
+          .where('sourceId', '==', sourceId)
+          .where('status', '==', 'new')
+          .limit(100)
+          .get();
+        articles = snap.docs.map(d => d.data());
+      } else {
+        articles = scraperMap[sourceId]
+          ? await scrapeWebsite(source.url, sourceId)
+          : await scrapeWebsiteDynamic(source.url, source);
+      }
 
       let sourceCollected = 0;
 

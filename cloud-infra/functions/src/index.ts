@@ -1,5 +1,12 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { setGlobalOptions } from 'firebase-functions/v2';
+
+setGlobalOptions({
+  region: 'us-central1',
+  maxInstances: 5,
+  concurrency: 50,
+});
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { processRssSources } from './services/rssService';

@@ -74,6 +74,7 @@ export default function Dashboard() {
   // Filter config (for pipeline run)
   const [showFilters, setShowFilters] = useState(false);
   const [dateRange, setDateRange] = useState('today');
+  const [mustIncludeKw, setMustIncludeKw] = useState<string[]>([]);
   const [includeKw, setIncludeKw] = useState<string[]>([]);
   const [excludeKw, setExcludeKw] = useState<string[]>([]);
   const [subscribedSources, setSubscribedSources] = useState<{ id: string; name: string }[]>([]);
@@ -200,6 +201,7 @@ export default function Dashboard() {
 
     const overrides: any = {
       filters: {
+        ...(mustIncludeKw.length > 0 ? { mustIncludeKeywords: mustIncludeKw } : {}),
         ...(includeKw.length > 0 ? { includeKeywords: includeKw } : {}),
         ...(excludeKw.length > 0 ? { excludeKeywords: excludeKw } : {}),
         ...(selectedSourceIds.length > 0 && selectedSourceIds.length < subscribedSources.length
@@ -320,19 +322,31 @@ export default function Dashboard() {
             </div>
 
             {/* Keywords */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <TagInput
-                label="포함 키워드 (Enter로 추가)"
-                placeholder="예: M&A, 인수합병"
-                tags={includeKw}
-                onChange={setIncludeKw}
-              />
-              <TagInput
-                label="제외 키워드"
-                placeholder="예: 광고, 홍보"
-                tags={excludeKw}
-                onChange={setExcludeKw}
-              />
+            <div className="mb-2">
+              <p className="text-xs text-gray-400 dark:text-gray-500 mb-3 bg-blue-50/50 dark:bg-blue-900/10 p-2 rounded border border-blue-100 dark:border-blue-800">
+                <Info className="inline w-3.5 h-3.5 mr-1 text-blue-500" />
+                키워드는 최대한 구체적이고 상세하게 입력할수록 AI가 더 정확하고 유용한 맞춤형 분석 결과를 제공합니다.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <TagInput
+                  label="필수 포함 키워드 (AND 조건)"
+                  placeholder="예: M&A, 인수합병"
+                  tags={mustIncludeKw}
+                  onChange={setMustIncludeKw}
+                />
+                <TagInput
+                  label="선택 포함 키워드 (OR 조건)"
+                  placeholder="예: 스타트업, 투자"
+                  tags={includeKw}
+                  onChange={setIncludeKw}
+                />
+                <TagInput
+                  label="제외 키워드"
+                  placeholder="예: 광고, 홍보"
+                  tags={excludeKw}
+                  onChange={setExcludeKw}
+                />
+              </div>
             </div>
 
             {/* Sources */}
