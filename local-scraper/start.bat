@@ -1,29 +1,32 @@
 @echo off
-REM Start the Local Scraper Server
-
+title AI News Local Scraper
 echo ========================================
-echo Starting EUM News Local Scraper...
+echo   Local Scraper - Starting...
 echo ========================================
-echo.
 
-cd /d "%~dp0"
+cd /d C:\Users\whhol\ainews\ainews\local-scraper
 
-REM Check if node_modules exists
-if not exist "node_modules" (
-    echo Dependencies not installed. Running setup...
-    call npm install
+if not exist logs mkdir logs
+
+where pm2 >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [INFO] PM2 not found. Installing...
+    npm install -g pm2
+    npm install -g pm2-windows-startup
 )
 
-REM Check if lib directory exists (compiled JS)
-if not exist "lib" (
-    echo Building TypeScript...
-    call npm run build
-)
+pm2 stop ainews-local-scraper >nul 2>&1
+pm2 delete ainews-local-scraper >nul 2>&1
+
+echo [INFO] Starting scraper server...
+pm2 start ecosystem.config.js
+
+pm2 status
 
 echo.
-echo Server starting on http://localhost:3001
-echo Press Ctrl+C to stop the server
+echo ========================================
+echo   Server running at http://localhost:3001
+echo   Health: http://localhost:3001/health
+echo ========================================
 echo.
-
-npm start
 pause

@@ -13,7 +13,8 @@ import {
   Library,
   Newspaper,
   ShieldCheck,
-  TrendingUp
+  TrendingUp,
+  Users
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -56,6 +57,8 @@ export default function Layout({ children }: LayoutProps) {
     { name: 'Manual Entry', href: '/manual-entry', icon: Newspaper, show: true },
     // company_admin & above: 매체 구독 선택
     { name: '매체 구독', href: '/media', icon: Library, show: isAdminOrAbove },
+    // company_admin 전용: 팀 관리 (superadmin은 /admin/management 사용)
+    { name: '팀 관리', href: '/team', icon: Users, show: role === 'company_admin' },
     // Settings: company_admin & above
     { name: 'Settings', href: '/settings', icon: Settings, show: isAdminOrAbove },
   ];

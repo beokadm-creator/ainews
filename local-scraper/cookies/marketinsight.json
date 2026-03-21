@@ -1,0 +1,93 @@
+[
+  {
+    "name": "marketinsight_auth",
+    "value": "c3RVRHRTTjJoV3pVT0hXOVNzajMxNTdqRFNqTStPMGlWUVRKV1dFMGFFZFVkdnRuaDIxTCtNSGlOeE5FWnhWcnAydWMzUHMwZkxDSkgvcFpLSEFwYU1FUC9nNGYraFpFKzJFYXpyMG5qQjNuVmtYVWNLdERHRUQvZ2NFM1JJTDNucmthV2VjdEQyNUNkNFMyWVdLbXY4bmxIOHNvUXh5dGZWWHFSQkYzWGhndGtSSkpnTWw2c0FhUC84VVJTSlBvdnJ3MnhtcVY0WTRPaHVKMnJvSFVablFQS2FNT1lxRHNxNGdYT2pQWWZqQ3ZTeFpRUEVtekNURFdkWENTK0FRcg",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": -1,
+    "size": 360,
+    "httpOnly": false,
+    "secure": false,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_clsk",
+    "value": "1iwxbqq%5E1774070589077%5E2%5E0%5Ey.clarity.ms%2Fcollect",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": 1774156989,
+    "size": 61,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_clck",
+    "value": "jpxmj6%5E2%5Eg4j%5E0%5E2271",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": 1805606585,
+    "size": 32,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.685917820.1774070586",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": 1808630638.008557,
+    "size": 29,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_ga_66G9F30VLH",
+    "value": "GS2.1.s1774070613$o1$g1$t1774070637$j36$l0$h0",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": 1808630638.008168,
+    "size": 59,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "market_cookieID",
+    "value": "eumpe123",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": -1,
+    "size": 23,
+    "httpOnly": false,
+    "secure": false,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "_ga_YR1S7BMWY7",
+    "value": "GS2.1.s1774070586$o1$g1$t1774070593$j53$l0$h1359377889",
+    "domain": ".hankyung.com",
+    "path": "/",
+    "expires": 1808630593.431044,
+    "size": 68,
+    "httpOnly": false,
+    "secure": false,
+    "session": false,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  }
+]

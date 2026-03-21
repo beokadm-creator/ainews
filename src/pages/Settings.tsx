@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Key, CheckCircle2, XCircle, Loader2, Database, RefreshCw, Eye, EyeOff, ChevronDown, ChevronUp, Plus, Trash2, Mail, Filter as FilterIcons } from 'lucide-react';
+import { Key, CheckCircle2, XCircle, Loader2, Database, RefreshCw, Eye, EyeOff, ChevronDown, ChevronUp, Plus, Trash2, Mail } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import { collection, query, where, getDocs, doc, updateDoc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
@@ -100,20 +100,6 @@ export default function Settings() {
   const [newEmail, setNewEmail] = useState('');
   const [savingSubscribers, setSavingSubscribers] = useState(false);
 
-  // Pipeline Settings state
-  const [filters, setFilters] = useState<any>({
-    mustIncludeKeywords: [],
-    includeKeywords: [],
-    excludeKeywords: [],
-    sectors: [],
-    dateRange: 'today', // today, week, month
-  });
-  const [outputConfig, setOutputConfig] = useState<any>({
-    title: 'AI News Analysis Report',
-    maxArticles: 50,
-  });
-  const [savingPipeline, setSavingPipeline] = useState(false);
-
   useEffect(() => {
     if (companyId) {
       loadCompanySettings();
@@ -135,9 +121,6 @@ export default function Settings() {
         const emails = data.subscriberEmails || [];
         setSubscriberEmails(emails);
         
-        if (data.filters) setFilters(data.filters);
-        if (data.output) setOutputConfig(data.output);
-
         setProviderState(prev => {
           const updated = { ...prev };
           (Object.keys(PROVIDERS) as AiProvider[]).forEach(p => {
@@ -230,23 +213,6 @@ export default function Settings() {
       alert('Failed to save: ' + err.message);
     } finally {
       setSavingSubscribers(false);
-    }
-  };
-
-  const handleSavePipelineSettings = async () => {
-    if (!companyId) return;
-    setSavingPipeline(true);
-    try {
-      const updateFn = httpsCallable(functions, 'updateCompanySettings');
-      await updateFn({
-        companyId,
-        filters,
-        output: outputConfig
-      });
-    } catch (err: any) {
-      console.error('Failed to save pipeline settings:', err);
-    } finally {
-      setSavingPipeline(false);
     }
   };
 
@@ -484,171 +450,6 @@ export default function Settings() {
             </div>
           );
         })}
-      </section>
-
-      {/* ─── Pipeline Filtering & Output ─── */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FilterIcons className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Pipeline Filtering & Rules</h2>
-          </div>
-          <button
-            onClick={handleSavePipelineSettings}
-            disabled={savingPipeline || !canEdit}
-            className="flex items-center px-4 py-1.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
-          >
-            {savingPipeline ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
-            Save Rules
-          </button>
-        </div>
-        <div className="bg-blue-50/50 dark:bg-blue-900/10 px-6 py-3 border-b border-gray-100 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-          <Database className="w-4 h-4 mt-0.5 text-blue-500 flex-shrink-0" />
-          <p>
-            분석 기간을 선택하고 키워드를 구체적으로 입력할수록 더 정밀하고 관련된 분석 결과를 얻을 수 있습니다. 
-            <strong> AND(필수)</strong> 키워드는 반드시 포함되어야 하며, <strong> OR(선택)</strong> 키워드는 하나라도 포함되면 수집됩니다.
-          </p>
-        </div>
-        <div className="p-6 space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">분석 기간 (Date Range)</label>
-                <div className="flex gap-2 mb-4">
-                  <select
-                    value={filters.dateRange || 'today'}
-                    onChange={e => setFilters((p: any) => ({ ...p, dateRange: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm outline-none bg-white dark:bg-gray-700 dark:text-white"
-                  >
-                    <option value="today">당일 (Today)</option>
-                    <option value="week">1주일 (Last 7 Days)</option>
-                    <option value="month">1개월 (Last 30 Days)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 text-blue-600">AND Keywords (필수 포함)</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. 인수, 합병"
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm outline-none bg-white dark:bg-gray-700 dark:text-white"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        const val = (e.target as any).value.trim();
-                        if (val) {
-                          setFilters((prev: any) => ({ ...prev, mustIncludeKeywords: [...(prev.mustIncludeKeywords || []), val] }));
-                          (e.target as any).value = '';
-                        }
-                      }
-                    }}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {(filters.mustIncludeKeywords || []).map((kw: string, i: number) => (
-                    <span key={i} className="inline-flex items-center px-2 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded text-xs">
-                      {kw}
-                      <button onClick={() => setFilters((p: any) => ({ ...p, mustIncludeKeywords: p.mustIncludeKeywords.filter((_: any, idx: number) => idx !== i) }))} className="ml-1 hover:text-blue-900">×</button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">OR Keywords (선택 포함)</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    placeholder="e.g. M&A"
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] dark:bg-gray-700 dark:text-white"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        const val = (e.target as any).value.trim();
-                        if (val) {
-                          setFilters((prev: any) => ({ ...prev, includeKeywords: [...(prev.includeKeywords || []), val] }));
-                          (e.target as any).value = '';
-                        }
-                      }
-                    }}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {(filters.includeKeywords || []).map((kw: string, i: number) => (
-                    <span key={i} className="inline-flex items-center px-2 py-1 bg-green-50 text-green-700 border border-green-200 rounded text-xs">
-                      {kw}
-                      <button onClick={() => setFilters((p: any) => ({ ...p, includeKeywords: p.includeKeywords.filter((_: any, idx: number) => idx !== i) }))} className="ml-1 hover:text-green-900">×</button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 text-red-600">NOT Keywords (제외)</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 채용, 웨비나"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm outline-none focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      const val = (e.target as any).value.trim();
-                      if (val) {
-                        setFilters((prev: any) => ({ ...prev, excludeKeywords: [...(prev.excludeKeywords || []), val] }));
-                        (e.target as any).value = '';
-                      }
-                    }
-                  }}
-                />
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {(filters.excludeKeywords || []).map((kw: string, i: number) => (
-                    <span key={i} className="inline-flex items-center px-2 py-1 bg-red-50 text-red-700 border border-red-200 rounded text-xs">
-                      {kw}
-                      <button onClick={() => setFilters((p: any) => ({ ...p, excludeKeywords: p.excludeKeywords.filter((_: any, idx: number) => idx !== i) }))} className="ml-1 hover:text-red-900">×</button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Target Sectors</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {['M&A', 'PEF', 'VC', 'IPO', 'Investment', 'Real Estate'].map(sector => (
-                    <label key={sector} className="flex items-center gap-2 text-sm p-2 border border-gray-100 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700">
-                      <input
-                        type="checkbox"
-                        className="rounded border-gray-300 text-[#1e3a5f]"
-                        checked={(filters.sectors || []).includes(sector)}
-                        onChange={e => {
-                          const checked = e.target.checked;
-                          setFilters((prev: any) => ({
-                            ...prev,
-                            sectors: checked
-                              ? [...(prev.sectors || []), sector]
-                              : (prev.sectors || []).filter((s: string) => s !== sector)
-                          }));
-                        }}
-                      />
-                      <span className="text-gray-700 dark:text-gray-300">{sector}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output Report Title</label>
-                <input
-                  type="text"
-                  value={outputConfig.title || ''}
-                  onChange={e => setOutputConfig((p: any) => ({ ...p, title: e.target.value }))}
-                  placeholder="e.g. Daily Deal Analysis"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] dark:bg-gray-700 dark:text-white"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
       </section>
 
       {/* ─── Email Subscribers ─── */}

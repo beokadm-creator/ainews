@@ -264,16 +264,51 @@ export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invok
   const snap = await admin.firestore().collection('users')
     .where('companyIds', 'array-contains', companyId)
     .get();
-  return snap.docs.map(doc => {
-    const data = doc.data();
-    return {
-      uid: data.uid,
-      email: data.email,
-      role: data.role,
-      createdAt: data.createdAt,
-    };
-  });
+  return snap.docs
+    // company_admin 호출 시 superadmin 계정 노출 금지
+    .filter(doc => isSuper || doc.data().role !== 'superadmin')
+    .map(doc => {
+      const data = doc.data();
+      return {
+        uid: data.uid,
+        email: data.email,
+        role: data.role,
+        createdAt: data.createdAt,
+      };
+    });
 });
+/** 사용자 삭제 (Superadmin 또는 본인 회사 Company Admin) */
+export const deleteCompanyUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const { uid: targetUid } = request.data || {};
+  if (!targetUid) throw new HttpsError('invalid-argument', 'Target user UID required');
+
+  const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const callerData = callerDoc.data();
+  const isSuper = callerData?.role === 'superadmin';
+
+  // 삭제 대상 유저 정보 조회
+  const targetDoc = await admin.firestore().collection('users').doc(targetUid).get();
+  if (!targetDoc.exists) throw new HttpsError('not-found', 'Target user not found');
+  const targetData = targetDoc.data();
+
+  // Company Admin: 본인 회사 소속이고 superadmin이 아닌 유저만 삭제 가능
+  if (!isSuper) {
+    const callerCompanyId = callerData?.companyIds?.[0] || callerData?.companyId;
+    const targetInSameCompany = targetData?.companyIds?.includes(callerCompanyId) || targetData?.companyId === callerCompanyId;
+    if (callerData?.role !== 'company_admin' || !targetInSameCompany) {
+      throw new HttpsError('permission-denied', 'Insufficient permissions');
+    }
+    if (targetData?.role === 'superadmin' || targetData?.role === 'company_admin') {
+      throw new HttpsError('permission-denied', 'Cannot delete admin accounts');
+    }
+  }
+
+  await admin.auth().deleteUser(targetUid);
+  await admin.firestore().collection('users').doc(targetUid).delete();
+  return { success: true };
+});
+
 // ─────────────────────────────────────────
 // [NEW] Save AI Provider API Key
 // ─────────────────────────────────────────
@@ -463,6 +498,74 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
+// ─────────────────────────────────────────
+// Paid Source Access Control (Superadmin)
+// ─────────────────────────────────────────
+
+/**
+ * 유료 소스 접근 허용 회사 조회 (Superadmin only)
+ * sourceId: 'marketinsight' | 'thebell'
+ */
+export const getPaidSourceAccess = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin required');
+
+  const db = admin.firestore();
+  const snap = await db.collection('paidSourceAccess').get();
+  const result: Record<string, string[]> = {};
+  snap.docs.forEach(d => {
+    result[d.id] = d.data().authorizedCompanyIds || [];
+  });
+  return result;
+});
+
+/**
+ * 유료 소스에 회사 접근 허용/해제 (Superadmin only)
+ * { sourceId: 'marketinsight' | 'thebell', authorizedCompanyIds: ['companyId1', ...] }
+ */
+export const managePaidSourceAccess = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin required');
+
+  const { sourceId, sourceName, authorizedCompanyIds } = request.data || {};
+  if (!sourceId || !Array.isArray(authorizedCompanyIds)) {
+    throw new HttpsError('invalid-argument', 'sourceId and authorizedCompanyIds[] required');
+  }
+
+  const db = admin.firestore();
+  const batch = db.batch();
+
+  // paidSourceAccess 컬렉션 업데이트
+  batch.set(db.collection('paidSourceAccess').doc(sourceId), {
+    sourceId,
+    ...(sourceName ? { sourceName } : {}),
+    authorizedCompanyIds,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  }, { merge: true });
+
+  // globalSources 문서에 allowedCompanyIds 동기화 (프론트엔드 필터링용)
+  const gsByScraper = await db.collection('globalSources')
+    .where('localScraperId', '==', sourceId)
+    .limit(1)
+    .get();
+  const gsDirectDoc = await db.collection('globalSources').doc(sourceId).get();
+  const gsRef = gsByScraper.empty ? (gsDirectDoc.exists ? gsDirectDoc.ref : null) : gsByScraper.docs[0].ref;
+  if (gsRef) {
+    batch.update(gsRef, {
+      allowedCompanyIds: authorizedCompanyIds,
+      pricingTier: 'paid',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  console.log(`[PaidSourceAccess] ${sourceId} → ${authorizedCompanyIds.length} companies authorized by ${request.auth.uid}`);
+  return { success: true, sourceId, count: authorizedCompanyIds.length };
+});
+
 // ─────────────────────────────────────────
 // Scheduled: Collection (hourly per company)
 // ─────────────────────────────────────────

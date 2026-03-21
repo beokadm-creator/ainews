@@ -1,38 +1,117 @@
-import { useState, useEffect } from 'react';
-import { LayoutDashboard, TrendingUp, Clock, CheckCircle, AlertTriangle, Play, Database, Cpu, FileText, RefreshCw, XCircle, Search, Filter as FilterIcon, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import {
+  Play, Database, Cpu, FileText, RefreshCw, CheckCircle, XCircle,
+  AlertTriangle, Clock, TrendingUp, LayoutDashboard, Filter,
+  ChevronDown, ChevronUp, X, Plus, Calendar, Newspaper, Loader2
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
-import { collection, query, where, getDocs, orderBy, limit, getCountFromServer, onSnapshot, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, limit, getCountFromServer, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format, subDays, startOfDay } from 'date-fns';
 import { useAuthStore } from '@/store/useAuthStore';
 
-const COLORS = ['#1e3a5f', '#d4af37', '#4ade80', '#f87171', '#60a5fa', '#a78bfa', '#fb923c'];
+const DATE_RANGE_OPTIONS = [
+  { value: 'today', label: '오늘' },
+  { value: '3days', label: '최근 3일', days: 3 },
+  { value: 'week', label: '최근 1주', days: 7 },
+  { value: '2weeks', label: '최근 2주', days: 14 },
+];
+
+function TagInput({
+  label, placeholder, tags, onChange
+}: { label: string; placeholder: string; tags: string[]; onChange: (t: string[]) => void }) {
+  const [input, setInput] = useState('');
+  const add = () => {
+    const v = input.trim();
+    if (v && !tags.includes(v)) onChange([...tags, v]);
+    setInput('');
+  };
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">{label}</label>
+      <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
+        {tags.map(t => (
+          <span key={t} className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded text-xs font-medium">
+            {t}
+            <button type="button" onClick={() => onChange(tags.filter(x => x !== t))}>
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder={placeholder}
+          className="flex-1 px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] text-gray-900 dark:text-white placeholder-gray-400"
+        />
+        <button type="button" onClick={add} className="px-2.5 py-1.5 bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 rounded-lg text-gray-600 dark:text-gray-300 transition-colors">
+          <Plus className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const companyId = (user as any)?.primaryCompanyId || null;
+  const companyId = (user as any)?.primaryCompanyId || (user as any)?.companyId || (user as any)?.companyIds?.[0] || null;
   const isSuperadmin = (user as any)?.role === 'superadmin';
+  const userRole = (user as any)?.role;
+  const canRun = userRole === 'superadmin' || userRole === 'company_admin' || userRole === 'company_editor';
 
-  const [loading, setLoading] = useState(true);
-  const [runningPipeline, setRunningPipeline] = useState(false);
+  // Pipeline state
+  const [running, setRunning] = useState(false);
+  const [pipelineRun, setPipelineRun] = useState<any>(null);
   const [pipelineMsg, setPipelineMsg] = useState('');
-  const [stats, setStats] = useState({
-    todayCollected: 0,
-    todayPassed: 0,
-    successRate: 0,
-  });
-  const [pipelineRun, setPipelineRun] = useState<any>(null); // ★ New: Current pipeline run track
-  const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
-  const [categoryData, setCategoryData] = useState<any[]>([]);
+  const unsubRef = useRef<(() => void) | null>(null);
+
+  // Filter config (for pipeline run)
+  const [showFilters, setShowFilters] = useState(false);
+  const [dateRange, setDateRange] = useState('today');
+  const [includeKw, setIncludeKw] = useState<string[]>([]);
+  const [excludeKw, setExcludeKw] = useState<string[]>([]);
+  const [subscribedSources, setSubscribedSources] = useState<{ id: string; name: string }[]>([]);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+
+  // Stats
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({ todayCollected: 0, todayPassed: 0, successRate: 0 });
   const [trendData, setTrendData] = useState<any[]>([]);
-  const [systemStatus, setSystemStatus] = useState<any[]>([]);
+  const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
+  const [recentArticles, setRecentArticles] = useState<any[]>([]);
 
   useEffect(() => {
-    if (user) fetchDashboardData();
+    if (user) {
+      fetchDashboardData();
+      if (companyId) loadSubscribedSources();
+    }
   }, [user]);
+
+  const loadSubscribedSources = async () => {
+    setSourcesLoading(true);
+    try {
+      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
+      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).sourceIds || [] : [];
+      if (subscribedIds.length === 0) { setSourcesLoading(false); return; }
+
+      const snap = await getDocs(collection(db, 'globalSources'));
+      const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      const subscribed = all.filter(s => subscribedIds.includes(s.id)).map(s => ({ id: s.id, name: s.name }));
+      setSubscribedSources(subscribed);
+      setSelectedSourceIds(subscribed.map(s => s.id)); // default: all selected
+    } catch (err) {
+      console.error('loadSubscribedSources error:', err);
+    } finally {
+      setSourcesLoading(false);
+    }
+  };
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -40,74 +119,44 @@ export default function Dashboard() {
       const today = new Date();
       const startOfToday = startOfDay(today);
       const articlesRef = collection(db, 'articles');
+      const base = companyId && !isSuperadmin ? [where('companyId', '==', companyId)] : [];
 
-      // BUG-04 FIX: companyId 필터 추가 (superadmin은 전체 조회)
-      const baseConstraints = companyId && !isSuperadmin
-        ? [where('companyId', '==', companyId), where('collectedAt', '>=', startOfToday)]
-        : [where('collectedAt', '>=', startOfToday)];
+      // Today stats
+      const todayQ = query(articlesRef, ...base, where('collectedAt', '>=', startOfToday));
+      const totalSnap = await getCountFromServer(todayQ);
 
-      const todayCollectedQuery = query(articlesRef, ...baseConstraints);
-      const collectedSnap = await getCountFromServer(todayCollectedQuery);
-      const todayCollected = collectedSnap.data().count;
+      const passedQ = query(articlesRef, ...base, where('collectedAt', '>=', startOfToday), where('status', 'in', ['analyzed', 'published']));
+      const passedSnap = await getCountFromServer(passedQ);
 
-      const passedConstraints = companyId && !isSuperadmin
-        ? [where('companyId', '==', companyId), where('collectedAt', '>=', startOfToday), where('status', 'in', ['analyzed', 'published'])]
-        : [where('collectedAt', '>=', startOfToday), where('status', 'in', ['analyzed', 'published'])];
-
-      const todayPassedQuery = query(articlesRef, ...passedConstraints);
-      const passedSnap = await getCountFromServer(todayPassedQuery);
-      const todayPassed = passedSnap.data().count;
-
-      setStats({
-        todayCollected,
-        todayPassed,
-        successRate: todayCollected > 0 ? Math.round((todayPassed / todayCollected) * 100) : 0,
-      });
-
-      // BUG-04 FIX: outputs도 companyId 필터
-      const outputsConstraints: any[] = [orderBy('createdAt', 'desc'), limit(5)];
-      if (companyId && !isSuperadmin) outputsConstraints.unshift(where('companyId', '==', companyId));
-      const outputsQuery = query(collection(db, 'outputs'), ...outputsConstraints);
-      const outputsSnap = await getDocs(outputsQuery);
-      const outputs = outputsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
-      setRecentOutputs(outputs);
-
-      // Category distribution (last 30 days)
-      const thirtyDaysAgo = subDays(today, 30);
-      const catConstraints: any[] = [where('publishedAt', '>=', thirtyDaysAgo), where('status', '==', 'published')];
-      if (companyId && !isSuperadmin) catConstraints.unshift(where('companyId', '==', companyId));
-      const categorySnap = await getDocs(query(articlesRef, ...catConstraints));
-      const categoryCount: Record<string, number> = {};
-      categorySnap.docs.forEach(doc => {
-        const cat = doc.data().category || 'other';
-        categoryCount[cat] = (categoryCount[cat] || 0) + 1;
-      });
-      setCategoryData(
-        Object.keys(categoryCount).map(key => ({ name: key, value: categoryCount[key] })).sort((a, b) => b.value - a.value)
-      );
+      const total = totalSnap.data().count;
+      const passed = passedSnap.data().count;
+      setStats({ todayCollected: total, todayPassed: passed, successRate: total > 0 ? Math.round((passed / total) * 100) : 0 });
 
       // 7-day trend
-      const last7DaysData = [];
+      const trend = [];
       for (let i = 6; i >= 0; i--) {
         const d = subDays(today, i);
-        const dayKey = format(d, 'yyyy-MM-dd');
-        const output = outputs.find(item => {
-          const createdAt = item.createdAt?.toDate ? format(item.createdAt.toDate(), 'yyyy-MM-dd') : '';
-          return createdAt === dayKey;
-        });
-        last7DaysData.push({ name: format(d, 'MM/dd'), outputs: output ? output.articleCount || 0 : 0 });
+        const s = startOfDay(d);
+        const e = startOfDay(subDays(today, i - 1));
+        const dQ = query(articlesRef, ...base, where('collectedAt', '>=', s), where('collectedAt', '<', e));
+        const dSnap = await getCountFromServer(dQ);
+        trend.push({ name: format(d, 'MM/dd'), articles: dSnap.data().count });
       }
-      setTrendData(last7DaysData);
+      setTrendData(trend);
 
-      // Source status (company-scoped)
-      const sourceConstraints: any[] = [];
-      if (companyId && !isSuperadmin) sourceConstraints.push(where('companyId', '==', companyId));
-      const sourcesSnap = await getDocs(
-        sourceConstraints.length > 0
-          ? query(collection(db, 'sources'), ...sourceConstraints)
-          : collection(db, 'sources')
-      );
-      setSystemStatus(sourcesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      // Recent outputs
+      const outputsQ = companyId && !isSuperadmin
+        ? query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'), limit(5))
+        : query(collection(db, 'outputs'), orderBy('createdAt', 'desc'), limit(5));
+      const outputsSnap = await getDocs(outputsQ);
+      setRecentOutputs(outputsSnap.docs.map(d => ({ id: d.id, ...d.data() as any })));
+
+      // Recent articles
+      const artQ = companyId && !isSuperadmin
+        ? query(articlesRef, where('companyId', '==', companyId), orderBy('collectedAt', 'desc'), limit(8))
+        : query(articlesRef, orderBy('collectedAt', 'desc'), limit(8));
+      const artSnap = await getDocs(artQ);
+      setRecentArticles(artSnap.docs.map(d => ({ id: d.id, ...d.data() as any })));
     } catch (err) {
       console.error('Dashboard load error:', err);
     } finally {
@@ -116,242 +165,365 @@ export default function Dashboard() {
   };
 
   const handleRunPipeline = async () => {
-    if (!companyId) {
-      setPipelineMsg('No company assigned. Contact your administrator.');
-      return;
-    }
-    setRunningPipeline(true);
+    if (!companyId) { setPipelineMsg('회사 정보가 없습니다. 관리자에게 문의하세요.'); return; }
+    setRunning(true);
     setPipelineMsg('');
     setPipelineRun(null);
+    if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
+
+    // Build date range override
+    let dateRangeOverride: any = 'today';
+    const sel = DATE_RANGE_OPTIONS.find(o => o.value === dateRange);
+    if (sel?.days) dateRangeOverride = { mode: 'relative_days', days: sel.days };
+
+    const overrides: any = {
+      filters: {
+        ...(includeKw.length > 0 ? { includeKeywords: includeKw } : {}),
+        ...(excludeKw.length > 0 ? { excludeKeywords: excludeKw } : {}),
+        ...(selectedSourceIds.length > 0 && selectedSourceIds.length < subscribedSources.length
+          ? { sourceIds: selectedSourceIds }
+          : {}),
+        dateRange: dateRangeOverride,
+      },
+    };
 
     try {
       const runFn = httpsCallable(functions, 'runFullPipeline');
-      const result = await runFn({ companyId }) as any;
-      const pipelineId = result.data.pipelineId;
+      const result = await runFn({ companyId, overrides }) as any;
+      const pipelineId = result.data?.pipelineId;
 
       if (pipelineId) {
-        // Subscribe to real-time status
-        const unsubscribeResult = onSnapshot(doc(db, 'pipelineRuns', pipelineId), (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setPipelineRun(data);
-            if (data.status === 'completed' || data.status === 'failed') {
-              setRunningPipeline(false);
-              if (data.status === 'completed') fetchDashboardData();
-              setTimeout(() => unsubscribeResult(), 10000); // Wait 10s before unsub
-            }
+        const unsub = onSnapshot(doc(db, 'pipelineRuns', pipelineId), snap => {
+          if (!snap.exists()) return;
+          const data = snap.data();
+          setPipelineRun(data);
+          if (data.status === 'completed' || data.status === 'failed') {
+            setRunning(false);
+            if (data.status === 'completed') fetchDashboardData();
+            setTimeout(() => { unsub(); unsubRef.current = null; }, 10000);
           }
         });
+        unsubRef.current = unsub;
       } else {
-        setRunningPipeline(false);
-        setPipelineMsg(result.data.success ? '✅ Pipeline completed' : '⚠️ Pipeline warn');
-        await fetchDashboardData();
+        setRunning(false);
+        setPipelineMsg(result.data?.success ? '✅ 파이프라인 완료' : '⚠️ 파이프라인 경고');
+        fetchDashboardData();
       }
     } catch (err: any) {
-      setRunningPipeline(false);
-      setPipelineMsg(`❌ Pipeline failed: ${err.message}`);
+      setRunning(false);
+      setPipelineMsg(`❌ 실패: ${err.message}`);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[500px]">
-        <div className="w-8 h-8 border-4 border-[#1e3a5f] border-t-transparent rounded-full animate-spin"></div>
-      </div>
+  const toggleSource = (id: string) => {
+    setSelectedSourceIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
-  }
+  };
+
+  const pipelineStatus = pipelineRun?.status;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">Pipeline status and output summary.</p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <button
-            onClick={handleRunPipeline}
-            disabled={runningPipeline}
-            className="flex items-center px-5 py-2.5 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#2a4a73] transition-colors shadow-sm disabled:opacity-50"
-          >
-            {runningPipeline
-              ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Running...</>
-              : <><Play className="w-4 h-4 mr-2" />지금 즉시 분석 실행</>
-            }
-          </button>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mr-1 hidden sm:block">자동 분석 루틴은 매일 밤 10시에 실행됩니다.</p>
-        </div>
+    <div className="space-y-6 pb-10">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">대시보드</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">수집된 기사를 분석하고 브리핑을 생성합니다.</p>
       </div>
 
-      {/* Pipeline Progress Monitor */}
-      {(runningPipeline || pipelineRun) && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border-2 border-[#1e3a5f]/20 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-[#1e3a5f] dark:text-blue-400 flex items-center gap-2">
-              <RefreshCw className={`w-4 h-4 ${pipelineRun?.status === 'running' ? 'animate-spin' : ''}`} />
-              Pipeline Execution Progress
-            </h3>
-            <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${
-              pipelineRun?.status === 'completed' ? 'bg-green-100 text-green-700' :
-              pipelineRun?.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
-            }`}>
-              {pipelineRun?.status || 'Initiating...'}
-            </span>
+      {/* ── Pipeline Run Panel ─────────────────────────── */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+        {/* Panel header */}
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Play className="w-4 h-4 text-[#1e3a5f] dark:text-blue-400" />
+            <span className="font-semibold text-gray-900 dark:text-white">파이프라인 실행</span>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {[
-              { id: 'collection', label: 'Aggregation', icon: Database },
-              { id: 'filtering', label: 'AI Filtering', icon: FilterIcon },
-              { id: 'analysis', label: 'Deep Analysis', icon: Cpu },
-              { id: 'output', label: 'Briefing Output', icon: FileText },
-            ].map((step, idx) => {
-              const stepData = pipelineRun?.steps?.[step.id];
-              const isCompleted = stepData?.status === 'completed';
-              const isRunning = stepData?.status === 'running';
-              const isFailed = stepData?.status === 'failed';
-
-              return (
-                <div key={step.id} className={`relative flex flex-col items-center p-4 rounded-lg border transition-all ${isCompleted ? 'bg-green-50 border-green-200 dark:bg-green-900/10' : isRunning ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/10 ring-2 ring-blue-500/20' : 'bg-gray-50 border-gray-100 dark:bg-gray-700/30'}`}>
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center mb-2 ${isCompleted ? 'bg-green-500 text-white' : isRunning ? 'bg-blue-500 text-white animate-pulse' : isFailed ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-400'}`}>
-                    {isCompleted ? <CheckCircle className="w-6 h-6" /> : isFailed ? <XCircle className="w-6 h-6" /> : <step.icon className="w-5 h-5" />}
-                  </div>
-                  <span className="text-xs font-bold text-center">{step.label}</span>
-                  {stepData?.result?.totalCollected !== undefined && (
-                    <span className="text-[10px] text-green-600 font-bold mt-1">+{stepData.result.totalCollected} articles</span>
-                  )}
-                  {stepData?.duration && <span className="text-[8px] text-gray-400 mt-1">{Math.round(stepData.duration / 1000)}s</span>}
-                </div>
-              );
-            })}
-          </div>
-          {pipelineRun?.error && (
-            <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-xs font-mono overflow-auto max-h-24">
-              Error: {pipelineRun.error}
-            </div>
+          {canRun && (
+            <button
+              onClick={() => setShowFilters(v => !v)}
+              className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            >
+              <Filter className="w-3.5 h-3.5" />
+              필터 설정
+              {showFilters ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
           )}
-          {pipelineMsg && <p className="mt-4 text-center text-sm font-medium text-gray-600">{pipelineMsg}</p>}
         </div>
-      )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {[
-          { label: 'Collected Today', value: stats.todayCollected, icon: LayoutDashboard, color: 'blue' },
-          { label: 'AI Passed', value: stats.todayPassed, icon: CheckCircle, color: 'green' },
-          { label: 'Useful Rate', value: `${stats.successRate}%`, icon: TrendingUp, color: 'gold' },
-        ].map(item => (
-          <div key={item.label} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-100 dark:border-gray-700">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">{item.label}</p>
-                <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">{item.value}</p>
-              </div>
-              <div className="w-12 h-12 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
-                <item.icon className="w-6 h-6 text-[#1e3a5f] dark:text-blue-400" />
+        {/* Filter config (collapsible) */}
+        {canRun && showFilters && (
+          <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/20 space-y-5">
+            {/* Date range */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                <Calendar className="inline w-3.5 h-3.5 mr-1" />수집 기간
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {DATE_RANGE_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setDateRange(opt.value)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                      dateRange === opt.value
+                        ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+                        : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-gray-400'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
-        ))}
-      </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">7-day Output Trend</h2>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={trendData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} />
-                <YAxis axisLine={false} tickLine={false} />
-                <Tooltip />
-                <Bar dataKey="outputs" fill="#1e3a5f" radius={[4, 4, 0, 0]} barSize={30} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+            {/* Keywords */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <TagInput
+                label="포함 키워드 (Enter로 추가)"
+                placeholder="예: M&A, 인수합병"
+                tags={includeKw}
+                onChange={setIncludeKw}
+              />
+              <TagInput
+                label="제외 키워드"
+                placeholder="예: 광고, 홍보"
+                tags={excludeKw}
+                onChange={setExcludeKw}
+              />
+            </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Category Distribution</h2>
-          <div className="h-64 flex items-center justify-center">
-            {categoryData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={categoryData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                    {categoryData.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend verticalAlign="bottom" height={36} iconType="circle" />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-400">No data</p>
+            {/* Sources */}
+            {subscribedSources.length > 0 && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                  <Newspaper className="inline w-3.5 h-3.5 mr-1" />매체 선택
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {subscribedSources.map(src => (
+                    <button
+                      key={src.id}
+                      type="button"
+                      onClick={() => toggleSource(src.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                        selectedSourceIds.includes(src.id)
+                          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+                          : 'bg-white dark:bg-gray-700 text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-600'
+                      }`}
+                    >
+                      {src.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-        </div>
-      </div>
+        )}
 
-      {/* Recent outputs + Source status */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 lg:col-span-2">
-          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Recent Outputs</h2>
-          </div>
-          <div className="divide-y divide-gray-100 dark:divide-gray-700">
-            {recentOutputs.length === 0 ? (
-              <div className="px-6 py-8 text-center text-gray-400 text-sm">
-                No outputs yet. Run the pipeline to generate outputs.
-              </div>
-            ) : recentOutputs.map(output => (
-              <div
-                key={output.id}
-                className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
-                onClick={() => navigate(`/briefing?outputId=${output.id}`)}
+        {/* Run button + status */}
+        <div className="px-6 py-4">
+          {canRun ? (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                onClick={handleRunPipeline}
+                disabled={running}
+                className="flex items-center justify-center px-6 py-2.5 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#2a4a73] transition-colors shadow-sm disabled:opacity-50 text-sm"
               >
-                <div className="flex flex-col">
-                  <span className="font-medium text-gray-900 dark:text-white">{output.title || output.id}</span>
-                  <span className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    Articles: {output.articleCount || 0} ·{' '}
-                    {output.createdAt?.toDate ? format(output.createdAt.toDate(), 'MM/dd HH:mm') : ''}
-                  </span>
-                </div>
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                  {output.type || 'output'}
-                </span>
-              </div>
-            ))}
-          </div>
+                {running
+                  ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />실행 중...</>
+                  : <><Play className="w-4 h-4 mr-2" />지금 분석 실행</>
+                }
+              </button>
+              <p className="text-xs text-gray-400 dark:text-gray-500">자동 분석은 매일 밤 10시에 실행됩니다.</p>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">파이프라인 실행은 스테프 이상 권한이 필요합니다.</p>
+          )}
+
+          {pipelineMsg && (
+            <p className="mt-2 text-sm font-medium text-gray-600 dark:text-gray-300">{pipelineMsg}</p>
+          )}
         </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
-          <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Source Status</h2>
-            <Clock className="w-4 h-4 text-gray-400" />
+        {/* Progress tracker */}
+        {(running || pipelineRun) && (
+          <div className="px-6 pb-5">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">진행 상황</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${
+                pipelineStatus === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                pipelineStatus === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
+                'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+              }`}>
+                {pipelineStatus || '시작 중...'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { id: 'collection', label: '수집', icon: Database },
+                { id: 'filtering', label: 'AI 필터링', icon: Filter },
+                { id: 'analysis', label: '심층 분석', icon: Cpu },
+                { id: 'output', label: '브리핑 생성', icon: FileText },
+              ].map(step => {
+                const s = pipelineRun?.steps?.[step.id];
+                const done = s?.status === 'completed';
+                const active = s?.status === 'running';
+                const failed = s?.status === 'failed';
+                return (
+                  <div key={step.id} className={`flex flex-col items-center p-3 rounded-lg border text-center transition-all ${
+                    done ? 'bg-green-50 border-green-200 dark:bg-green-900/10 dark:border-green-800' :
+                    active ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/10 dark:border-blue-700 ring-2 ring-blue-400/20' :
+                    failed ? 'bg-red-50 border-red-200 dark:bg-red-900/10 dark:border-red-800' :
+                    'bg-gray-50 border-gray-100 dark:bg-gray-700/30 dark:border-gray-600'
+                  }`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center mb-1.5 ${
+                      done ? 'bg-green-500 text-white' :
+                      active ? 'bg-blue-500 text-white animate-pulse' :
+                      failed ? 'bg-red-400 text-white' :
+                      'bg-gray-200 dark:bg-gray-600 text-gray-400'
+                    }`}>
+                      {done ? <CheckCircle className="w-4 h-4" /> :
+                       failed ? <XCircle className="w-4 h-4" /> :
+                       active ? <RefreshCw className="w-4 h-4 animate-spin" /> :
+                       <step.icon className="w-4 h-4" />}
+                    </div>
+                    <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{step.label}</span>
+                    {s?.result?.totalCollected != null && (
+                      <span className="text-[10px] text-green-600 dark:text-green-400 font-bold">+{s.result.totalCollected}건</span>
+                    )}
+                    {s?.duration && (
+                      <span className="text-[10px] text-gray-400">{Math.round(s.duration / 1000)}s</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {pipelineRun?.error && (
+              <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg text-xs font-mono overflow-auto max-h-20">
+                {pipelineRun.error}
+              </div>
+            )}
           </div>
-          <div className="p-4 space-y-3">
-            {systemStatus.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-4">No sources configured</p>
-            ) : systemStatus.map((source: any) => (
-              <div key={source.id} className="flex items-center justify-between">
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">{source.name}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                    {source.lastScrapedAt?.toDate ? format(source.lastScrapedAt.toDate(), 'MM/dd HH:mm') : 'Never'}
-                  </span>
+        )}
+      </div>
+
+      {/* ── Stats ─────────────────────────────────────── */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-7 h-7 animate-spin text-gray-300" />
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {[
+              { label: '오늘 수집', value: stats.todayCollected, icon: LayoutDashboard },
+              { label: 'AI 통과', value: stats.todayPassed, icon: CheckCircle },
+              { label: '유용률', value: `${stats.successRate}%`, icon: TrendingUp },
+            ].map(item => (
+              <div key={item.label} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-5 border border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{item.label}</p>
+                  <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1">{item.value}</p>
                 </div>
-                {source.lastStatus === 'error'
-                  ? <AlertTriangle className="w-4 h-4 text-red-500" />
-                  : source.lastStatus === 'success'
-                    ? <CheckCircle className="w-4 h-4 text-green-500" />
-                    : <span className="w-4 h-4 rounded-full bg-gray-200 dark:bg-gray-600 inline-block" />}
+                <div className="w-11 h-11 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
+                  <item.icon className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
+                </div>
               </div>
             ))}
           </div>
-        </div>
-      </div>
+
+          {/* ── Trend + Recent articles ─────────────────── */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* 7-day trend */}
+            <div className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-5">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">최근 7일 수집 추이</h2>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={trendData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="articles" fill="#1e3a5f" radius={[4, 4, 0, 0]} barSize={24} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Recent articles */}
+            <div className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">최근 수집 기사</h2>
+                <button
+                  onClick={() => navigate('/history')}
+                  className="text-xs text-[#1e3a5f] dark:text-blue-400 hover:underline"
+                >
+                  전체 보기
+                </button>
+              </div>
+              <div className="divide-y divide-gray-100 dark:divide-gray-700 overflow-y-auto max-h-64">
+                {recentArticles.length === 0 ? (
+                  <div className="px-5 py-8 text-center text-sm text-gray-400">수집된 기사가 없습니다.</div>
+                ) : recentArticles.map(art => (
+                  <div key={art.id} className="px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                    <p className="text-sm font-medium text-gray-900 dark:text-white line-clamp-1">{art.title || '제목 없음'}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[11px] text-gray-400">{art.sourceName || art.sourceId}</span>
+                      <span className="text-[11px] text-gray-300">·</span>
+                      <span className="text-[11px] text-gray-400">
+                        {art.collectedAt?.toDate ? format(art.collectedAt.toDate(), 'MM/dd HH:mm') : ''}
+                      </span>
+                      {art.status && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                          art.status === 'analyzed' ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400' :
+                          art.status === 'pending' ? 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                          'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                        }`}>
+                          {art.status}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Recent outputs ─────────────────────────── */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-white">최근 브리핑</h2>
+              <button onClick={() => navigate('/briefing')} className="text-xs text-[#1e3a5f] dark:text-blue-400 hover:underline">
+                전체 보기
+              </button>
+            </div>
+            <div className="divide-y divide-gray-100 dark:divide-gray-700">
+              {recentOutputs.length === 0 ? (
+                <div className="px-5 py-8 text-center text-sm text-gray-400">
+                  아직 브리핑이 없습니다. 파이프라인을 실행해 주세요.
+                </div>
+              ) : recentOutputs.map(output => (
+                <div
+                  key={output.id}
+                  className="flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 dark:hover:bg-gray-700/30 cursor-pointer transition-colors"
+                  onClick={() => navigate(`/briefing?outputId=${output.id}`)}
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">{output.title || output.id}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      기사 {output.articleCount || 0}건 ·{' '}
+                      {output.createdAt?.toDate ? format(output.createdAt.toDate(), 'MM/dd HH:mm') : ''}
+                    </p>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
+                    {output.type || 'report'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

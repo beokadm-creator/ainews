@@ -18,6 +18,7 @@ import ManualEntry from '@/pages/ManualEntry';
 import MediaAdmin from '@/pages/MediaAdmin';
 import MediaSelector from '@/pages/MediaSelector';
 import AdminManagement from '@/pages/AdminManagement';
+import Team from '@/pages/Team';
 
 export default function App() {
   // BUG-07 FIX: setUserWithProfile로 변경 (Firestore role/companyIds 포함 로드)
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="/manual-entry" element={<ProtectedRoute><Layout><ManualEntry /></Layout></ProtectedRoute>} />
         <Route path="/media" element={<ProtectedRoute><Layout><MediaSelector /></Layout></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
+        <Route path="/team" element={<ProtectedRoute><Layout><Team /></Layout></ProtectedRoute>} />
         <Route path="/admin/media" element={<ProtectedRoute><Layout><MediaAdmin /></Layout></ProtectedRoute>} />
         <Route path="/admin/management" element={<ProtectedRoute><Layout><AdminManagement /></Layout></ProtectedRoute>} />
 

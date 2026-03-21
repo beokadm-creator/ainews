@@ -1,125 +1,340 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Browser } from 'puppeteer';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 
 puppeteer.use(StealthPlugin());
 
+const COOKIES_FILE = path.join(__dirname, '../../cookies/thebell.json');
+
+export interface Article {
+  title: string;
+  link: string;
+  date: string;
+  isPaid: boolean;
+  category?: string;
+  summary?: string;
+}
+
 export interface ScrapingResult {
   success: boolean;
-  data?: {
-    title: string;
-    link: string;
-    date: string;
-    content?: string;
-  }[];
+  data?: Article[];
   error?: string;
+}
+
+const DEAL_KEYWORDS = [
+  '인수', '매각', '매물', '투자', '집행', '지분투자', '경영권',
+  '인수금융', '바이아웃', '공동투자', 'EXIT', '엑시트', '회수',
+  'IPO', '상장', '블록딜', 'M&A', '합병', '분할', '매수', '펀드',
+];
+
+function matchesKeyword(text: string): boolean {
+  return DEAL_KEYWORDS.some(kw => text.includes(kw));
 }
 
 export class ThebellService {
   private browser: Browser | null = null;
+  private isConnectedToChrome: boolean = false;
 
   async init(): Promise<void> {
-    if (!this.browser) {
+    if (this.browser) return;
+
+    try {
+      console.log('[Thebell] Trying to connect to Chrome remote debugging port 9222...');
+      const response = await axios.get('http://localhost:9222/json/version', { timeout: 2000 });
+      const wsUrl = response.data.webSocketDebuggerUrl;
+      this.browser = await puppeteer.connect({
+        browserWSEndpoint: wsUrl,
+        defaultViewport: null,
+        protocolTimeout: 180000,
+      }) as unknown as Browser;
+      this.isConnectedToChrome = true;
+      console.log('[Thebell] Connected to existing Chrome instance!');
+    } catch {
+      console.log('[Thebell] Chrome not available, launching headless browser...');
       this.browser = await puppeteer.launch({
         headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-        ],
+        protocolTimeout: 180000,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       });
+      this.isConnectedToChrome = false;
     }
   }
 
   async close(): Promise<void> {
     if (this.browser) {
-      await this.browser.close();
+      if (this.isConnectedToChrome) {
+        await (this.browser as any).disconnect();
+      } else {
+        await this.browser.close();
+      }
       this.browser = null;
     }
   }
 
-  async login(email: string, password: string): Promise<boolean> {
+  private loadCookies(): any[] {
+    try {
+      if (fs.existsSync(COOKIES_FILE)) {
+        const data = fs.readFileSync(COOKIES_FILE, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (e) {
+      console.log('[Thebell] No saved cookies found');
+    }
+    return [];
+  }
+
+  private saveCookies(cookies: any[]): void {
+    try {
+      const dir = path.dirname(COOKIES_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
+      console.log('[Thebell] Cookies saved!');
+    } catch (e) {
+      console.error('[Thebell] Failed to save cookies:', e);
+    }
+  }
+
+  async login(id: string, password: string): Promise<boolean> {
     if (!this.browser) await this.init();
 
     const page = await this.browser!.newPage();
     try {
-      // 더벨 로그인 페이지
-      await page.goto('https://www.thebell.co.kr/front/login.asp', {
-        waitUntil: 'networkidle2',
-        timeout: 30000,
-      });
-
-      // ID 입력
-      await page.waitForSelector('input[name="UserID"], input[id*="id"]', {
-        timeout: 10000,
-      });
-      await page.type('input[name="UserID"]', email);
-
-      // 비밀번호 입력
-      await page.waitForSelector('input[name="UserPassword"], input[type="password"]', {
-        timeout: 10000,
-      });
-      await page.type('input[name="UserPassword"]', password);
-
-      // 로그인 버튼 클릭
-      const loginButton = await page.$('input[type="submit"][value*="로그인"], button[type="submit"]');
-      if (loginButton) {
-        await loginButton.click();
-        await new Promise(resolve => setTimeout(resolve, 3000));
+      // 1. 저장된 쿠키 로드
+      const savedCookies = this.loadCookies();
+      if (savedCookies.length > 0) {
+        console.log('[Thebell] Loading saved cookies...');
+        await page.setCookie(...savedCookies);
       }
 
-      // 로그인 성공 여부 확인
-      const isLoggedIn = await page.$('[class*="logout"], .user-menu');
-      return !!isLoggedIn;
+      // 2. 홈페이지로 이동해서 로그인 상태 확인
+      console.log('[Thebell] Checking login status...');
+      await page.goto('https://www.thebell.co.kr/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+
+      const currentUrl = page.url();
+      const isLoggedIn = !currentUrl.includes('Login.asp') &&
+        await page.$('[class*="logout"], .user-menu, [class*="user-profile"]').then(el => !!el).catch(() => false);
+
+      if (isLoggedIn) {
+        console.log('[Thebell] Already logged in via cookies!');
+        const cookies = await page.cookies();
+        this.saveCookies(cookies);
+        return true;
+      }
+
+      // 3. 로그인 페이지로 이동
+      console.log('[Thebell] Loading login page...');
+      await page.goto('https://www.thebell.co.kr/LoginCert/Login.asp', {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+
+      // 4. ID/PW 입력
+      await page.waitForSelector('#id', { timeout: 10000 });
+      await page.type('#id', id);
+      await page.waitForSelector('#pw', { timeout: 10000 });
+      await page.type('#pw', password);
+
+      console.log('[Thebell] Submitting login...');
+      await page.keyboard.press('Enter');
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      const afterUrl = page.url();
+      if (!afterUrl.includes('Login.asp')) {
+        const cookies = await page.cookies();
+        this.saveCookies(cookies);
+        console.log('[Thebell] Login successful! Cookies saved.');
+        return true;
+      }
+
+      console.log('[Thebell] Login failed');
+      return false;
     } catch (error) {
-      console.error('Thebell login failed:', error);
+      console.error('[Thebell] Login error:', error);
       return false;
     } finally {
       await page.close();
     }
   }
 
-  async scrapeArticles(category: string = 'news'): Promise<ScrapingResult> {
+  async scrapeArticles(category: string = 'deal', filterKeywords: boolean = true): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
     const page = await this.browser!.newPage();
     try {
-      const url = `https://www.thebell.co.kr/front/${category}.asp`;
+      const savedCookies = this.loadCookies();
+      if (savedCookies.length > 0) {
+        await page.setCookie(...savedCookies);
+      }
+
+      // deal 페이지 (Code=01)
+      const url = `https://www.thebell.co.kr/front/NewsMain.asp?Code=01`;
+      console.log(`[Thebell] Scraping: ${url}`);
       await page.goto(url, {
-        waitUntil: 'networkidle2',
-        timeout: 30000,
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
       });
 
-      // 기사 목록 추출
+      const currentUrl = page.url();
+      if (currentUrl.includes('Login.asp') || currentUrl.includes('login')) {
+        return { success: false, error: 'Not logged in - please login first' };
+      }
+
       const articles = await page.evaluate(() => {
         const items: any[] = [];
-        const tableRows = document.querySelectorAll('table tr, .article-item, [class*="news-list"] > div');
+        const seen = new Set<string>();
 
-        tableRows.forEach((row) => {
-          const titleEl = row.querySelector('td > a, [class*="title"] > a, a[href*="index"]');
-          const dateEl = row.querySelector('td:last-child, .date, [class*="date"]');
+        // 1. 메인 스토리 박스 (.topStorisBox .storiView ul li)
+        document.querySelectorAll('.topStorisBox .storiView ul li').forEach((li: Element) => {
+          const titleEl = li.querySelector('dl dt p a.txtE') as HTMLAnchorElement;
+          const summaryEl = li.querySelector('dl dd a');
+          const hasFreeIcon = !!li.querySelector('.clsclock');
+          const hasFreeTime = !!li.querySelector('.freeTimeText');
 
-          if (titleEl && titleEl instanceof HTMLAnchorElement) {
+          if (titleEl && titleEl.href && !seen.has(titleEl.href)) {
+            seen.add(titleEl.href);
             items.push({
               title: titleEl.textContent?.trim() || '',
               link: titleEl.href,
-              date: dateEl?.textContent?.trim() || new Date().toISOString().split('T')[0],
+              date: new Date().toISOString().split('T')[0],
+              isPaid: !hasFreeIcon && !hasFreeTime,
+              summary: summaryEl?.textContent?.trim() || '',
+              category: 'deal',
             });
           }
+        });
+
+        // 2. 섹션별 기사 목록 (.pointNewBox)
+        document.querySelectorAll('.pointNewBox > ul > li').forEach((section: Element) => {
+          const sectionTitle = section.querySelector('.titBox .tit')?.textContent?.trim() || '';
+
+          // 메인 기사
+          const mainEl = section.querySelector('.newsList dt p a.txtE') as HTMLAnchorElement;
+          if (mainEl && mainEl.href && !seen.has(mainEl.href)) {
+            seen.add(mainEl.href);
+            const hasFree = !!section.querySelector('.newsList dt .clsclock');
+            items.push({
+              title: mainEl.textContent?.trim() || '',
+              link: mainEl.href,
+              date: new Date().toISOString().split('T')[0],
+              isPaid: !hasFree,
+              category: sectionTitle,
+            });
+          }
+
+          // 부기사 목록
+          section.querySelectorAll('.linkList ul li a.txtE').forEach((a: Element) => {
+            const anchor = a as HTMLAnchorElement;
+            if (anchor.href && !seen.has(anchor.href)) {
+              seen.add(anchor.href);
+              const hasFree = !!anchor.closest('li')?.querySelector('.clsclock');
+              items.push({
+                title: anchor.textContent?.trim() || '',
+                link: anchor.href,
+                date: new Date().toISOString().split('T')[0],
+                isPaid: !hasFree,
+                category: sectionTitle,
+              });
+            }
+          });
         });
 
         return items;
       });
 
-      return {
-        success: true,
-        data: articles,
-      };
+      // 키워드 필터링
+      const filtered = filterKeywords
+        ? articles.filter((a: any) => matchesKeyword(a.title) || matchesKeyword(a.summary || ''))
+        : articles;
+
+      console.log(`[Thebell] Scraped ${articles.length} articles, ${filtered.length} after keyword filter`);
+      return { success: true, data: filtered };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
+    } finally {
+      await page.close();
+    }
+  }
+
+  // 기사 상세 내용 스크래핑
+  async scrapeArticleDetail(url: string): Promise<{ title: string; subtitle: string; author: string; date: string; content: string } | null> {
+    if (!this.browser) await this.init();
+
+    const page = await this.browser!.newPage();
+    try {
+      const savedCookies = this.loadCookies();
+      if (savedCookies.length > 0) await page.setCookie(...savedCookies);
+
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+      // 사람처럼: 페이지 로드 후 짧은 대기 + 스크롤 시뮬레이션
+      await new Promise(r => setTimeout(r, 1500 + Math.random() * 2000));
+      await page.evaluate(async () => {
+        const h = document.body.scrollHeight;
+        const steps = 4;
+        for (let i = 1; i <= steps; i++) {
+          window.scrollTo(0, (h * i) / steps);
+          await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
+        }
+      });
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));
+
+      const detail = await page.evaluate(() => {
+        // 제목
+        const titleEl = document.querySelector('.viewHead .tit');
+        const title = titleEl?.childNodes[0]?.textContent?.trim() || '';
+        const subtitle = titleEl?.querySelector('em')?.textContent?.trim() || '';
+
+        // 기자, 날짜
+        const author = document.querySelector('.viewHead .user')?.textContent?.trim() || '';
+        const date = document.querySelector('.viewHead .date')?.textContent?.trim() || '';
+
+        // 본문 (광고 제거)
+        const articleMain = document.querySelector('#article_main');
+        if (articleMain) {
+          // 광고 제거
+          articleMain.querySelectorAll('.article_content_banner, script, img.ADVIMG').forEach(el => el.remove());
+          const content = articleMain.textContent?.trim().replace(/\s+/g, ' ') || '';
+          return { title, subtitle, author, date, content };
+        }
+        return null;
+      });
+
+      return detail;
+    } catch (error) {
+      console.error('[Thebell] Article detail error:', error);
+      return null;
+    } finally {
+      await page.close();
+    }
+  }
+
+  // 현재 Chrome 세션에서 쿠키 추출해서 저장
+  async saveCookiesFromChrome(): Promise<boolean> {
+    if (!this.browser) await this.init();
+
+    const page = await this.browser!.newPage();
+    try {
+      await page.goto('https://www.thebell.co.kr/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000,
+      });
+      const cookies = await page.cookies();
+      this.saveCookies(cookies);
+      console.log(`[Thebell] Saved ${cookies.length} cookies from Chrome`);
+      return true;
+    } catch (error) {
+      console.error('[Thebell] Failed to save cookies from Chrome:', error);
+      return false;
     } finally {
       await page.close();
     }
