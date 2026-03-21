@@ -77,10 +77,36 @@ export async function generatePipelineOutput(
   const outputType = options.outputConfig.type;
 
   if (articles.length === 0) {
+    // [FIX] 기사가 없더라도 빈 리포트를 생성하여 '실패'로 보이지 않게 함
+    const outputRef = db.collection('outputs').doc();
+    const title = options.outputConfig.title || 'AI News Output';
+    await outputRef.set({
+      id: outputRef.id,
+      companyId: options.companyId,
+      pipelineRunId: options.pipelineRunId || null,
+      type: outputType,
+      title: title,
+      articleIds: [],
+      articleCount: 0,
+      rawOutput: "수집된 기사 중 분석할 만한 대상이 없습니다. 수집 기간이나 키워드를 조정해 보시기 바랍니다.",
+      structuredOutput: {
+        title: title,
+        summary: "해당 기간에 지정된 키워드와 일치하는 기사가 발견되지 않았습니다.",
+        highlights: [],
+        trends: [],
+        themes: [],
+        risks: [],
+        opportunities: [],
+        nextSteps: ["수집 기간을 늘려보거나 검색 키워드를 더 일반적인 단어로 조정해 보세요."]
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
     return {
-      success: false,
-      outputId: null,
-      message: 'No analyzed articles available'
+      success: true,
+      outputId: outputRef.id,
+      outputType,
+      articleCount: 0
     };
   }
 
