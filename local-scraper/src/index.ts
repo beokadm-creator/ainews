@@ -28,6 +28,26 @@ async function initServices() {
   }
 }
 
+// Chrome 세션 유지 (더벨, 마켓인사이트 로그인 상태 유지)
+// 크롤러가 감지하지 못하도록 실제 사용자처럼 주기적으로 페이지 이동
+let sessionKeepAliveTimer: NodeJS.Timeout | null = null;
+const KEEPALIVE_INTERVAL_MS = 20 * 60 * 1000; // 20분마다
+
+async function runSessionKeepAlive() {
+  if (!isKoreanBusinessHours()) return; // 업무시간 외에는 패스
+  await thebellService.refreshSession();
+  // 사이트 간 자연스러운 간격
+  await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
+  await marketInsightService.refreshSession();
+}
+
+function startSessionKeepAlive() {
+  sessionKeepAliveTimer = setInterval(() => {
+    runSessionKeepAlive().catch(e => console.error('[KeepAlive] Error:', e.message));
+  }, KEEPALIVE_INTERVAL_MS);
+  console.log(`[KeepAlive] Session keepalive started (every ${KEEPALIVE_INTERVAL_MS / 60000}min)`);
+}
+
 // Auto-collection scheduler (랜덤 간격, 업무시간만)
 let collectTimer: NodeJS.Timeout | null = null;
 
@@ -206,6 +226,7 @@ app.post('/api/save-cookies', async (req: Request, res: Response) => {
 // Graceful shutdown
 async function shutdown() {
   if (collectTimer) clearTimeout(collectTimer);
+  if (sessionKeepAliveTimer) clearInterval(sessionKeepAliveTimer);
   await marketInsightService.close();
   await thebellService.close();
   process.exit(0);
@@ -229,6 +250,9 @@ initServices().then(() => {
     console.log(`Collect all -> Firestore: POST http://localhost:${PORT}/api/collect`);
     console.log(`MarketInsight scrape: GET http://localhost:${PORT}/api/marketinsight/scrape`);
     console.log(`Thebell scrape: GET http://localhost:${PORT}/api/thebell/scrape`);
+    console.log(`Thebell keyword news: GET http://localhost:${PORT}/api/thebell/keyword-news`);
+    console.log(`MarketInsight all pages: GET http://localhost:${PORT}/api/marketinsight/scrape-all`);
   });
   startAutoCollect();
+  startSessionKeepAlive();
 });

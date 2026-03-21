@@ -42,6 +42,26 @@ export function hashUrl(url: string): string {
 }
 
 /**
+ * 이미 수집된 URL 해시 집합을 반환 (detail fetch 전 사전 필터링용).
+ * sourceId 기준으로 최근 N개 urlHash를 로드.
+ */
+export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Promise<Set<string>> {
+  if (!initialized) return new Set();
+  const db = admin.firestore();
+  const snap = await db.collection('articles')
+    .where('sourceId', '==', sourceId)
+    .orderBy('collectedAt', 'desc')
+    .limit(limit)
+    .get();
+  const hashes = new Set<string>();
+  snap.docs.forEach(d => {
+    const h = d.data().urlHash;
+    if (h) hashes.add(h);
+  });
+  return hashes;
+}
+
+/**
  * paidSourceAccess/{sourceId} 컬렉션에서 해당 소스에 접근 허용된 회사 ID 목록을 반환.
  * 컬렉션/문서가 없으면 빈 배열 반환.
  */

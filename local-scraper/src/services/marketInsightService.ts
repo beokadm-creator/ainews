@@ -307,6 +307,30 @@ export class MarketInsightService {
     }
   }
 
+  // 세션 유지 (주기적 호출 — 로그인 상태 유지 + 쿠키 갱신)
+  async refreshSession(): Promise<boolean> {
+    if (!this.browser) return false;
+    const page = await this.browser.newPage();
+    try {
+      const savedCookies = this.loadCookies();
+      if (savedCookies.length > 0) await page.setCookie(...savedCookies);
+      await page.goto('https://marketinsight.hankyung.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000));
+      const cookies = await page.cookies();
+      if (cookies.length > 0) {
+        this.saveCookies(cookies);
+        console.log('[MarketInsight] Session refreshed');
+        return true;
+      }
+      return false;
+    } catch (e: any) {
+      console.warn('[MarketInsight] Session refresh failed:', e.message);
+      return false;
+    } finally {
+      await page.close();
+    }
+  }
+
   // 현재 Chrome 세션에서 쿠키 추출해서 저장
   async saveCookiesFromChrome(): Promise<boolean> {
     if (!this.browser) await this.init();

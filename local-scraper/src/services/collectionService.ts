@@ -1,6 +1,6 @@
 import { MarketInsightService } from './marketInsightService';
 import { ThebellService } from './thebellService';
-import { getAuthorizedCompanyIds, saveArticleForCompany, isFirestoreReady } from './firestoreService';
+import { getAuthorizedCompanyIds, saveArticleForCompany, isFirestoreReady, getCollectedUrlHashes, hashUrl } from './firestoreService';
 
 // ─── 관련도 키워드 ───────────────────────────────────────────────
 // 점수가 높을수록 핵심 딜 기사 (가중치별 분류)
@@ -132,7 +132,6 @@ async function collectMarketInsight(
 ): Promise<void> {
   try {
     console.log('[Collection] MarketInsight: fetching all pages...');
-    // scrapeArticlesAllPages 메서드로 모든 페이지 수집
     const listResult = await (service as any).scrapeArticlesAllPages('mna', 100);
     if (!listResult.success || !listResult.data) {
       stats.errors.push(listResult.error || 'No data returned');
@@ -142,19 +141,26 @@ async function collectMarketInsight(
     stats.found = listResult.data.length;
     console.log(`[Collection] MarketInsight: ${stats.found} total articles found`);
 
-    // 모든 기사를 관련도 점수 기반으로 정렬 (유료 매체이므로 모두 스캔)
+    // 이미 수집한 URL 해시 사전 로드 (detail fetch 전 필터링)
+    const existingHashes = await getCollectedUrlHashes('marketinsight');
+    console.log(`[Collection] MarketInsight: ${existingHashes.size} already collected URLs loaded`);
+
     const scored = listResult.data
-      .map(a => ({
+      .map((a: any) => ({
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
         category: (a as any).category || 'mna',
       }))
-      .sort((a, b) => b.score - a.score);
+      .filter((a: any) => !existingHashes.has(hashUrl(a.link))) // 이미 수집한 URL 제외
+      .sort((a: any, b: any) => b.score - a.score);
 
     stats.relevant = scored.length;
-    console.log(`[Collection] MarketInsight: processing all ${stats.relevant} articles for detail fetch`);
+    const skippedCount = stats.found - scored.length;
+    console.log(`[Collection] MarketInsight: ${scored.length} new articles (${skippedCount} already collected, skipped)`);
 
-    // 모든 기사에 대해 detail 수집 (유료 매체 우선 처리)
+    if (scored.length === 0) return;
+
+    // 신규 기사에 대해서만 detail 수집
     for (let i = 0; i < scored.length; i++) {
       const article = scored[i];
 
@@ -202,7 +208,6 @@ async function collectTheBell(
 ): Promise<void> {
   try {
     console.log('[Collection] TheBell: fetching keyword news (all pages)...');
-    // 마이페이지 키워드 뉴스에서 모든 기사 수집
     const listResult = await (service as any).scrapeKeywordNews(50);
     if (!listResult.success || !listResult.data) {
       stats.errors.push(listResult.error || 'No data returned');
@@ -212,16 +217,23 @@ async function collectTheBell(
     stats.found = listResult.data.length;
     console.log(`[Collection] TheBell: ${stats.found} articles found in MyKeywordNews`);
 
-    // 모든 기사를 관련도 점수 기반으로 정렬 (유료 매체)
+    // 이미 수집한 URL 해시 사전 로드
+    const existingHashes = await getCollectedUrlHashes('thebell');
+    console.log(`[Collection] TheBell: ${existingHashes.size} already collected URLs loaded`);
+
     const scored = listResult.data
-      .map(a => ({
+      .map((a: any) => ({
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
       }))
-      .sort((a, b) => b.score - a.score);
+      .filter((a: any) => !existingHashes.has(hashUrl(a.link))) // 이미 수집한 URL 제외
+      .sort((a: any, b: any) => b.score - a.score);
 
     stats.relevant = scored.length;
-    console.log(`[Collection] TheBell: processing all ${stats.relevant} articles for detail fetch`);
+    const skippedCount = stats.found - scored.length;
+    console.log(`[Collection] TheBell: ${scored.length} new articles (${skippedCount} already collected, skipped)`);
+
+    if (scored.length === 0) return;
 
     // 모든 기사에 대해 detail 수집
     for (let i = 0; i < scored.length; i++) {
