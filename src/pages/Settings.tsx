@@ -99,6 +99,8 @@ export default function Settings() {
   const [subscriberEmails, setSubscriberEmails] = useState<string[]>([]);
   const [newEmail, setNewEmail] = useState('');
   const [savingSubscribers, setSavingSubscribers] = useState(false);
+  const [relevancePrompt, setRelevancePrompt] = useState('');
+  const [savingPrompt, setSavingPrompt] = useState(false);
 
   useEffect(() => {
     if (companyId) {
@@ -120,6 +122,7 @@ export default function Settings() {
         const storedBaseUrls = data.aiBaseUrls || {}; // ★ Load custom URLs
         const emails = data.subscriberEmails || [];
         setSubscriberEmails(emails);
+        setRelevancePrompt(data.ai?.relevancePrompt || '');
         
         setProviderState(prev => {
           const updated = { ...prev };
@@ -216,6 +219,23 @@ export default function Settings() {
     }
   };
 
+  const handleSaveRelevancePrompt = async () => {
+    if (!companyId) return;
+    setSavingPrompt(true);
+    try {
+      await setDoc(
+        doc(db, 'companySettings', companyId),
+        { ai: { relevancePrompt } },
+        { merge: true }
+      );
+      alert('판단 기준 프롬프트가 저장되었습니다.');
+    } catch (err: any) {
+      alert('저장 실패: ' + err.message);
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+
   const toggleSourceActive = async (id: string, currentStatus: boolean) => {
     try {
       await updateDoc(doc(db, 'sources', id), { active: !currentStatus });
@@ -249,6 +269,38 @@ export default function Settings() {
           Manage AI providers, news sources, and email subscribers for your company.
         </p>
       </div>
+
+      {/* ─── AI Relevance Sensitivity ─── */}
+      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+        <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2">
+          <RefreshCw className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">AI 기사 적합성 판단 기준 (커스텀 프롬프트)</h2>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            AI가 수집된 기사를 분석 리포트에 포함시킬지 결정하는 '판단 기준'을 직접 수정할 수 있습니다. 
+            내용이 구체적일수록 원하는 기사만 정확하게 골라낼 수 있습니다.
+          </p>
+          <div>
+            <textarea
+              value={relevancePrompt}
+              onChange={(e) => setRelevancePrompt(e.target.value)}
+              placeholder="예: 당신은 전문 투자 분석가입니다. 제시된 기사 제목과 본문을 읽고, 해당 기사가 '기업 인수합병(M&A)', '스타트업 투자', 'IPO'와 직접적인 관련이 있는지 판단하세요. 단순한 인물 동정이나 광고성 기사는 제외하세요."
+              className="w-full h-32 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-900/50 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] resize-none"
+            />
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={handleSaveRelevancePrompt}
+              disabled={savingPrompt || !canEdit}
+              className="flex items-center px-6 py-2 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#2a4a73] transition-colors shadow-sm disabled:opacity-50 text-sm"
+            >
+              {savingPrompt ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+              판단 기준 저장
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* ─── AI Provider Management ─── */}
       <section className="space-y-4">
