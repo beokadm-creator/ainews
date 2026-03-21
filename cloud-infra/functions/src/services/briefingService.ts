@@ -88,16 +88,16 @@ export async function generatePipelineOutput(
       title: title,
       articleIds: [],
       articleCount: 0,
-      rawOutput: "수집된 기사 중 분석할 만한 대상이 없습니다. 수집 기간이나 키워드를 조정해 보시기 바랍니다.",
+      rawOutput: "현재 해당 조건(키워드 및 기간)에 부합하는 분석된 기사가 없습니다. 수집 기간을 늘리거나 키워드를 조정해 보시기 바랍니다.",
       structuredOutput: {
         title: title,
-        summary: "해당 기간에 지정된 키워드와 일치하는 기사가 발견되지 않았습니다.",
+        summary: "현재 데이터베이스에 해당 조건으로 분석 완료된 기사가 존재하지 않습니다. 시스템이 기사를 수집 중이거나, AI 필터링 단계에서 적합한 기사를 찾지 못했을 수 있습니다.",
         highlights: [],
         trends: [],
         themes: [],
         risks: [],
         opportunities: [],
-        nextSteps: ["수집 기간을 늘려보거나 검색 키워드를 더 일반적인 단어로 조정해 보세요."]
+        nextSteps: ["수집 기간(7일 등)을 늘려보세요.", "검색 키워드를 더 일반적인 단어로 조정해 보세요.", "매체 구독 설정을 확인해 보세요."]
       },
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
@@ -234,13 +234,14 @@ export async function createDailyBriefing(options?: OutputGenerationOptions) {
   }
 
   const db = admin.firestore();
-  let queryRef: FirebaseFirestore.Query = db.collection('articles')
+  
+  // [FIX] 특정 파이프라인 런에 국한되지 않고, 해당 회사의 '분석 완료'된 모든 최신 기사를 대상으로 함.
+  // 사용자가 수집을 돌렸을 때 기존에 있던 좋은 기사들도 리포트에 포함되어야 풍성함.
+  let queryRef = db.collection('articles')
+    .where('companyId', '==', options.companyId)
     .where('status', '==', 'analyzed')
-    .where('companyId', '==', options.companyId);
-
-  if (options.pipelineRunId) {
-    queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
-  }
+    .orderBy('analyzedAt', 'desc')
+    .limit(50);
 
   const articlesSnapshot = await queryRef.get();
   const articles: any[] = articlesSnapshot.docs.map(doc => ({
@@ -248,6 +249,7 @@ export async function createDailyBriefing(options?: OutputGenerationOptions) {
     ...doc.data()
   }));
 
+  // 관련성 점수 높은 순으로 정렬하여 리포트 생성
   const sorted = [...articles].sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
   return generatePipelineOutput(sorted, options);
 }
