@@ -9,22 +9,27 @@ admin.initializeApp({
 const db = admin.firestore();
 
 const mediaSources = [
-  { name: '한국경제신문', url: 'https://www.hankyung.com/rss', type: 'rss', language: 'ko', relevanceScore: 4 },
-  { name: '매일경제', url: 'https://www.mk.co.kr/rss', type: 'rss', language: 'ko', relevanceScore: 4 },
-  { name: '파이낸셜뉴스', url: 'https://www.fnnews.com/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '이데일리', url: 'https://www.edaily.co.kr/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '서울경제', url: 'https://www.sedaily.com/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '헤럴드경제', url: 'https://news.heraldcorp.com/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '아시아경제', url: 'https://www.asiae.co.kr/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '머니투데이', url: 'https://www.mt.co.kr/rss', type: 'rss', language: 'ko', relevanceScore: 3 },
-  { name: '연합뉴스', url: 'https://www.yna.co.kr/rss', type: 'rss', language: 'ko', relevanceScore: 4 },
-  { name: 'The Korea Herald', url: 'http://www.koreaherald.com/rss', type: 'rss', language: 'en', relevanceScore: 3 },
-  { name: 'DealStreetAsia', url: 'https://dealstreetasia.com/rss', type: 'rss', language: 'en', relevanceScore: 5 },
-  { name: 'Financial Times', url: 'https://www.ft.com/rss', type: 'rss', language: 'en', relevanceScore: 5 },
-  { name: 'MarketWatch', url: 'https://www.marketwatch.com/rss', type: 'rss', language: 'en', relevanceScore: 3 },
-  { name: 'TechCrunch', url: 'https://techcrunch.com/feed', type: 'rss', language: 'en', relevanceScore: 5 },
-  { name: '더벨 (The Bell)', url: 'https://www.thebell.co.kr/free/content/MA', type: 'scraping', language: 'ko', relevanceScore: 5 },
-  { name: '오투저널 (OtoJournal)', url: 'https://www.otojournal.com', type: 'scraping', language: 'ko', relevanceScore: 4 }
+  // ─── 한국 경제/금융 매체 (RSS) ───────────────────────────────
+  { name: '한국경제', url: 'https://www.hankyung.com/feed/economy', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 4 },
+  { name: '매일경제', url: 'https://www.mk.co.kr/rss/30100041/', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 4 },
+  { name: '파이낸셜뉴스', url: 'https://www.fnnews.com/rss/r20/fn_realnews_economy.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 4 },
+  { name: '이데일리', url: 'http://rss.edaily.co.kr/finance_news.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '서울경제', url: 'https://www.sedaily.com/rss/economy', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '헤럴드경제', url: 'https://biz.heraldcorp.com/rss/google/economy', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '아시아경제', url: 'https://www.asiae.co.kr/rss/economy.htm', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '머니투데이', url: 'http://rss.mt.co.kr/mt_news.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '연합뉴스', url: 'http://www.yonhapnews.co.kr/RSS/economy.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 4 },
+  { name: '뉴시스', url: 'https://newsis.com/RSS/economy.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+  { name: '조선비즈', url: 'http://biz.chosun.com/site/data/rss/news.xml', type: 'rss', language: 'ko', category: 'domestic', relevanceScore: 3 },
+
+  // ─── 해외 M&A/금융 전문 (RSS) ────────────────────────────────
+  { name: 'DealStreetAsia', url: 'https://dealstreetasia.com/feed/', type: 'rss', language: 'en', category: 'asian', relevanceScore: 5 },
+  { name: 'Financial Times', url: 'https://feeds.ft.com/ft/news?format=rss', type: 'rss', language: 'en', category: 'global', relevanceScore: 5 },
+  { name: 'MarketWatch', url: 'https://feeds.marketwatch.com/marketwatch/topstories/', type: 'rss', language: 'en', category: 'global', relevanceScore: 3 },
+
+  // ─── PC 로컬 스크래퍼 (로그인 필요, 유료) ─────────────────────
+  { name: '더벨 (The Bell)', url: 'https://www.thebell.co.kr', type: 'local-scraper', language: 'ko', category: 'domestic', relevanceScore: 5, isPaid: true, loginRequired: true },
+  { name: '마켓인사이트', url: 'https://marketinsight.hankyung.com', type: 'local-scraper', language: 'ko', category: 'domestic', relevanceScore: 5, isPaid: true, loginRequired: true }
 ];
 
 async function seed() {

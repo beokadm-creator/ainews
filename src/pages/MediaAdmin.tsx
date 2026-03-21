@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Globe, Plus, Edit2, Trash2, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
   Loader2, ChevronDown, ChevronUp, Rss, Code2, Cpu, Mail, Star, Eye, EyeOff,
-  Search, Filter, Lock, Building2, ShieldCheck
+  Search, Filter, Lock
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { collection, getDocs, orderBy, query, doc, getDoc } from 'firebase/firestore';
@@ -47,7 +47,6 @@ interface GlobalSource {
   };
   notes?: string;
   pricingTier: PricingTier;
-  allowedCompanyIds?: string[]; // 유료 매체 권한
 }
 
 const TYPE_META: Record<SourceType, { label: string; icon: any; color: string; bg: string }> = {
@@ -88,152 +87,6 @@ function StarRating({ score }: { score: number }) {
     </span>
   );
 }
-
-// ── 유료 소스 접근 관리 패널 ────────────────────────────────────
-interface PaidAccessEntry {
-  sourceId: string;
-  sourceName: string;
-  authorizedCompanyIds: string[];
-}
-interface Company { id: string; name: string; }
-
-function PaidSourceAccessPanel() {
-  // paidSources: globalSources에서 pricingTier==='paid' 인 것 + paidSourceAccess 병합
-  const [paidSources, setPaidSources] = useState<{ id: string; name: string; authorizedCompanyIds: string[] }[]>([]);
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [gsSnap, psaSnap, compSnap] = await Promise.all([
-        getDocs(query(collection(db, 'globalSources'))),
-        getDocs(collection(db, 'paidSourceAccess')),
-        getDocs(collection(db, 'companies')),
-      ]);
-
-      // paidSourceAccess map: sourceId → authorizedCompanyIds
-      const accessMap: Record<string, string[]> = {};
-      psaSnap.docs.forEach(d => {
-        const data = d.data() as any;
-        accessMap[d.id] = data.authorizedCompanyIds || [];
-      });
-
-      // globalSources where pricingTier === 'paid' or 'requires_subscription'
-      const paid = gsSnap.docs
-        .filter(d => ['paid', 'requires_subscription'].includes(d.data().pricingTier))
-        .map(d => ({
-          id: d.id,
-          name: d.data().name as string,
-          authorizedCompanyIds: accessMap[d.id] || [],
-        }));
-
-      setPaidSources(paid);
-      setCompanies(compSnap.docs.map(d => ({ id: d.id, name: (d.data() as any).name })));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const toggle = async (source: { id: string; name: string; authorizedCompanyIds: string[] }, companyId: string) => {
-    const next = source.authorizedCompanyIds.includes(companyId)
-      ? source.authorizedCompanyIds.filter(id => id !== companyId)
-      : [...source.authorizedCompanyIds, companyId];
-
-    setSaving(source.id + companyId);
-    try {
-      const fn = httpsCallable(functions, 'managePaidSourceAccess');
-      await fn({ sourceId: source.id, sourceName: source.name, authorizedCompanyIds: next });
-      setPaidSources(prev => prev.map(s =>
-        s.id === source.id ? { ...s, authorizedCompanyIds: next } : s
-      ));
-    } catch (err: any) {
-      alert('저장 실패: ' + err.message);
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  if (loading) return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl border border-amber-200 dark:border-amber-800 p-6 flex items-center gap-2 text-sm text-gray-400">
-      <Loader2 className="w-4 h-4 animate-spin" /> 로딩 중...
-    </div>
-  );
-
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl border border-amber-200 dark:border-amber-800 overflow-hidden">
-      {/* Header */}
-      <div className="px-6 py-4 bg-amber-50/50 dark:bg-amber-900/10 border-b border-amber-200 dark:border-amber-800 flex items-center gap-2">
-        <ShieldCheck className="w-5 h-5 text-amber-500" />
-        <h2 className="font-semibold text-gray-900 dark:text-white">유료 매체 회사별 접근 권한</h2>
-        <span className="text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full ml-auto">SUPERADMIN 전용</span>
-      </div>
-
-      <div className="p-5 space-y-1">
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-          유료 매체는 허용된 회사만 기사를 수집하고 열람할 수 있습니다. 아래에서 회사별로 접근을 켜고 끄세요.
-        </p>
-
-        {paidSources.length === 0 ? (
-          <div className="py-8 text-center text-sm text-gray-400">
-            <Lock className="w-8 h-8 mx-auto mb-2 opacity-20" />
-            <p>유료 매체가 없습니다.</p>
-            <p className="text-xs mt-1">아래 Media Library에서 매체의 Pricing을 <strong>유료</strong>로 설정하면 여기 나타납니다.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {paidSources.map(source => (
-              <div key={source.id} className="border border-gray-200 dark:border-gray-700 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Lock className="w-4 h-4 text-red-400 flex-shrink-0" />
-                  <span className="font-medium text-sm text-gray-900 dark:text-white">{source.name}</span>
-                  <span className="text-xs text-gray-400 ml-auto">
-                    {source.authorizedCompanyIds.length > 0
-                      ? `${source.authorizedCompanyIds.length}개 회사 허용됨`
-                      : '모든 회사 차단됨'}
-                  </span>
-                </div>
-
-                {companies.length === 0 ? (
-                  <p className="text-xs text-gray-400">등록된 회사가 없습니다.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {companies.map(company => {
-                      const isAllowed = source.authorizedCompanyIds.includes(company.id);
-                      const isSaving = saving === source.id + company.id;
-                      return (
-                        <button
-                          key={company.id}
-                          onClick={() => toggle(source, company.id)}
-                          disabled={!!isSaving}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                            isAllowed
-                              ? 'bg-green-50 dark:bg-green-900/30 border-green-300 dark:border-green-700 text-green-700 dark:text-green-300'
-                              : 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 text-gray-400 dark:text-gray-500'
-                          }`}
-                        >
-                          {isSaving ? <Loader2 className="w-3 h-3 animate-spin" />
-                            : isAllowed ? <CheckCircle2 className="w-3 h-3" />
-                            : <Building2 className="w-3 h-3" />}
-                          {company.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────
 
 export default function MediaAdmin() {
   const { user } = useAuthStore();
@@ -348,9 +201,6 @@ export default function MediaAdmin() {
 
   return (
     <div className="space-y-6">
-      {/* 유료 소스 접근 관리 */}
-      <PaidSourceAccessPanel />
-
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -788,25 +638,7 @@ export default function MediaAdmin() {
                 </div>
               </div>
 
-              {/* Premium Access List */}
-              {(editingSource.pricingTier === 'paid' || editingSource.pricingTier === 'requires_subscription') && (
-                <div className="col-span-2 pt-2">
-                  <label className="block text-sm font-medium text-purple-700 dark:text-purple-400 mb-1">허용된 회사 ID 목록 (쉼표로 구분)</label>
-                  <p className="text-xs text-gray-500 mb-2">유료 매체는 이 목록에 기재된 회사(Company ID)만 구독/선택할 수 있습니다.</p>
-                  <input
-                    type="text"
-                    value={(editingSource.allowedCompanyIds || []).join(', ')}
-                    onChange={e => {
-                      const ids = e.target.value.split(',').map(id => id.trim()).filter(Boolean);
-                      setEditingSource(s => ({ ...s, allowedCompanyIds: ids }));
-                    }}
-                    placeholder="company_1, company_2..."
-                    className="w-full px-3 py-2 border border-purple-300 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-sm outline-none focus:ring-2 focus:ring-purple-500"
-                  />
-                </div>
-              )}
-
-              {/* Type-specific fields */}
+{/* Type-specific fields */}
               {editingSource.type === 'rss' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">RSS URL</label>
