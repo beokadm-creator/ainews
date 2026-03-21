@@ -37,41 +37,45 @@ interface ApiCallResult {
 // ─────────────────────────────────────────
 // Default Prompts
 // ─────────────────────────────────────────
-const DEFAULT_RELEVANCE_PROMPT = `You are a professional analyst for M&A, private equity, venture capital, and strategic investment news.
+const DEFAULT_RELEVANCE_PROMPT = `당신은 M&A, 사모펀드(PEF), 벤처캐피털, 전략적 투자 분야의 전문 애널리스트입니다.
 
-Determine whether the article is relevant to the configured investment monitoring workflow.
+아래 기사가 투자 모니터링 워크플로우에 관련된 기사인지 판단하세요.
 
-Relevant examples:
-- mergers and acquisitions
-- stake sales, divestitures, carve-outs, spin-offs
-- private equity deals and fund activity
-- venture capital funding
-- strategic investments, IPO-linked deal activity
-- capital raise, refinancing, restructuring, management buyout
+관련 있는 기사 예시:
+- 인수합병(M&A), 경영권 인수, 공개매수
+- 지분 매각, 사업부 분리매각(carve-out), 분할
+- 사모펀드(PEF) 딜, 바이아웃, 펀드 결성/청산
+- 벤처캐피털 투자유치, 시리즈 투자
+- 전략적 투자자(SI), 재무적 투자자(FI) 참여
+- IPO, 상장, 블록딜
+- 인수금융, 리파이낸싱, 구조조정, MBO
 
-Output format:
+출력 형식 (반드시 아래 형식 그대로 출력):
 RELEVANT: YES or NO
-CONFIDENCE: number between 0.0 and 1.0
-REASON: short reason`;
+CONFIDENCE: 0.0~1.0 사이의 숫자
+REASON: 한 문장으로 판단 근거 (한국어로 작성)`;
 
-const DEFAULT_ANALYSIS_PROMPT = `You are an analyst that extracts structured investment intelligence from news articles.
+const DEFAULT_ANALYSIS_PROMPT = `당신은 뉴스 기사에서 투자 정보를 구조화하여 추출하는 전문 애널리스트입니다.
 
-Return valid JSON only with this shape:
+모든 출력값(summary, category, insights, tags)은 반드시 자연스러운 한국어로 작성하세요.
+기업명·펀드명 등 고유명사는 한국어 표기를 우선하되, 필요 시 영문을 괄호로 병기하세요. (예: 카카오(Kakao))
+
+아래 JSON 형식만 반환하세요 (다른 텍스트 없이):
 {
   "companies": {
-    "acquiror": "string or null",
-    "target": "string or null",
-    "financialSponsor": "string or null"
+    "acquiror": "인수자 (없으면 null)",
+    "target": "피인수 대상 (없으면 null)",
+    "financialSponsor": "재무적 투자자/PE (없으면 null)"
   },
   "deal": {
-    "type": "string",
-    "amount": "string",
-    "stake": "string or null"
+    "type": "딜 유형 (예: 인수합병, 지분투자, IPO 등)",
+    "amount": "거래 금액 (예: 3,000억원, 미공개)",
+    "stake": "지분율 (없으면 null)"
   },
-  "summary": ["sentence 1", "sentence 2", "sentence 3"],
-  "category": "string",
-  "insights": "string or null",
-  "tags": ["tag1", "tag2", "tag3"]
+  "summary": ["핵심 내용 1", "핵심 내용 2", "핵심 내용 3"],
+  "category": "카테고리 (예: M&A, 사모펀드, 벤처투자, IPO 등)",
+  "insights": "투자자 관점에서의 시사점 및 분석 (없으면 null)",
+  "tags": ["태그1", "태그2", "태그3"]
 }`;
 
 // ─────────────────────────────────────────
@@ -396,10 +400,10 @@ export async function checkRelevance(
     const include = filters.includeKeywords || [];
     const exclude = filters.excludeKeywords || [];
     if (include.length > 0) {
-      extraGuidelines += `\nThe article IS MORE LIKELY RELEVANT if it contains any of these keywords: ${include.join(', ')}.`;
+      extraGuidelines += `\n다음 키워드 중 하나라도 포함되어 있으면 관련 기사로 판단하세요: ${include.join(', ')}.`;
     }
     if (exclude.length > 0) {
-      extraGuidelines += `\nThe article IS HIGHLY IRRELEVANT if it focuses primarily on: ${exclude.join(', ')}.`;
+      extraGuidelines += `\n다음 주제에 주로 해당하는 기사는 관련 없음으로 판단하세요: ${exclude.join(', ')}.`;
     }
   }
 
@@ -445,9 +449,9 @@ export async function analyzeArticle(
 ) {
   const prompt = `${aiConfig.analysisPrompt || DEFAULT_ANALYSIS_PROMPT}
 
-[CRITICAL INSTRUCTION]
-All outputs (summary, categories, implications, company names) MUST be translated into perfectly natural Korean (한국어). 
-Do NOT output English sentences.
+[필수 지시사항]
+모든 출력(summary, category, insights, tags)은 반드시 자연스러운 한국어로 작성하세요.
+영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.
 
 Article title: ${article.title}
 Source: ${article.source}

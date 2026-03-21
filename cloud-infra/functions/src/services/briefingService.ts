@@ -133,46 +133,48 @@ export async function generatePipelineOutput(
   } else {
     const basePrompt = outputType === 'custom_prompt'
       ? (options.outputConfig.prompt || options.aiConfig.outputPrompt || 'Analyze the following articles and return the requested output.')
-      : (options.aiConfig.outputPrompt || `You are an expert investment analyst preparing a premium executive report.
-Analyze the provided articles and generate a structured report in **Korean (한국어)**. 
-For key professional terms or corporate names, you may include English in parentheses if it aids clarity.
+      : (options.aiConfig.outputPrompt || `당신은 M&A·사모펀드·전략적 투자 분야의 전문 투자 애널리스트입니다.
+제공된 기사들을 분석하여 구조화된 프리미엄 투자 인텔리전스 보고서를 작성하세요.
 
-Return a JSON object with this shape:
+모든 텍스트는 반드시 자연스러운 한국어로 작성하세요.
+기업명·펀드명 등 고유명사는 한국어 표기를 우선하되, 필요 시 영문을 괄호로 병기하세요. (예: 카카오(Kakao))
+
+아래 JSON 형식으로만 반환하세요 (다른 텍스트 없이):
 {
-  "title": "Report Title (In Korean)",
-  "summary": "Executive summary (In Korean, 3-5 sentences)",
+  "title": "보고서 제목",
+  "summary": "전체 요약 (3~5문장, 핵심 딜 및 시장 동향 포함)",
   "highlights": [
-    { 
-      "title": "Highlight title", 
-      "description": "Insightful description. Mention the specific deal or event.", 
-      "articleIndex": 1 
+    {
+      "title": "주요 딜/이슈 제목",
+      "description": "구체적인 딜 내용과 시사점을 서술하세요.",
+      "articleIndex": 1
     }
   ],
   "trends": [
     {
-      "topic": "Current trend identified from the news",
-      "description": "Detailed explanation of the trend and its impact (In Korean)",
+      "topic": "식별된 시장 트렌드",
+      "description": "트렌드의 배경, 원인, 시장 영향을 상세히 서술하세요.",
       "relatedArticles": [1, 2]
     }
   ],
   "themes": [
-    { "name": "Broad theme (e.g., M&A Surge)", "description": "Theme description" }
+    { "name": "주요 테마 (예: M&A 급증)", "description": "테마에 대한 분석" }
   ],
-  "risks": ["Risk factor 1", "Risk factor 2"],
-  "opportunities": ["Opportunity 1", "Opportunity 2"],
-  "nextSteps": ["Actionable recommendation 1", "Recommendation 2"]
+  "risks": ["리스크 요인 1", "리스크 요인 2"],
+  "opportunities": ["투자 기회 1", "투자 기회 2"],
+  "nextSteps": ["실행 가능한 제언 1", "제언 2"]
 }
 
-Important:
-- Use a professional, insightful tone.
-- Reference the 'articleIndex' accurately in highlights and trends.
-- The report must be predominantly in Korean.`);
+작성 원칙:
+- 전문적이고 통찰력 있는 어조를 유지하세요.
+- highlights와 trends의 'articleIndex'는 기사 번호와 정확히 일치해야 합니다.
+- 보고서 전체를 100% 한국어로 작성하세요.`);
 
     prompt = `${basePrompt}
 
-[CRITICAL INSTRUCTION: TRANSLATION]
-You MUST generate the ENTIRE report (all titles, descriptions, trends, categories, and tags) in completely natural Korean (한국어). 
-Do NOT output English sentences unless you are citing proper nouns (e.g. "Apple Inc. (애플)"). This system is for Korean users and any un-translated English output will be considered a total failure.
+[필수 지시사항]
+보고서의 모든 내용(제목, 요약, 트렌드, 태그 포함)을 반드시 자연스러운 한국어로 작성하세요.
+영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.
 
 Company: ${options.companyId}
 Output title: ${options.outputConfig.title || 'AI News Output'}
