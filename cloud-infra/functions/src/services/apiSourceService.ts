@@ -54,9 +54,10 @@ export async function processApiSources(options?: {
   }
 
   // 복합 인덱스 문제 회피: documentId()만으로 쿼리, type/status는 코드 필터링
+  // Firestore in-query 제한: 최대 10개씩 청크
   const allApiSources: { id: string; data: any }[] = [];
-  for (let i = 0; i < subscribedIds.length; i += 30) {
-    const chunk = subscribedIds.slice(i, i + 30);
+  for (let i = 0; i < subscribedIds.length; i += 10) {
+    const chunk = subscribedIds.slice(i, i + 10);
     const snap = await db.collection('globalSources')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
       .get();

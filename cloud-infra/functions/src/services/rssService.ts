@@ -5,10 +5,8 @@ import { isDuplicateArticle, hashUrl } from './duplicateService';
 import { sendErrorNotificationToAdmin } from './telegramService';
 import { cleanHtmlContent, decodeBuffer } from '../utils/encodingUtils';
 import { matchesRuntimeFilters } from '../utils/textUtils';
-import { RuntimeFilters } from '../types/runtime';
+import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
-import { enrichArticles } from './scrapingService';
-import { RuntimeAiConfig } from '../types/runtime';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
@@ -146,9 +144,9 @@ export async function processRssSources(options?: {
 
   let globalQuery: FirebaseFirestore.Query;
   if (subscribedIds.length > 0) {
-    // 구독 기반: documentId in-query (30개씩 청크)
+    // 구독 기반: documentId in-query (10개씩 청크 - Firestore 제한)
     const chunks: string[][] = [];
-    for (let i = 0; i < subscribedIds.length; i += 30) chunks.push(subscribedIds.slice(i, i + 30));
+    for (let i = 0; i < subscribedIds.length; i += 10) chunks.push(subscribedIds.slice(i, i + 10));
 
     for (const chunk of chunks) {
       const snap = await db.collection('globalSources')
@@ -198,8 +196,7 @@ export async function processRssSources(options?: {
       const docRef = db.collection('globalSources').doc(sourceId);
 
       try {
-        const baseArticles = await fetchRssFeed(source.url || source.rssUrl);
-        const articles = await enrichArticles(baseArticles);
+        const articles = await fetchRssFeed(source.url || source.rssUrl);
         let sourceCollected = 0;
 
         for (const article of articles) {
