@@ -177,12 +177,42 @@ function getRateLimitDelay(attempt: number): number {
 // Provider-specific API callers
 // ─────────────────────────────────────────
 async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Promise<string> {
-  // 1. company Firestore key first
-  if (companyId) {
-    const companyKey = await getApiKeyForCompany(companyId, aiConfig.provider);
-    if (companyKey) return companyKey;
+  const db = admin.firestore();
+
+  // 1차: systemSettings/aiConfig.apiKeys.{provider}
+  // Note: saveAiApiKey stores the key as a literal dot-notation field name ("apiKeys.glm"),
+  // so we must check both the nested path and the literal field name.
+  try {
+    const sysDoc = await db.collection('systemSettings').doc('aiConfig').get();
+    const sysData = sysDoc.data() || {};
+    const sysKey = sysData?.apiKeys?.[aiConfig.provider] || sysData?.[`apiKeys.${aiConfig.provider}`];
+    if (sysKey) return sysKey;
+  } catch (err) {
+    console.warn('resolveApiKey: systemSettings load failed:', err);
   }
-  // 2. env var fallback
+
+  // 2차: companySettings fallback (companyId 지정 또는 첫 활성 회사)
+  try {
+    let targetId = companyId;
+    if (!targetId) {
+      const snap = await db.collection('companies').where('active', '==', true).limit(1).get();
+      targetId = snap.empty ? undefined : snap.docs[0].id;
+    }
+    if (targetId) {
+      const compDoc = await db.collection('companySettings').doc(targetId).get();
+      const compKey = compDoc.data()?.apiKeys?.[aiConfig.provider];
+      if (compKey) {
+        // systemSettings에 동기화 (다음 호출 최적화)
+        db.collection('systemSettings').doc('aiConfig').set(
+          { [`apiKeys.${aiConfig.provider}`]: compKey }, { merge: true }
+        ).catch(() => {});
+        return compKey;
+      }
+    }
+  } catch (err) {
+    console.warn('resolveApiKey: companySettings fallback failed:', err);
+  }
+
   return getApiKeyByEnvKey(aiConfig.apiKeyEnvKey);
 }
 
@@ -366,7 +396,7 @@ function cleanupJsonResponse(content: string): string {
 // Prompt Logging
 // ─────────────────────────────────────────
 export async function logPromptExecution(
-  stage: 'relevance-check' | 'deep-analysis' | 'daily-briefing' | 'dedup-check' | 'custom-output',
+  stage: 'relevance-check' | 'deep-analysis' | 'daily-briefing' | 'dedup-check' | 'custom-output' | 'article-list-summary',
   input: Record<string, any>,
   output: string,
   model: string,
@@ -438,8 +468,9 @@ Decision:`;
 
     return { isRelevant, confidence: normalizedConfidence, reason };
   } catch (error) {
+    // API 오류는 re-throw — "관련 없음"으로 처리하면 안 됨 (기사가 wrongly rejected됨)
     console.error('Error calling AI API for relevance check:', error);
-    return { isRelevant: false, confidence: 0, reason: `API error: ${error instanceof Error ? error.message : 'Unknown error'}` };
+    throw error;
   }
 }
 
@@ -481,80 +512,123 @@ export async function processRelevanceFiltering(options?: {
   pipelineRunId?: string;
   aiConfig: RuntimeAiConfig;
   filters?: any; // RuntimeFilters
+  abortChecker?: () => Promise<boolean>;
 }) {
   const db = admin.firestore();
-  const baseBatchSize = options?.aiConfig.maxPendingBatch || 20;
+  const baseBatchSize = 500;
 
   let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'pending');
-  if (options?.companyId) queryRef = queryRef.where('companyId', '==', options.companyId);
   if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
 
-  // We need the filters to do keyword matching
   const filters = options?.filters;
 
-  const pendingArticlesSnapshot = await queryRef.limit(getDynamicBatchSize(baseBatchSize)).get();
-  if (pendingArticlesSnapshot.empty) return { success: true, processed: 0, passed: 0 };
+  const pendingArticlesSnapshot = await queryRef.limit(baseBatchSize).get();
+  if (pendingArticlesSnapshot.empty) {
+    console.log('[RelevanceFilter] No pending articles found.');
+    return { success: true, processed: 0, passed: 0 };
+  }
+  console.log(`[RelevanceFilter] Found ${pendingArticlesSnapshot.size} pending articles to process.`);
 
   let processed = 0;
   let passed = 0;
-  const batch = db.batch();
 
-  for (const doc of pendingArticlesSnapshot.docs) {
-    const article = doc.data() as any;
-    try {
-      // ── 사전 필터링 (mustIncludeKeywords AND 조건) ──
-      let fastRejectReason: string | null = null;
-      const mustKeywords = filters?.mustIncludeKeywords || [];
-      if (mustKeywords.length > 0) {
-        const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
-        for (const kw of mustKeywords) {
-          if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
-            fastRejectReason = `Missing required keyword: ${kw}`;
-            break;
+  // ── 병렬 처리: 10개씩 동시 AI 호출 (안정성 우선) ──
+  const parallelLimit = 10;
+  const articles = pendingArticlesSnapshot.docs;
+
+  for (let i = 0; i < articles.length; i += parallelLimit) {
+    // ── 중단 체크 (배치 사이) ──
+    if (options?.abortChecker && await options.abortChecker()) {
+      console.log(`[RelevanceFilter] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
+      break;
+    }
+    const chunk = articles.slice(i, i + parallelLimit);
+    const promises = chunk.map(async (doc) => {
+      const article = doc.data() as any;
+      try {
+        // 사전 필터링
+        let fastRejectReason: string | null = null;
+        const mustKeywords = filters?.mustIncludeKeywords || [];
+        if (mustKeywords.length > 0) {
+          const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+          for (const kw of mustKeywords) {
+            if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
+              fastRejectReason = `Missing required keyword: ${kw}`;
+              break;
+            }
           }
         }
-      }
 
-      // ── 사전 필터링 (excludeKeywords 조건) ──
-      const excludeKeywords = filters?.excludeKeywords || [];
-      if (!fastRejectReason && excludeKeywords.length > 0) {
-        const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
-        for (const kw of excludeKeywords) {
-          if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
-            fastRejectReason = `Contains excluded keyword: ${kw}`;
-            break;
+        const excludeKeywords = filters?.excludeKeywords || [];
+        if (!fastRejectReason && excludeKeywords.length > 0) {
+          const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+          for (const kw of excludeKeywords) {
+            if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
+              fastRejectReason = `Contains excluded keyword: ${kw}`;
+              break;
+            }
           }
         }
-      }
 
-      let result: RelevanceResult;
-      if (fastRejectReason) {
-        result = { isRelevant: false, confidence: 0, reason: fastRejectReason };
-      } else {
-        result = await checkRelevance(
-          { title: article.title, content: article.content, source: article.source },
-          options!.aiConfig,
-          { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
-          filters
-        );
+        let result: RelevanceResult;
+        if (fastRejectReason) {
+          result = { isRelevant: false, confidence: 0, reason: fastRejectReason };
+        } else {
+          try {
+            const resolvedCompanyId = article.companyId || options?.companyId;
+            result = await checkRelevance(
+              { title: article.title, content: article.content || article.title, source: article.source },
+              options!.aiConfig,
+              { companyId: resolvedCompanyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
+              filters
+            );
+          } catch (aiError: any) {
+            console.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {
+              title: article.title?.substring(0, 50),
+              provider: options?.aiConfig.provider,
+              model: options?.aiConfig.model,
+              error: aiError.message,
+              status: aiError.response?.status,
+              responseData: aiError.response?.data ? JSON.stringify(aiError.response.data).substring(0, 300) : undefined,
+            });
+            throw aiError;
+          }
+        }
+
+        return { doc, result, error: null };
+      } catch (error: any) {
+        console.error(`Failed to filter article ${doc.id}:`, error.message);
+        recordError();
+        return { doc, result: null, error };
       }
-      
-      batch.update(doc.ref, {
-        status: result.isRelevant ? 'filtered' : 'rejected',
-        filteredAt: admin.firestore.FieldValue.serverTimestamp(),
-        relevanceScore: result.confidence,
-        relevanceReason: result.reason,
-      });
-      processed++;
-      if (result.isRelevant) passed++;
-      await new Promise(resolve => setTimeout(resolve, getRateLimitDelay(0)));
-    } catch (error) {
-      console.error(`Failed to filter article ${doc.id}:`, error);
-      recordError();
+    });
+
+    const results = await Promise.all(promises);
+
+    // 결과를 일괄 업데이트
+    const batch = db.batch();
+    for (const { doc, result, error } of results) {
+      if (result) {
+        batch.update(doc.ref, {
+          status: result.isRelevant ? 'filtered' : 'rejected',
+          filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+          relevanceScore: result.confidence,
+          relevanceReason: result.reason,
+        });
+        processed++;
+        if (result.isRelevant) passed++;
+      }
+    }
+    if (results.some(r => r.result)) {
+      await batch.commit();
+    }
+
+    // 배치 간 딜레이 (API 레이트 리미팅)
+    if (i + parallelLimit < articles.length) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
-  if (processed > 0) await batch.commit();
   return { success: true, processed, passed };
 }
 
@@ -565,52 +639,87 @@ export async function processDeepAnalysis(options?: {
   companyId?: string;
   pipelineRunId?: string;
   aiConfig: RuntimeAiConfig;
+  abortChecker?: () => Promise<boolean>;
 }) {
   const db = admin.firestore();
-  const baseBatchSize = options?.aiConfig.maxAnalysisBatch || 10;
+  const baseBatchSize = 300;
 
   let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'filtered');
-  if (options?.companyId) queryRef = queryRef.where('companyId', '==', options.companyId);
   if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
 
-  const filteredArticlesSnapshot = await queryRef.limit(getDynamicBatchSize(baseBatchSize)).get();
-  if (filteredArticlesSnapshot.empty) return { success: true, processed: 0 };
+  const filteredArticlesSnapshot = await queryRef.limit(baseBatchSize).get();
+  if (filteredArticlesSnapshot.empty) {
+    console.log('[DeepAnalysis] No filtered articles found.');
+    return { success: true, processed: 0 };
+  }
+  console.log(`[DeepAnalysis] Found ${filteredArticlesSnapshot.size} filtered articles to analyze.`);
 
   let processed = 0;
-  const batch = db.batch();
 
-  for (const doc of filteredArticlesSnapshot.docs) {
-    const article = doc.data() as any;
-    try {
-      const publishedAtStr = article.publishedAt
-        ? (article.publishedAt.toDate ? article.publishedAt.toDate().toISOString() : new Date(article.publishedAt).toISOString())
-        : new Date().toISOString();
+  // ── 병렬 처리: 5개씩 동시 분석 (안정성 우선) ──
+  const parallelLimit = 5;
+  const articles = filteredArticlesSnapshot.docs;
 
-      const analysisResult = await analyzeArticle(
-        { title: article.title, content: article.content, source: article.source, url: article.url, publishedAt: publishedAtStr },
-        options!.aiConfig,
-        { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId }
-      );
+  for (let i = 0; i < articles.length; i += parallelLimit) {
+    // ── 중단 체크 (배치 사이) ──
+    if (options?.abortChecker && await options.abortChecker()) {
+      console.log(`[DeepAnalysis] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
+      break;
+    }
+    const chunk = articles.slice(i, i + parallelLimit);
+    const promises = chunk.map(async (doc) => {
+      const article = doc.data() as any;
+      try {
+        const publishedAtStr = article.publishedAt
+          ? (article.publishedAt.toDate ? article.publishedAt.toDate().toISOString() : new Date(article.publishedAt).toISOString())
+          : new Date().toISOString();
 
-      batch.update(doc.ref, {
-        status: 'analyzed',
-        analyzedAt: admin.firestore.FieldValue.serverTimestamp(),
-        summary: analysisResult.summary || [],
-        category: analysisResult.category || 'other',
-        companies: analysisResult.companies || { acquiror: null, target: null, financialSponsor: null },
-        deal: analysisResult.deal || { type: 'other', amount: 'undisclosed', stake: null },
-        insights: analysisResult.insights || null,
-        tags: analysisResult.tags || [],
-      });
+        const analysisResult = await analyzeArticle(
+          { title: article.title, content: article.content, source: article.source, url: article.url, publishedAt: publishedAtStr },
+          options!.aiConfig,
+          { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId }
+        );
 
-      processed++;
-      await new Promise(resolve => setTimeout(resolve, getRateLimitDelay(0)));
-    } catch (error) {
-      console.error(`Failed to analyze article ${doc.id}:`, error);
-      recordError();
+        return {
+          doc,
+          analysisResult,
+          error: null,
+        };
+      } catch (error) {
+        console.error(`Failed to analyze article ${doc.id}:`, error);
+        recordError();
+        return { doc, analysisResult: null, error };
+      }
+    });
+
+    const results = await Promise.all(promises);
+
+    // 결과 일괄 업데이트
+    const batch = db.batch();
+    for (const { doc, analysisResult } of results) {
+      if (analysisResult) {
+        batch.update(doc.ref, {
+          status: 'analyzed',
+          analyzedAt: admin.firestore.FieldValue.serverTimestamp(),
+          summary: analysisResult.summary || [],
+          category: analysisResult.category || 'other',
+          companies: analysisResult.companies || { acquiror: null, target: null, financialSponsor: null },
+          deal: analysisResult.deal || { type: 'other', amount: 'undisclosed', stake: null },
+          insights: analysisResult.insights || null,
+          tags: analysisResult.tags || [],
+        });
+        processed++;
+      }
+    }
+    if (results.some(r => r.analysisResult)) {
+      await batch.commit();
+    }
+
+    // 배치 간 딜레이
+    if (i + parallelLimit < articles.length) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
-  if (processed > 0) await batch.commit();
   return { success: true, processed };
 }

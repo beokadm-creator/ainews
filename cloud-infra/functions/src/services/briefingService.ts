@@ -117,19 +117,41 @@ export async function generatePipelineOutput(
   let rawOutput = '';
 
   if (outputType === 'article_list') {
-    rawOutput = JSON.stringify({
-      totalArticles: limitedArticles.length,
-      articles: limitedArticles.map(article => ({
-        id: article.id,
-        title: article.title,
-        source: article.source,
-        url: article.url,
-        category: article.category || null,
-        summary: article.summary || [],
-        relevanceScore: article.relevanceScore || 0,
-        tags: article.tags || []
-      }))
-    });
+    // ★ article_list도 AI로 전체 요약 생성
+    const listSummaryPrompt = `당신은 M&A·사모펀드·전략적 투자 분야의 전문 애널리스트입니다.
+아래 기사 목록을 분석하여 전체 요약을 작성하세요.
+
+모든 텍스트는 반드시 자연스러운 한국어로 작성하세요.
+
+아래 JSON 형식으로만 반환하세요 (다른 텍스트 없이):
+{
+  "title": "기사 요약 제목",
+  "summary": "전체 기사 요약 (3~5문장, 핵심 딜 및 시장 동향 포함)",
+  "keyThemes": ["주요 테마 1", "주요 테마 2"],
+  "notableDeals": ["주요 딜 요약 1", "주요 딜 요약 2"]
+}
+
+작성 원칙:
+- 기사 번호를 참조하여 핵심 내용을 요약하세요.
+- 보고서 전체를 100% 한국어로 작성하세요.
+
+Article digest:
+${digest}`;
+
+    const aiResponse = await callAiProvider(listSummaryPrompt, options.aiConfig, { temperature: 0.3 }, options.companyId);
+    rawOutput = aiResponse.content;
+
+    await logPromptExecution(
+      'article-list-summary',
+      { articleCount: limitedArticles.length, outputType },
+      rawOutput,
+      options.aiConfig.model,
+      {
+        companyId: options.companyId,
+        pipelineRunId: options.pipelineRunId,
+        prompt: listSummaryPrompt,
+      }
+    );
   } else {
     const basePrompt = outputType === 'custom_prompt'
       ? (options.outputConfig.prompt || options.aiConfig.outputPrompt || 'Analyze the following articles and return the requested output.')
