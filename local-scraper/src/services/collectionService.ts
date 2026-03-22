@@ -120,8 +120,8 @@ async function collectMarketInsight(
   try {
     await reportScraperStatus({ source: 'marketinsight', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
 
-    console.log('[Collection] MarketInsight: fetching all pages...');
-    const listResult = await (service as any).scrapeArticlesAllPages('mna', 100);
+    console.log('[Collection] MarketInsight: fetching articles (max 5 pages, recent 1 month)...');
+    const listResult = await (service as any).scrapeArticlesAllPages('mna', 5); // 최근 1개월분 (약 50~100개 기사)
     if (!listResult.success || !listResult.data) {
       const errMsg = listResult.error || 'No data returned';
       stats.errors.push(errMsg);
@@ -129,13 +129,23 @@ async function collectMarketInsight(
       return;
     }
 
+    // 최근 한달 필터링 (2026년 2월 21일 이후)
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+
     stats.found = listResult.data.length;
-    console.log(`[Collection] MarketInsight: ${stats.found} total articles found`);
+    console.log(`[Collection] MarketInsight: ${stats.found} total articles found (fetched 5 pages max)`);
 
     const existingHashes = await getCollectedUrlHashes('marketinsight');
     console.log(`[Collection] MarketInsight: ${existingHashes.size} already collected URLs loaded`);
 
     const scored = listResult.data
+      .filter((a: any) => {
+        // 날짜 필터링: 최근 한달 기사만
+        if (!a.date) return false;
+        const articleDate = new Date(a.date);
+        return articleDate >= oneMonthAgo;
+      })
       .map((a: any) => ({
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
