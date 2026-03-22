@@ -126,8 +126,8 @@ async function collectMarketInsight(
   try {
     await reportScraperStatus({ source: 'marketinsight', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
 
-    console.log('[Collection] MarketInsight: fetching articles (max 5 pages, recent 1 month)...');
-    const listResult = await (service as any).scrapeArticlesAllPages('mna', 5); // 최근 1개월분 (약 50~100개 기사)
+    console.log('[Collection] MarketInsight: fetching articles (max 3 pages, recent 3 days)...');
+    const listResult = await (service as any).scrapeArticlesAllPages('mna', 3); // 최근 3일분 (약 30~50개 기사)
     if (!listResult.success || !listResult.data) {
       const errMsg = listResult.error || 'No data returned';
       stats.errors.push(errMsg);
@@ -135,9 +135,9 @@ async function collectMarketInsight(
       return;
     }
 
-    // 최근 한달 필터링 (2026년 2월 21일 이후)
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+    // 최근 3일 필터링
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
     stats.found = listResult.data.length;
     console.log(`[Collection] MarketInsight: ${stats.found} total articles found (fetched 5 pages max)`);
@@ -147,10 +147,10 @@ async function collectMarketInsight(
 
     const scored = listResult.data
       .filter((a: any) => {
-        // 날짜 필터링: 최근 한달 기사만
+        // 날짜 필터링: 최근 3일 기사만
         if (!a.date) return false;
         const articleDate = new Date(a.date);
-        return articleDate >= oneMonthAgo;
+        return articleDate >= threeDaysAgo;
       })
       .map((a: any) => ({
         ...a,
@@ -216,8 +216,8 @@ async function collectTheBell(
   try {
     await reportScraperStatus({ source: 'thebell', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
 
-    console.log('[Collection] TheBell: fetching keyword news (all pages)...');
-    const listResult = await (service as any).scrapeKeywordNews(50);
+    console.log('[Collection] TheBell: fetching keyword news (max 5 pages, recent 3 days, excluding duplicates)...');
+    const listResult = await (service as any).scrapeKeywordNews(5);
     if (!listResult.success || !listResult.data) {
       const errMsg = listResult.error || 'No data returned';
       stats.errors.push(errMsg);

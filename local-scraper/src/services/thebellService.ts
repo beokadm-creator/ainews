@@ -163,16 +163,16 @@ export class ThebellService {
     }
   }
 
-  // ─── 마이페이지 키워드 뉴스 (최근 30일만 수집) ───────────────────────────
-  async scrapeKeywordNews(maxPages: number = 10): Promise<ScrapingResult> {
+  // ─── 마이페이지 키워드 뉴스 (최근 3일만 수집, 중복 제외) ───────────────────────────
+  async scrapeKeywordNews(maxPages: number = 5): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
     const allArticles: any[] = [];
     const seen = new Set<string>();
 
-    // 최근 30일 필터링
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+    // 최근 3일 필터링
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
     try {
       const savedCookies = this.loadCookies();
@@ -250,8 +250,8 @@ export class ThebellService {
                 const dateStr = a.date.replace(/\./g, '-');
                 const articleDate = new Date(dateStr);
 
-                // 유효한 날짜이고 30일 내 데이터만 추가
-                if (!isNaN(articleDate.getTime()) && articleDate >= oneMonthAgo) {
+                // 유효한 날짜이고 3일 내 데이터만 추가
+                if (!isNaN(articleDate.getTime()) && articleDate >= threeDaysAgo) {
                   seen.add(a.link);
                   allArticles.push(a);
                   pageCount++;
@@ -263,7 +263,7 @@ export class ThebellService {
             }
           });
 
-          console.log(`[Thebell] Page ${pageNum}: ${pageCount} articles within last 30 days (${allArticles.length} total)`);
+          console.log(`[Thebell] Page ${pageNum}: ${pageCount} articles within last 3 days (${allArticles.length} total)`);
           await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000)); // 페이지 간 대기
         } catch (error: any) {
           console.warn(`[Thebell] Page ${pageNum} failed:`, error.message);
@@ -274,7 +274,7 @@ export class ThebellService {
         }
       }
 
-      console.log(`[Thebell] Total keyword news articles (last 30 days): ${allArticles.length}`);
+      console.log(`[Thebell] Total keyword news articles (last 3 days): ${allArticles.length}`);
       return { success: true, data: allArticles };
     } catch (error) {
       return {
