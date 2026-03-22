@@ -120,7 +120,11 @@ export default function Dashboard() {
       const today = new Date();
       const startOfToday = startOfDay(today);
       const articlesRef = collection(db, 'articles');
-      const base = companyId && !isSuperadmin ? [where('companyId', '==', companyId)] : [];
+      // 회사 관리자: 자신의 회사 기사 + 글로벌 기사(companyId: null) 포함
+      // 슈퍼어드민: 모든 기사
+      const base = companyId && !isSuperadmin
+        ? [where('companyId', 'in', [companyId, null])]  // 회사 기사 + 글로벌 기사
+        : [];
 
       // Today stats
       const todayQ = query(articlesRef, ...base, where('collectedAt', '>=', startOfToday));
