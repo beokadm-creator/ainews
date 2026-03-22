@@ -87,29 +87,21 @@ export async function getCompanyRuntimeConfig(
     throw new Error(`Company ${companyId} is inactive`);
   }
 
-  // ── [FIX] Load runtime settings from companySettings collection
-  const settingsDoc = await db.collection('companySettings').doc(companyId).get();
-  const runtimeSettings = (settingsDoc.data() || {}) as any;
-
-  // 구형 settings 구조 (companies/{id}/settings)
-  const legacySettings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
-
-  // AI Config 병합 (companySettings -> legacySettings -> Default)
-  const activeProvider = runtimeSettings.ai?.provider || legacySettings.ai?.provider || DEFAULT_AI_CONFIG.provider;
+  // ── AI Config: 항상 systemSettings(superadmin)에서 로드
+  const sysDoc = await db.collection('systemSettings').doc('aiConfig').get();
+  const sysSettings = (sysDoc.data() || {}) as any;
+  const activeProvider: string = sysSettings['ai.provider'] || sysSettings.ai?.provider || DEFAULT_AI_CONFIG.provider;
   const aiConfig: RuntimeAiConfig = {
     ...DEFAULT_AI_CONFIG,
-    ...(legacySettings.ai ?? {}),
-    ...(runtimeSettings.ai ?? {}),
-    provider: activeProvider,
-    model: runtimeSettings.aiModels?.[activeProvider] ||
-           runtimeSettings.ai?.model ||
-           legacySettings.ai?.model ||
-           DEFAULT_AI_CONFIG.model,
-    baseUrl: runtimeSettings.aiBaseUrls?.[activeProvider] ||
-             runtimeSettings.ai?.baseUrl ||
-             legacySettings.ai?.baseUrl ||
-             undefined,
+    provider: activeProvider as any,
+    model: sysSettings[`aiModels.${activeProvider}`] || sysSettings.ai?.model || DEFAULT_AI_CONFIG.model,
+    baseUrl: sysSettings[`aiBaseUrls.${activeProvider}`] || sysSettings.ai?.baseUrl || null,
   };
+
+  // ── 회사별 설정 (필터, 출력 등)은 companySettings에서 로드
+  const settingsDoc = await db.collection('companySettings').doc(companyId).get();
+  const runtimeSettings = (settingsDoc.data() || {}) as any;
+  const legacySettings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
 
   // Filters 병합 (companySettings -> legacySettings -> Subscriptions -> Default)
   let subscribedSourceIds: string[] = runtimeSettings.filters?.sourceIds ?? legacySettings.filters?.sourceIds ?? [];
@@ -175,14 +167,14 @@ export async function assertCompanyAccess(
     return { uid, role, companyIds, managedCompanyIds };
   }
 
+  // 회사 액세스 확인 (superadmin 아닌 경우)
   const canAccess = companyIds.includes(companyId) || managedCompanyIds.includes(companyId);
   if (!canAccess) {
     throw new Error(`User does not belong to company ${companyId}`);
   }
 
-  if (role !== 'company_admin' && role !== 'company_editor') {
-    throw new Error('Insufficient role for pipeline execution');
-  }
+  // AI 설정 저장은 company_admin만 가능 (editor는 불가)
+  // 파이프라인 실행은 company_admin, company_editor 모두 가능
 
   return { uid, role, companyIds, managedCompanyIds };
 }

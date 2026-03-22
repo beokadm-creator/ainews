@@ -149,5 +149,15 @@ service cloud.firestore {
       allow read: if isSuperadmin();
       allow write: if false;
     }
+
+    match /bulkAiJobs/{jobId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+
+    match /scraperStatus/{sourceId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
   }
 }

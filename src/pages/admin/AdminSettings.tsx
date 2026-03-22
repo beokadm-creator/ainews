@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Key, CheckCircle2, XCircle, Loader2, RefreshCw, Eye, EyeOff,
-  ChevronDown, ChevronUp, Zap
+  ChevronDown, ChevronUp, Zap, FileText, RotateCcw, Save
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
@@ -72,12 +72,60 @@ function initState(modelDefault: string): ProviderState {
   return { hasKey: false, isActive: false, testing: false, testResult: null, saving: false, showKey: false, expanded: false, apiKeyInput: '', baseUrlInput: '', selectedModel: modelDefault };
 }
 
+// ─── Default prompts (mirrors backend DEFAULT_RELEVANCE_PROMPT / DEFAULT_ANALYSIS_PROMPT)
+const DEFAULT_RELEVANCE_PROMPT = `당신은 M&A, 사모펀드(PEF), 벤처캐피털, 전략적 투자 분야의 전문 애널리스트입니다.
+
+아래 기사가 투자 모니터링 워크플로우에 관련된 기사인지 판단하세요.
+
+관련 있는 기사 예시:
+- 인수합병(M&A), 경영권 인수, 공개매수
+- 지분 매각, 사업부 분리매각(carve-out), 분할
+- 사모펀드(PEF) 딜, 바이아웃, 펀드 결성/청산
+- 벤처캐피털 투자유치, 시리즈 투자
+- 전략적 투자자(SI), 재무적 투자자(FI) 참여
+- IPO, 상장, 블록딜
+- 인수금융, 리파이낸싱, 구조조정, MBO
+
+출력 형식 (반드시 아래 형식 그대로 출력):
+RELEVANT: YES or NO
+CONFIDENCE: 0.0~1.0 사이의 숫자
+REASON: 한 문장으로 판단 근거 (한국어로 작성)`;
+
+const DEFAULT_ANALYSIS_PROMPT = `당신은 뉴스 기사에서 투자 정보를 구조화하여 추출하는 전문 애널리스트입니다.
+
+모든 출력값(summary, category, insights, tags)은 반드시 자연스러운 한국어로 작성하세요.
+기업명·펀드명 등 고유명사는 한국어 표기를 우선하되, 필요 시 영문을 괄호로 병기하세요. (예: 카카오(Kakao))
+
+아래 JSON 형식만 반환하세요 (다른 텍스트 없이):
+{
+  "companies": {
+    "acquiror": "인수자 (없으면 null)",
+    "target": "피인수 대상 (없으면 null)",
+    "financialSponsor": "재무적 투자자/PE (없으면 null)"
+  },
+  "deal": {
+    "type": "딜 유형 (예: 인수합병, 지분투자, IPO 등)",
+    "amount": "거래 금액 (예: 3,000억원, 미공개)",
+    "stake": "지분율 (없으면 null)"
+  },
+  "summary": ["핵심 내용 1", "핵심 내용 2", "핵심 내용 3"],
+  "category": "카테고리 (예: M&A, 사모펀드, 벤처투자, IPO 등)",
+  "insights": "투자자 관점에서의 시사점 및 분석 (없으면 null)",
+  "tags": ["태그1", "태그2", "태그3"]
+}`;
+
 // ─── Main Component ─────────────────────────────────────────────
 export default function AdminSettings() {
   const { user } = useAuthStore();
   const companyId = (user as any)?.primaryCompanyId || null;
 
   const [loading, setLoading] = useState(true);
+
+  // Prompt config state
+  const [relevancePrompt, setRelevancePrompt] = useState('');
+  const [analysisPrompt, setAnalysisPrompt] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptSaveResult, setPromptSaveResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Naver News API credentials
   const [naverClientId, setNaverClientId] = useState('');
@@ -99,11 +147,16 @@ export default function AdminSettings() {
     const load = async () => {
       try {
         // Try systemSettings first (superadmin global), fall back to companySettings
-        const [sysDoc, compDoc, naverDoc] = await Promise.all([
+        const [sysDoc, compDoc, naverDoc, promptDoc] = await Promise.all([
           getDoc(doc(db, 'systemSettings', 'aiConfig')),
           getDoc(doc(db, 'companySettings', companyId)),
           getDoc(doc(db, 'systemSettings', 'naverConfig')),
+          getDoc(doc(db, 'systemSettings', 'promptConfig')),
         ]);
+        // Load custom prompts (empty string = using default)
+        const pd = promptDoc.exists() ? promptDoc.data() as any : {};
+        setRelevancePrompt(pd.relevancePrompt || '');
+        setAnalysisPrompt(pd.analysisPrompt || '');
         if (naverDoc.exists()) {
           const nd = naverDoc.data() as any;
           setNaverHasConfig(!!(nd.clientId && nd.clientSecret));
@@ -140,25 +193,51 @@ export default function AdminSettings() {
   const update = (p: AiProvider, u: Partial<ProviderState>) =>
     setProviderState(prev => ({ ...prev, [p]: { ...prev[p], ...u } }));
 
+  // ─── Save prompt config ─────────────────────────────────────
+  const handleSavePrompts = async () => {
+    setPromptSaving(true);
+    setPromptSaveResult(null);
+    try {
+      const fn = httpsCallable(functions, 'savePromptConfig');
+      await fn({ relevancePrompt: relevancePrompt || null, analysisPrompt: analysisPrompt || null });
+      setPromptSaveResult({ success: true, message: '프롬프트 설정이 저장됐습니다.' });
+    } catch (err: any) {
+      setPromptSaveResult({ success: false, message: err.message });
+    } finally {
+      setPromptSaving(false);
+    }
+  };
+
   // ─── Save key ──────────────────────────────────────────────
   const handleSave = async (provider: AiProvider) => {
-    if (!companyId) return;
+    console.log('handleSave called, companyId:', companyId, 'user:', (user as any)?.uid, 'role:', (user as any)?.role);
+    if (!companyId) {
+      alert('companyId가 없습니다. 사용자 설정을 확인하세요.');
+      return;
+    }
     const state = providerState[provider];
     if (!state.apiKeyInput.trim() && !state.hasKey) return;
     update(provider, { saving: true, testResult: null });
     try {
       const fn = httpsCallable(functions, 'saveAiApiKey');
-      await fn({
+      const result = await fn({
         companyId,
         provider,
         apiKey: state.apiKeyInput.trim() || null,
         baseUrl: state.baseUrlInput.trim() || null,
         model: state.selectedModel,
         setAsActive: state.isActive, // 사용 중이면 활성 프로바이더로 설정
-      });
+      }) as any;
+      console.log(`✅ Saved ${provider}:`, result.data);
       update(provider, { saving: false, hasKey: true, apiKeyInput: '', showKey: false });
     } catch (err: any) {
-      update(provider, { saving: false, testResult: { success: false, message: err.message } });
+      console.error(`❌ Save error for ${provider}:`, {
+        message: err.message,
+        code: err.code,
+        details: err.details,
+        fullError: err
+      });
+      update(provider, { saving: false, testResult: { success: false, message: `에러: ${err.code || 'unknown'} - ${err.message}` } });
     }
   };
 
@@ -271,6 +350,80 @@ export default function AdminSettings() {
           >
             {naverSaving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Key className="w-4 h-4 mr-2" />}
             네이버 API 키 저장
+          </button>
+        </div>
+      </div>
+
+      {/* ─── AI 판단 기준 프롬프트 설정 ─── */}
+      <div className="bg-white/5 border border-white/8 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 flex items-center gap-3">
+          <FileText className="w-4 h-4 text-purple-400" />
+          <div>
+            <h2 className="font-semibold text-white text-sm">AI 판단 기준 설정</h2>
+            <p className="text-xs text-white/40 mt-0.5">관련성 분류·심층 분석에 사용되는 프롬프트입니다. 비워두면 시스템 기본값이 사용됩니다.</p>
+          </div>
+        </div>
+        <div className="px-5 pb-5 pt-1 space-y-5 border-t border-white/5">
+
+          {/* 관련성 분류 프롬프트 */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-white/70">관련성 분류 프롬프트 <span className="text-white/30 font-normal">(필터링됨 / 제외됨 판단 기준)</span></label>
+              <button
+                onClick={() => setRelevancePrompt('')}
+                className="flex items-center gap-1 text-xs text-white/30 hover:text-white/60 transition-colors"
+                title="기본값으로 초기화"
+              >
+                <RotateCcw className="w-3 h-3" />기본값
+              </button>
+            </div>
+            <textarea
+              value={relevancePrompt}
+              onChange={e => setRelevancePrompt(e.target.value)}
+              placeholder={DEFAULT_RELEVANCE_PROMPT}
+              rows={10}
+              className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-purple-500/40 resize-y font-mono leading-relaxed placeholder:text-white/20"
+            />
+            <p className="text-xs text-white/30 mt-1">반드시 <code className="bg-white/8 px-1 rounded">RELEVANT: YES or NO</code> · <code className="bg-white/8 px-1 rounded">CONFIDENCE: 숫자</code> · <code className="bg-white/8 px-1 rounded">REASON: 텍스트</code> 형식으로 응답하도록 지시해야 합니다.</p>
+          </div>
+
+          {/* 심층 분석 프롬프트 */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-white/70">심층 분석 프롬프트 <span className="text-white/30 font-normal">(분석됨 항목 추출 기준)</span></label>
+              <button
+                onClick={() => setAnalysisPrompt('')}
+                className="flex items-center gap-1 text-xs text-white/30 hover:text-white/60 transition-colors"
+                title="기본값으로 초기화"
+              >
+                <RotateCcw className="w-3 h-3" />기본값
+              </button>
+            </div>
+            <textarea
+              value={analysisPrompt}
+              onChange={e => setAnalysisPrompt(e.target.value)}
+              placeholder={DEFAULT_ANALYSIS_PROMPT}
+              rows={14}
+              className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-purple-500/40 resize-y font-mono leading-relaxed placeholder:text-white/20"
+            />
+            <p className="text-xs text-white/30 mt-1">반드시 <code className="bg-white/8 px-1 rounded">companies</code>, <code className="bg-white/8 px-1 rounded">deal</code>, <code className="bg-white/8 px-1 rounded">summary</code>, <code className="bg-white/8 px-1 rounded">category</code>, <code className="bg-white/8 px-1 rounded">tags</code> 키를 포함한 JSON 형식으로 응답하도록 지시해야 합니다.</p>
+          </div>
+
+          {/* Save result */}
+          {promptSaveResult && (
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${promptSaveResult.success ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+              {promptSaveResult.success ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+              {promptSaveResult.message}
+            </div>
+          )}
+
+          <button
+            onClick={handleSavePrompts}
+            disabled={promptSaving}
+            className="flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {promptSaving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}
+            프롬프트 저장
           </button>
         </div>
       </div>

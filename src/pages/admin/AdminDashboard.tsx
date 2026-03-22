@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Rss, Globe, Code2, Cpu, Play, RefreshCw, CheckCircle,
+  Rss, Globe, Code2, Cpu, RefreshCw, CheckCircle,
   XCircle, Clock, AlertTriangle, Loader2,
-  TrendingUp, Activity, Newspaper, ChevronDown, ChevronUp
+  TrendingUp, Activity, Newspaper, ChevronDown, ChevronUp, Power
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import {
   collection, query, where, orderBy, limit,
-  getDocs, onSnapshot, doc, getCountFromServer, getDoc
+  getDocs, onSnapshot, doc, getCountFromServer, getDoc, setDoc
 } from 'firebase/firestore';
 import { Monitor, Wifi, WifiOff } from 'lucide-react';
 import { format, subDays, startOfDay } from 'date-fns';
@@ -98,14 +98,21 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [pcScrapers, setPcScrapers] = useState<PcScraperStatus[]>([]);
 
-  // 파이프라인 실행
+  // 파이프라인 제어
   const [recentRuns, setRecentRuns] = useState<any[]>([]);
-  const [runningId, setRunningId] = useState<string | null>(null);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
+  const [pipelineControl, setPipelineControl] = useState<any>({});
+  const [togglingPipeline, setTogglingPipeline] = useState(false);
   const unsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     loadAll();
+    // 파이프라인 제어 상태 실시간 구독
+    const unsub = onSnapshot(doc(db, 'systemSettings', 'pipelineControl'), (snap) => {
+      setPipelineControl(snap.exists() ? snap.data() : {});
+    });
+    unsubRef.current = unsub;
+    return () => unsub();
   }, []);
 
   const loadAll = async () => {
@@ -210,40 +217,36 @@ export default function AdminDashboard() {
 
   const loadRecentRuns = async () => {
     const snap = await getDocs(query(
-      collection(db, 'pipelineRuns'),
+      collection(db, 'bulkAiJobs'),
       orderBy('startedAt', 'desc'),
       limit(10)
     ));
     setRecentRuns(snap.docs.map(d => ({ id: d.id, ...d.data() as any })));
   };
 
-  const handleRunPipeline = async () => {
-    if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
-
+  const handleTogglePipeline = async () => {
+    const newEnabled = !pipelineControl.pipelineEnabled;
+    setTogglingPipeline(true);
     try {
-      const fn = httpsCallable(functions, 'runFullPipeline');
-      const result = await fn({}) as any;
-      const pid = result.data?.pipelineId;
-      if (pid) {
-        setRunningId(pid);
-        const unsub = onSnapshot(doc(db, 'pipelineRuns', pid), snap => {
-          if (!snap.exists()) return;
-          const data = snap.data() as any;
-          setRecentRuns(prev => {
-            const idx = prev.findIndex(r => r.id === pid);
-            const updated = { id: pid, ...data };
-            return idx >= 0 ? prev.map((r, i) => i === idx ? updated : r) : [updated, ...prev];
-          });
-          if (data.status === 'completed' || data.status === 'failed') {
-            setRunningId(null);
-            setTimeout(() => { if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; } }, 5000);
-            loadGlobalStats();
-          }
-        });
-        unsubRef.current = unsub;
-      }
+      const fn = httpsCallable(functions, 'setPipelineControl');
+      await fn({ type: 'pipeline', enabled: newEnabled });
+      await loadRecentRuns();
     } catch (err: any) {
-      alert('파이프라인 실행 실패: ' + err.message);
+      alert('파이프라인 제어 실패: ' + err.message);
+    } finally {
+      setTogglingPipeline(false);
+    }
+  };
+
+  const handleStopAll = async () => {
+    setTogglingPipeline(true);
+    try {
+      const fn = httpsCallable(functions, 'setPipelineControl');
+      await fn({ type: 'stopall', enabled: false });
+    } catch (err: any) {
+      alert('강제 종료 실패: ' + err.message);
+    } finally {
+      setTogglingPipeline(false);
     }
   };
 
@@ -318,8 +321,8 @@ export default function AdminDashboard() {
               <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-white/30" />최근 7일 수집 추이
               </h2>
-              <div className="h-40">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="h-40" style={{ minHeight: 160 }}>
+                <ResponsiveContainer width="100%" height={160}>
                   <BarChart data={trendData}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ffffff08" />
                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#ffffff40' }} />
@@ -331,21 +334,62 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* 파이프라인 즉시 실행 */}
+            {/* 파이프라인 ON/OFF */}
             <div className="lg:col-span-2 bg-gray-900 border border-white/5 rounded-xl p-5">
               <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-white/30" />파이프라인 즉시 실행
+                <Activity className="w-4 h-4 text-white/30" />수집 + AI 분석 파이프라인
               </h2>
-              <div className="space-y-3">
-                <p className="text-xs text-white/40">전체 매체 수집 → AI 필터링 → 심층 분석을 순서대로 실행합니다.</p>
-                <button
-                  onClick={() => handleRunPipeline()}
-                  disabled={!!runningId}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#d4af37]/20 border border-[#d4af37]/30 text-[#d4af37] rounded-lg text-sm font-semibold hover:bg-[#d4af37]/30 transition-colors disabled:opacity-40"
-                >
-                  {runningId ? <><Loader2 className="w-4 h-4 animate-spin" />실행 중...</> : <><Play className="w-4 h-4" />수집 + 분석 실행</>}
-                </button>
-                <p className="text-[10px] text-white/25 text-center">수집 → AI 필터링 → 심층 분석 → 보고서 생성</p>
+              <div className="space-y-4">
+                {/* 토글 스위치 */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-white/80">자동 반복 실행</p>
+                    <p className="text-[11px] text-white/35 mt-0.5">ON 시 수집→분류→분석 무한 반복</p>
+                  </div>
+                  <button
+                    onClick={handleTogglePipeline}
+                    disabled={togglingPipeline}
+                    className={`relative w-14 h-7 rounded-full transition-colors duration-300 disabled:opacity-50 overflow-hidden ${
+                      pipelineControl.pipelineEnabled ? 'bg-green-500' : 'bg-white/15'
+                    }`}
+                  >
+                    <span className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform duration-300 ${
+                      pipelineControl.pipelineEnabled ? 'translate-x-[33px]' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </div>
+
+                {/* 현재 상태 */}
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
+                  pipelineControl.pipelineRunning
+                    ? 'bg-blue-500/10 border-blue-500/20'
+                    : pipelineControl.pipelineEnabled
+                    ? 'bg-green-500/10 border-green-500/20'
+                    : 'bg-white/5 border-white/10'
+                }`}>
+                  {pipelineControl.pipelineRunning ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 flex-shrink-0" />
+                    <p className="text-xs text-blue-400 font-medium">{pipelineControl.currentStep || '실행 중...'}</p></>
+                  ) : pipelineControl.pipelineEnabled ? (
+                    <><Power className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                    <p className="text-xs text-green-400 font-medium">ON — 다음 사이클 대기 중</p></>
+                  ) : (
+                    <><Power className="w-3.5 h-3.5 text-white/25 flex-shrink-0" />
+                    <p className="text-xs text-white/35">OFF — 수동으로 켜면 자동 반복 시작</p></>
+                  )}
+                </div>
+
+                {/* 강제 종료 버튼 (실행 중일 때만 표시) */}
+                {(pipelineControl.pipelineRunning || pipelineControl.aiOnlyRunning) && (
+                  <button
+                    onClick={handleStopAll}
+                    disabled={togglingPipeline}
+                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    모든 파이프라인 강제 종료
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -490,6 +534,12 @@ export default function AdminDashboard() {
                           <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
                             <CheckCircle className="w-3 h-3" />정상
                           </span>
+                        ) : src.status === 'active' ? (
+                          <span className="flex items-center gap-1 text-[10px] text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
+                            <CheckCircle className="w-3 h-3" />활성
+                          </span>
+                        ) : src.status === 'inactive' ? (
+                          <span className="text-[10px] text-white/25 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full">비활성</span>
                         ) : (
                           <span className="text-[10px] text-white/20 bg-white/5 px-2 py-0.5 rounded-full">대기</span>
                         )}
@@ -514,7 +564,7 @@ export default function AdminDashboard() {
               ) : recentRuns.map(run => {
                 const isExpanded = expandedRun === run.id;
                 const dur = runDuration(run);
-                const isRunning = run.id === runningId || run.status === 'running';
+                const isRunning = pipelineControl.pipelineRunning && run.status === 'running';
                 return (
                   <div key={run.id}>
                     <div
@@ -531,7 +581,9 @@ export default function AdminDashboard() {
                       {/* 정보 */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-white/80">{run.companyName || run.companyId || '-'}</p>
+                          <p className="text-sm font-medium text-white/80">
+                            {run.currentStep || '전체 파이프라인'}
+                          </p>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
                             run.status === 'completed' ? 'bg-green-500/10 text-green-400' :
                             run.status === 'failed' ? 'bg-red-500/10 text-red-400' :
@@ -542,46 +594,28 @@ export default function AdminDashboard() {
                         </div>
                         <p className="text-[10px] text-white/30 mt-0.5">
                           {formatTs(run.startedAt)}
-                          {run.steps?.collection?.result?.totalCollected != null && (
-                            <> · 수집 {run.steps.collection.result.totalCollected}건</>
-                          )}
-                          {run.steps?.output?.result?.articleCount != null && (
-                            <> · 보고서 {run.steps.output.result.articleCount}건</>
-                          )}
+                          {run.result?.totalCollected != null && <> · 수집 {run.result.totalCollected}건</>}
+                          {run.result?.totalFiltered != null && <> · 분류 {run.result.totalFiltered}건</>}
+                          {run.result?.totalAnalyzed != null && <> · 분석 {run.result.totalAnalyzed}건</>}
                         </p>
                       </div>
                       {isExpanded ? <ChevronUp className="w-4 h-4 text-white/20" /> : <ChevronDown className="w-4 h-4 text-white/20" />}
                     </div>
 
-                    {/* 상세 단계 */}
+                    {/* 상세 결과 */}
                     {isExpanded && (
                       <div className="px-5 pb-4 pt-1">
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="grid grid-cols-3 gap-2">
                           {[
-                            { id: 'collection', label: '수집' },
-                            { id: 'filtering', label: 'AI 필터링' },
-                            { id: 'analysis', label: '심층 분석' },
-                            { id: 'output', label: '보고서 생성' },
-                          ].map(step => {
-                            const s = run.steps?.[step.id];
-                            return (
-                              <div key={step.id} className={`p-2.5 rounded-lg border text-center ${
-                                s?.status === 'completed' ? 'bg-green-500/5 border-green-500/20' :
-                                s?.status === 'running' ? 'bg-blue-500/5 border-blue-500/20' :
-                                s?.status === 'failed' ? 'bg-red-500/5 border-red-500/20' :
-                                'bg-white/5 border-white/10'
-                              }`}>
-                                <p className="text-[10px] font-semibold text-white/50 mb-1">{step.label}</p>
-                                {s?.status === 'completed' ? <CheckCircle className="w-4 h-4 text-green-400 mx-auto" />
-                                  : s?.status === 'running' ? <Loader2 className="w-4 h-4 text-blue-400 mx-auto animate-spin" />
-                                  : s?.status === 'failed' ? <XCircle className="w-4 h-4 text-red-400 mx-auto" />
-                                  : <Clock className="w-4 h-4 text-white/20 mx-auto" />}
-                                {s?.result?.totalCollected != null && (
-                                  <p className="text-[10px] text-blue-400 font-bold mt-1">+{s.result.totalCollected}</p>
-                                )}
-                              </div>
-                            );
-                          })}
+                            { label: '수집', value: run.result?.totalCollected, color: 'text-blue-400' },
+                            { label: 'AI 분류', value: run.result?.totalFiltered, color: 'text-yellow-400' },
+                            { label: 'AI 분석', value: run.result?.totalAnalyzed, color: 'text-green-400' },
+                          ].map(item => (
+                            <div key={item.label} className="p-2.5 rounded-lg border bg-white/5 border-white/10 text-center">
+                              <p className="text-[10px] text-white/40 mb-1">{item.label}</p>
+                              <p className={`text-lg font-bold ${item.color}`}>{item.value ?? '-'}</p>
+                            </div>
+                          ))}
                         </div>
                         {run.error && (
                           <div className="mt-2 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400 font-mono overflow-auto max-h-16">

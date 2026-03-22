@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Filter, ChevronDown, ChevronUp, ExternalLink,
-  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Activity, Trash2, Zap
+  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Activity, Trash2, Zap, Power
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import { useAuthStore } from '@/store/useAuthStore';
 import {
   collection, query, where, orderBy, limit, getDocs,
-  startAfter, QueryDocumentSnapshot, DocumentData, getCountFromServer
+  startAfter, QueryDocumentSnapshot, DocumentData, getCountFromServer,
+  doc, onSnapshot
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 
@@ -251,6 +252,8 @@ export default function AdminArticles() {
   // Analyzing state
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeResult, setAnalyzeResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [aiControl, setAiControl] = useState<any>({});
+  const [togglingAi, setTogglingAi] = useState(false);
 
   // ─── Load articles ───────────────────────────────────────
   const loadArticles = useCallback(async (reset = true) => {
@@ -365,6 +368,10 @@ export default function AdminArticles() {
 
   useEffect(() => {
     loadSourceHealth();
+    const unsub = onSnapshot(doc(db, 'systemSettings', 'pipelineControl'), (snap) => {
+      setAiControl(snap.exists() ? snap.data() : {});
+    });
+    return () => unsub();
   }, [loadSourceHealth]);
 
   useEffect(() => {
@@ -445,6 +452,20 @@ export default function AdminArticles() {
     }
   };
 
+  const handleToggleAiOnly = async () => {
+    const newEnabled = !aiControl.aiOnlyEnabled;
+    setTogglingAi(true);
+    setAnalyzeResult(null);
+    try {
+      const fn = httpsCallable(functions, 'setPipelineControl');
+      await fn({ type: 'aionly', enabled: newEnabled });
+    } catch (err: any) {
+      setAnalyzeResult({ success: false, message: `❌ 오류: ${err.message}` });
+    } finally {
+      setTogglingAi(false);
+    }
+  };
+
   const handleAnalyze = async (article: Article) => {
     setAnalyzing(true);
     setAnalyzeResult(null);
@@ -485,6 +506,33 @@ export default function AdminArticles() {
           <p className="text-sm text-white/40 mt-0.5">전체 수집 기사 조회 & AI 검증 현황</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* AI 분석 ON/OFF 토글 */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors ${
+            aiControl.aiOnlyRunning
+              ? 'bg-blue-500/10 border-blue-500/30'
+              : aiControl.aiOnlyEnabled
+              ? 'bg-green-500/10 border-green-500/30'
+              : 'bg-white/5 border-white/10'
+          }`}>
+            {aiControl.aiOnlyRunning
+              ? <Zap className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
+              : <Power className={`w-3.5 h-3.5 ${aiControl.aiOnlyEnabled ? 'text-green-400' : 'text-white/30'}`} />
+            }
+            <span className={`text-xs font-medium ${aiControl.aiOnlyRunning ? 'text-blue-400' : aiControl.aiOnlyEnabled ? 'text-green-400' : 'text-white/40'}`}>
+              {aiControl.aiOnlyRunning ? 'AI 분석 중...' : 'AI 분석'}
+            </span>
+            <button
+              onClick={handleToggleAiOnly}
+              disabled={togglingAi}
+              className={`relative w-10 h-5 rounded-full transition-colors duration-300 disabled:opacity-50 ml-1 overflow-hidden ${
+                aiControl.aiOnlyEnabled ? 'bg-green-500' : 'bg-white/15'
+              }`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-300 ${
+                aiControl.aiOnlyEnabled ? 'translate-x-[22px]' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
           <button
             onClick={() => { loadArticles(true); loadSourceHealth(); }}
             disabled={deleting}
@@ -522,6 +570,21 @@ export default function AdminArticles() {
           </button>
         </div>
       </div>
+
+      {/* AI 분석 진행 상황 */}
+      {aiControl.aiOnlyRunning && (
+        <div className="px-4 py-3 rounded-lg bg-blue-500/10 border border-blue-500/30 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium text-blue-400">
+            <Activity className="w-4 h-4 animate-spin" />
+            AI 분석 실행 중 (반복 모드)
+          </div>
+          {aiControl.aiOnlyLastResult && (
+            <div className="text-xs text-blue-300 space-y-1">
+              <p>마지막: 분류 {aiControl.aiOnlyLastResult.totalFiltered || 0}건 · 분석 {aiControl.aiOnlyLastResult.totalAnalyzed || 0}건</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 분석 결과 메시지 */}
       {analyzeResult && (
