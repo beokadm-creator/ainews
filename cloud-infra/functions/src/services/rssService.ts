@@ -137,118 +137,129 @@ export async function processRssSources(options?: {
   const db = admin.firestore();
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
 
-  // ── 소스 목록 수집: legacy sources + globalSources 구독 모두 처리
+  // ── 소스 목록 수집: globalSources만 사용 (슈퍼어드민이 관리, 회사는 구독으로 조회)
   const allSourcesToProcess: { id: string; data: any; isGlobal: boolean }[] = [];
 
-  // 1) Legacy company-specific sources
-  let legacyQuery: FirebaseFirestore.Query = db.collection('sources')
-    .where('type', '==', 'rss')
-    .where('active', '==', true);
-
-  if (options?.companyId) {
-    legacyQuery = legacyQuery.where('companyId', '==', options.companyId);
-  }
-
-  const legacySnap = await legacyQuery.get();
-  legacySnap.docs.forEach(d => allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: false }));
-
-  // 2) GlobalSources (구독 sourceIds 기반)
+  // 1) 구독된 sourceIds가 있으면 해당 소스만 조회
+  // 2) 없으면 globalSources에서 모든 active RSS 소스를 조회
   const subscribedIds = options?.filters?.sourceIds ?? [];
+
+  let globalQuery: FirebaseFirestore.Query;
   if (subscribedIds.length > 0) {
-    // Firestore 'in' 최대 30개씩 배치
+    // 구독 기반: documentId in-query (30개씩 청크)
     const chunks: string[][] = [];
     for (let i = 0; i < subscribedIds.length; i += 30) chunks.push(subscribedIds.slice(i, i + 30));
 
     for (const chunk of chunks) {
-      const globalSnap = await db.collection('globalSources')
+      const snap = await db.collection('globalSources')
         .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-        .where('type', '==', 'rss')
-        .where('status', '==', 'active')
         .get();
-      globalSnap.docs.forEach(d => {
+      snap.docs.forEach(d => {
         const data = d.data();
-        // 이미 legacy에 있는 ID 제외
-        if (!allSourcesToProcess.find(s => s.id === d.id)) {
-          allSourcesToProcess.push({
-            id: d.id,
-            data: { ...data, url: data.rssUrl || data.url, companyId: options?.companyId },
-            isGlobal: true,
-          });
+        if (data.type !== 'rss' || data.status !== 'active') return;
+        if (allSourcesToProcess.find(s => s.id === d.id)) return;
+        const rssUrl = data.rssUrl || data.url;
+        if (!rssUrl) {
+          console.warn(`[RSS] Skipping ${data.name}: no RSS URL configured`);
+          return;
         }
+        allSourcesToProcess.push({
+          id: d.id,
+          data: { ...data, url: rssUrl, companyId: options?.companyId },
+          isGlobal: true,
+        });
       });
     }
+  } else {
+    // 구독 없음: 모든 active RSS 소스
+    const allRssSnap = await db.collection('globalSources')
+      .where('type', '==', 'rss')
+      .where('status', '==', 'active')
+      .get();
+    allRssSnap.docs.forEach(d => {
+      const data = d.data();
+      const rssUrl = data.rssUrl || data.url;
+      if (!rssUrl) return;
+      allSourcesToProcess.push({
+        id: d.id,
+        data: { ...data, url: rssUrl, companyId: options?.companyId },
+        isGlobal: true,
+      });
+    });
   }
+
+  console.log(`[RSS] Total sources to process: ${allSourcesToProcess.length}`);
 
   let totalCollected = 0;
 
-  for (const { id: sourceId, data: source, isGlobal } of allSourcesToProcess) {
-    const docRef = isGlobal
-      ? db.collection('globalSources').doc(sourceId)
-      : db.collection('sources').doc(sourceId);
+  // ── 병렬 수집: 모든 소스를 동시에 처리 (순차 for → 병렬 Promise.allSettled) ──
+  const perSourceResults = await Promise.allSettled(
+    allSourcesToProcess.map(async ({ id: sourceId, data: source }) => {
+      const docRef = db.collection('globalSources').doc(sourceId);
 
-    try {
-      const baseArticles = await fetchRssFeed(source.url || source.rssUrl);
-      const articles = await enrichArticles(baseArticles); // [ADD] 본문 강화 루팈
-      let sourceCollected = 0;
+      try {
+        const baseArticles = await fetchRssFeed(source.url || source.rssUrl);
+        const articles = await enrichArticles(baseArticles);
+        let sourceCollected = 0;
 
-      for (const article of articles) {
-        if (startDate && article.publishedAt < startDate) continue;
-        if (endDate && article.publishedAt > endDate) continue;
+        for (const article of articles) {
+          if (startDate && article.publishedAt < startDate) continue;
+          if (endDate && article.publishedAt > endDate) continue;
 
-        const anyKeywords = [
-          ...(source.keywords || source.defaultKeywords || []),
-          ...(options?.filters?.keywords || [])
-        ];
+          // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음
+          // → AI가 관련성 분류 단계에서 판단. 수집은 pipeline-level 강제 필터만 적용.
+          if (!matchesRuntimeFilters(article.title, article.content, {
+            anyKeywords: options?.filters?.keywords || [],
+            includeKeywords: options?.filters?.includeKeywords,
+            mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
+            excludeKeywords: options?.filters?.excludeKeywords,
+            sectors: options?.filters?.sectors
+          })) {
+            continue;
+          }
 
-        if (!matchesRuntimeFilters(article.title, article.content, {
-          anyKeywords,
-          includeKeywords: options?.filters?.includeKeywords,
-          mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
-          excludeKeywords: options?.filters?.excludeKeywords,
-          sectors: options?.filters?.sectors
-        })) {
-          continue;
+          // ★ 수집 중 AI 중복 체크 비활성화 (API 쿼터 보존) → URL 해시 매칭만
+          const dupCheck = await isDuplicateArticle(article, {
+            companyId: source.companyId || options?.companyId,
+          });
+          if (dupCheck.isDuplicate) continue;
+
+          const articleRef = db.collection('articles').doc();
+          await articleRef.set({
+            id: articleRef.id,
+            ...article,
+            companyId: source.companyId || options?.companyId || null,
+            pipelineRunId: options?.pipelineRunId || null,
+            source: source.name,
+            sourceId,
+            globalSourceId: sourceId,  // 항상 globalSources에서 조회
+            sourceCategory: source.category || null,
+            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            urlHash: hashUrl(article.url)
+          });
+
+          sourceCollected++;
         }
 
-        const dupCheck = await isDuplicateArticle(article, {
-          companyId: source.companyId || options?.companyId,
-          aiConfig: options?.aiConfig
-        });
-        if (dupCheck.isDuplicate) continue;
-
-        const articleRef = db.collection('articles').doc();
-        await articleRef.set({
-          id: articleRef.id,
-          ...article,
-          companyId: source.companyId || options?.companyId || null,
-          pipelineRunId: options?.pipelineRunId || null,
-          source: source.name,
-          sourceId,
-          globalSourceId: isGlobal ? sourceId : null,
-          sourceCategory: source.category || null,
-          collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'pending',
-          urlHash: hashUrl(article.url)
+        await docRef.update({
+          lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastStatus: 'success',
+          errorMessage: null
         });
 
-        sourceCollected++;
-        totalCollected++;
+        console.log(`[RSS] ${source.name}: +${sourceCollected}건`);
+        return sourceCollected;
+      } catch (error: any) {
+        await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
+        console.error(`[RSS] ${source.name} 오류: ${error.message}`);
+        return 0;
       }
+    })
+  );
 
-      await docRef.update({
-        lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastStatus: 'success',
-        errorMessage: null
-      });
-
-      console.log(`Processed ${sourceCollected} new RSS articles from ${source.name}${isGlobal ? ' [global]' : ''}`);
-    } catch (error: any) {
-      await docRef.update({
-        lastStatus: 'error',
-        errorMessage: error.message
-      }).catch(() => {});
-      await sendErrorNotificationToAdmin('RSS collection failed', error.message, source.name);
-    }
+  for (const r of perSourceResults) {
+    if (r.status === 'fulfilled') totalCollected += r.value;
   }
 
   return { success: true, totalCollected };

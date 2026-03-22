@@ -93,36 +93,38 @@ const scraperMap: Record<string, (html: string, baseUrl: string) => ScrapedArtic
 };
 
 export async function enrichArticles(articles: ScrapedArticle[]): Promise<ScrapedArticle[]> {
-  return Promise.all(
-    articles.map(async (article) => {
-      if (isContentSufficient(article.content, 100)) {
-        return article;
-      }
+  // 동시 요청 수 제한 (서버 부하 방지)
+  const CONCURRENCY = 5;
+  const results: ScrapedArticle[] = [...articles];
 
-      try {
-        const articleResponse = await axios.get(article.url, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          timeout: 10000,
-          responseType: 'arraybuffer'
-        });
-
-        const html = decodeBuffer(articleResponse.data, undefined, articleResponse.headers['content-type']);
-        const fullContent = extractTextFromHtml(html);
-        const cleanedContent = cleanNoise(fullContent);
-
-        if (isContentSufficient(cleanedContent, 50)) {
-          return {
-            ...article,
-            content: cleanedContent.substring(0, 5000)
-          };
+  for (let i = 0; i < articles.length; i += CONCURRENCY) {
+    const chunk = articles.slice(i, i + CONCURRENCY);
+    const enriched = await Promise.all(
+      chunk.map(async (article, idx) => {
+        if (isContentSufficient(article.content, 100)) {
+          return article;
         }
-      } catch (error) {
-        console.warn(`Failed to fetch full article from ${article.url}:`, error);
-      }
-
-      return article;
-    })
-  );
+        try {
+          const articleResponse = await axios.get(article.url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 10000,
+            responseType: 'arraybuffer'
+          });
+          const html = decodeBuffer(articleResponse.data, undefined, articleResponse.headers['content-type']);
+          const fullContent = extractTextFromHtml(html);
+          const cleanedContent = cleanNoise(fullContent);
+          if (isContentSufficient(cleanedContent, 50)) {
+            return { ...article, content: cleanedContent.substring(0, 5000) };
+          }
+        } catch {
+          // 본문 스크래핑 실패 시 원본 유지 (에러 로그 생략 — 비핵심)
+        }
+        return article;
+      })
+    );
+    enriched.forEach((a, idx) => { results[i + idx] = a; });
+  }
+  return results;
 }
 
 export async function scrapeWebsiteDynamic(url: string, source: DynamicSourceConfig): Promise<ScrapedArticle[]> {
@@ -205,28 +207,13 @@ export async function processScrapingSources(options?: {
   const db = admin.firestore();
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
 
-  let sourcesQuery: FirebaseFirestore.Query = db.collection('sources')
-    .where('type', '==', 'scraping')
-    .where('active', '==', true);
-
-  if (options?.companyId) {
-    sourcesQuery = sourcesQuery.where('companyId', '==', options.companyId);
-  }
-
-  if (options?.filters?.sourceIds && options.filters.sourceIds.length > 0) {
-    sourcesQuery = sourcesQuery.where(
-      admin.firestore.FieldPath.documentId(),
-      'in',
-      options.filters.sourceIds.slice(0, 10)
-    );
-  }
-
-  const sourcesSnapshot = await sourcesQuery.get();
+  // ── 소스 목록 수집: globalSources만 사용 (슈퍼어드민이 관리, 회사는 구독으로 조회)
   const allSourcesToProcess: { id: string; data: any; isGlobal: boolean }[] = [];
-  sourcesSnapshot.docs.forEach(d => allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: false }));
 
-  // [ADD] GlobalSources 구독 처리
+  // 1) 구독된 sourceIds가 있으면 해당 소스만 조회
+  // 2) 없으면 globalSources에서 모든 active scraping 소스를 조회
   const subscribedIds = options?.filters?.sourceIds ?? [];
+
   if (subscribedIds.length > 0) {
     const chunks: string[][] = [];
     for (let i = 0; i < subscribedIds.length; i += 30) chunks.push(subscribedIds.slice(i, i + 30));
@@ -234,99 +221,106 @@ export async function processScrapingSources(options?: {
     for (const chunk of chunks) {
       const globalSnap = await db.collection('globalSources')
         .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-        .where('type', '==', 'scraping')
-        .where('status', '==', 'active')
         .get();
       globalSnap.docs.forEach(d => {
-        if (!allSourcesToProcess.find(s => s.id === d.id)) {
-          allSourcesToProcess.push({ id: d.id, data: d.data(), isGlobal: true });
-        }
+        const data = d.data();
+        if (data.type !== 'scraping' || data.status !== 'active') return;
+        if (allSourcesToProcess.find(s => s.id === d.id)) return;
+        allSourcesToProcess.push({ id: d.id, data, isGlobal: true });
       });
     }
+  } else {
+    const allScrapingSnap = await db.collection('globalSources')
+      .where('type', '==', 'scraping')
+      .where('status', '==', 'active')
+      .get();
+    allScrapingSnap.docs.forEach(d => {
+      const data = d.data();
+      allSourcesToProcess.push({ id: d.id, data, isGlobal: true });
+    });
   }
 
   let totalCollected = 0;
 
-  for (const { id: sourceId, data: source, isGlobal } of allSourcesToProcess) {
-    const docRef = isGlobal
-      ? db.collection('globalSources').doc(sourceId)
-      : db.collection('sources').doc(sourceId);
+  // ── 병렬 수집 ──
+  const perSourceResults = await Promise.allSettled(
+    allSourcesToProcess.map(async ({ id: sourceId, data: source, isGlobal }) => {
+      const docRef = db.collection('globalSources').doc(sourceId);
 
-    try {
-      let articles: any[] = [];
-      // 더벨/마켓인사이트는 로컬 PC 스크래퍼에서 처리되므로 Firestore에서만 조회
-      if (sourceId === 'thebell' || sourceId === 'marketinsight') {
-        const snap = await db.collection('articles')
-          .where('sourceId', '==', sourceId)
-          .where('status', '==', 'pending')
-          .limit(100)
-          .get();
-        articles = snap.docs.map(d => d.data());
-      } else {
-        articles = scraperMap[sourceId]
-          ? await scrapeWebsite(source.url, sourceId)
-          : await scrapeWebsiteDynamic(source.url, source);
-      }
-
-      let sourceCollected = 0;
-
-      for (const article of articles) {
-        if (startDate && article.publishedAt < startDate) continue;
-        if (endDate && article.publishedAt > endDate) continue;
-
-        const anyKeywords = [
-          ...(source.keywords || []),
-          ...(options?.filters?.keywords || [])
-        ];
-
-        if (!matchesRuntimeFilters(article.title, article.content, {
-          anyKeywords,
-          includeKeywords: options?.filters?.includeKeywords,
-          mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
-          excludeKeywords: options?.filters?.excludeKeywords,
-          sectors: options?.filters?.sectors
-        })) {
-          continue;
+      try {
+        let articles: any[] = [];
+        // 더벨/마켓인사이트는 로컬 PC 스크래퍼에서 처리되므로 Firestore에서만 조회
+        if (sourceId === 'thebell' || sourceId === 'marketinsight') {
+          const snap = await db.collection('articles')
+            .where('sourceId', '==', sourceId)
+            .where('status', '==', 'pending')
+            .limit(100)
+            .get();
+          articles = snap.docs.map(d => d.data());
+        } else {
+          articles = scraperMap[sourceId]
+            ? await scrapeWebsite(source.url, sourceId)
+            : await scrapeWebsiteDynamic(source.url, source);
         }
 
-        const dupCheck = await isDuplicateArticle(article, {
-          companyId: source.companyId || options?.companyId,
-          aiConfig: options?.aiConfig
-        });
-        if (dupCheck.isDuplicate) continue;
+        let sourceCollected = 0;
 
-        const articleRef = db.collection('articles').doc();
-        await articleRef.set({
-          id: articleRef.id,
-          ...article,
-          companyId: source.companyId || options?.companyId || null,
-          pipelineRunId: options?.pipelineRunId || null,
-          source: source.name,
-          sourceId,
-          sourceCategory: source.category || null,
-          collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'pending',
-          urlHash: hashUrl(article.url)
+        for (const article of articles) {
+          if (startDate && article.publishedAt < startDate) continue;
+          if (endDate && article.publishedAt > endDate) continue;
+
+          // ★ source.keywords를 수집 pre-filter로 사용하지 않음 → AI가 관련성 판단
+          if (!matchesRuntimeFilters(article.title, article.content, {
+            anyKeywords: options?.filters?.keywords || [],
+            includeKeywords: options?.filters?.includeKeywords,
+            mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
+            excludeKeywords: options?.filters?.excludeKeywords,
+            sectors: options?.filters?.sectors
+          })) {
+            continue;
+          }
+
+          // ★ 수집 중 AI 중복 체크 비활성화 (API 쿼터 보존)
+          const dupCheck = await isDuplicateArticle(article, {
+            companyId: source.companyId || options?.companyId,
+          });
+          if (dupCheck.isDuplicate) continue;
+
+          const articleRef = db.collection('articles').doc();
+          await articleRef.set({
+            id: articleRef.id,
+            ...article,
+            companyId: source.companyId || options?.companyId || null,
+            pipelineRunId: options?.pipelineRunId || null,
+            source: source.name,
+            sourceId,
+            sourceCategory: source.category || null,
+            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            urlHash: hashUrl(article.url)
+          });
+
+          sourceCollected++;
+        }
+
+        await docRef.update({
+          lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastStatus: 'success',
+          errorMessage: null
         });
 
-        sourceCollected++;
-        totalCollected++;
+        console.log(`[Scraping] ${source.name}${isGlobal ? ' [global]' : ''}: +${sourceCollected}건`);
+        return sourceCollected;
+      } catch (error: any) {
+        await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
+        console.error(`[Scraping] ${source.name} 오류: ${error.message}`);
+        return 0;
       }
+    })
+  );
 
-      await docRef.update({
-        lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastStatus: 'success',
-        errorMessage: null
-      });
-
-      console.log(`Processed ${sourceCollected} scraped articles from ${source.name}${isGlobal ? ' [global]' : ''}`);
-    } catch (error: any) {
-      await docRef.update({
-        lastStatus: 'error',
-        errorMessage: error.message
-      }).catch(() => {});
-      await sendErrorNotificationToAdmin('Scraping collection failed', error.message, source.name);
-    }
+  for (const r of perSourceResults) {
+    if (r.status === 'fulfilled') totalCollected += r.value;
   }
 
   return { success: true, totalCollected };
