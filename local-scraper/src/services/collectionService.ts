@@ -69,7 +69,7 @@ export interface CollectionResult {
 export async function collectAllArticles(
   marketInsightService: MarketInsightService,
   thebellService: ThebellService,
-  options: { skipBusinessHoursCheck?: boolean } = {},
+  options: { skipBusinessHoursCheck?: boolean; onlyTheBell?: boolean; onlyMarketInsight?: boolean } = {},
 ): Promise<CollectionResult> {
 
   if (!options.skipBusinessHoursCheck && !isKoreanBusinessHours()) {
@@ -93,12 +93,18 @@ export async function collectAllArticles(
   };
 
   // 슈퍼어드민이 전체 수집 — 회사 구분 없음
-  await collectMarketInsight(marketInsightService, result.marketinsight);
+  if (!options.onlyTheBell) {
+    await collectMarketInsight(marketInsightService, result.marketinsight);
+  }
 
   // 소스 간 자연스러운 간격 (5~15초)
-  await humanDelay(5000, 15000);
+  if (!options.onlyMarketInsight && !options.onlyTheBell) {
+    await humanDelay(5000, 15000);
+  }
 
-  await collectTheBell(thebellService, result.thebell);
+  if (!options.onlyMarketInsight) {
+    await collectTheBell(thebellService, result.thebell);
+  }
 
   result.totalCollected = result.marketinsight.collected + result.thebell.collected;
   console.log(

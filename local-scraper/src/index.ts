@@ -48,44 +48,74 @@ function startSessionKeepAlive() {
   console.log(`[KeepAlive] Session keepalive started (every ${KEEPALIVE_INTERVAL_MS / 60000}min)`);
 }
 
-// Auto-collection scheduler (랜덤 간격, 업무시간만)
-let collectTimer: NodeJS.Timeout | null = null;
+// Auto-collection scheduler (시간대별 분산, 업무시간만)
+// TheBell: 매 시간 0분 (0~30분 내 랜덤)
+// MarketInsight: 매 시간 31분 (31~60분 내 랜덤)
+let hourlyScheduler: NodeJS.Timeout | null = null;
 
-function scheduleNextCollect() {
-  const intervalMs = randomCollectIntervalMs();
-  const intervalMin = Math.round(intervalMs / 60000);
-  console.log(`[AutoCollect] Next collection in ~${intervalMin} min`);
+async function runTheBellCollection() {
+  if (!isKoreanBusinessHours()) {
+    console.log('[TheBell Collect] Outside business hours — skipping');
+    return;
+  }
 
-  collectTimer = setTimeout(async () => {
-    if (!isKoreanBusinessHours()) {
-      console.log('[AutoCollect] Outside business hours — rescheduling');
-      scheduleNextCollect();
-      return;
-    }
-    console.log('[AutoCollect] Starting scheduled collection...');
+  const randomDelay = Math.floor(Math.random() * (30 * 60 * 1000)); // 0~30분 랜덤
+  console.log(`[TheBell Collect] Will start in ${Math.round(randomDelay / 1000)}s`);
+
+  setTimeout(async () => {
+    if (!isKoreanBusinessHours()) return;
+    console.log('[TheBell Collect] Starting...');
     try {
-      await collectAllArticles(marketInsightService, thebellService);
+      const { thebell } = await collectAllArticles(marketInsightService, thebellService, { onlyTheBell: true });
+      console.log(`[TheBell Collect] ✓ Complete: ${thebell.collected} saved`);
     } catch (e: any) {
-      console.error('[AutoCollect] Error:', e.message);
+      console.error('[TheBell Collect] Error:', e.message);
     }
-    scheduleNextCollect(); // 완료 후 다음 스케줄 예약
-  }, intervalMs);
+  }, randomDelay);
 }
 
-function startAutoCollect() {
-  // 서버 시작 후 30~90초 랜덤 딜레이로 첫 수집 (정각 출발 방지)
-  const startDelay = 30000 + Math.floor(Math.random() * 60000);
-  console.log(`[AutoCollect] First collection in ${Math.round(startDelay / 1000)}s`);
+async function runMarketInsightCollection() {
+  if (!isKoreanBusinessHours()) {
+    console.log('[MarketInsight Collect] Outside business hours — skipping');
+    return;
+  }
+
+  const randomDelay = Math.floor(Math.random() * (30 * 60 * 1000)); // 31~60분 내 랜덤 (30분 + 0~30분)
+  console.log(`[MarketInsight Collect] Will start in ${Math.round(randomDelay / 1000)}s`);
+
   setTimeout(async () => {
-    if (isKoreanBusinessHours()) {
-      try {
-        await collectAllArticles(marketInsightService, thebellService);
-      } catch (e: any) {
-        console.error('[AutoCollect] First run error:', e.message);
-      }
+    if (!isKoreanBusinessHours()) return;
+    console.log('[MarketInsight Collect] Starting...');
+    try {
+      const { marketinsight } = await collectAllArticles(marketInsightService, thebellService, { onlyMarketInsight: true });
+      console.log(`[MarketInsight Collect] ✓ Complete: ${marketinsight.collected} saved`);
+    } catch (e: any) {
+      console.error('[MarketInsight Collect] Error:', e.message);
     }
-    scheduleNextCollect();
-  }, startDelay);
+  }, randomDelay);
+}
+
+function startHourlyScheduler() {
+  console.log('[Scheduler] Time-based collection started');
+  console.log('[Scheduler] TheBell: every hour at 0-30 min (random within 0-30min)');
+  console.log('[Scheduler] MarketInsight: every hour at 31-60 min (random within 31-60min)');
+
+  hourlyScheduler = setInterval(() => {
+    const now = new Date();
+    const minute = now.getMinutes();
+
+    // TheBell: 정시(0분)에 시작
+    if (minute === 0) {
+      console.log(`[Scheduler] ${now.toISOString()} - Triggering TheBell collection`);
+      runTheBellCollection();
+    }
+
+    // MarketInsight: 31분에 시작
+    if (minute === 31) {
+      console.log(`[Scheduler] ${now.toISOString()} - Triggering MarketInsight collection`);
+      runMarketInsightCollection();
+    }
+  }, 60 * 1000); // 매 분마다 체크
 }
 
 // Health check
@@ -225,7 +255,7 @@ app.post('/api/save-cookies', async (req: Request, res: Response) => {
 
 // Graceful shutdown
 async function shutdown() {
-  if (collectTimer) clearTimeout(collectTimer);
+  if (hourlyScheduler) clearInterval(hourlyScheduler);
   if (sessionKeepAliveTimer) clearInterval(sessionKeepAliveTimer);
   await marketInsightService.close();
   await thebellService.close();
@@ -253,6 +283,6 @@ initServices().then(() => {
     console.log(`Thebell keyword news: GET http://localhost:${PORT}/api/thebell/keyword-news`);
     console.log(`MarketInsight all pages: GET http://localhost:${PORT}/api/marketinsight/scrape-all`);
   });
-  startAutoCollect();
+  startHourlyScheduler();
   startSessionKeepAlive();
 });
