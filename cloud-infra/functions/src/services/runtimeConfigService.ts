@@ -95,14 +95,20 @@ export async function getCompanyRuntimeConfig(
   const legacySettings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
 
   // AI Config 병합 (companySettings -> legacySettings -> Default)
+  const activeProvider = runtimeSettings.ai?.provider || legacySettings.ai?.provider || DEFAULT_AI_CONFIG.provider;
   const aiConfig: RuntimeAiConfig = {
     ...DEFAULT_AI_CONFIG,
     ...(legacySettings.ai ?? {}),
-    ...(runtimeSettings.ai ?? {}), // 신규 필드 (객체 통째로 덮어쓰기 권장)
-    model: runtimeSettings.aiModels?.[runtimeSettings.ai?.provider || legacySettings.ai?.provider || 'glm'] || 
-           runtimeSettings.ai?.model || legacySettings.ai?.model || DEFAULT_AI_CONFIG.model,
-    baseUrl: runtimeSettings.aiBaseUrls?.[runtimeSettings.ai?.provider || legacySettings.ai?.provider || 'glm'] || 
-             runtimeSettings.ai?.baseUrl || legacySettings.ai?.baseUrl || null,
+    ...(runtimeSettings.ai ?? {}),
+    provider: activeProvider,
+    model: runtimeSettings.aiModels?.[activeProvider] ||
+           runtimeSettings.ai?.model ||
+           legacySettings.ai?.model ||
+           DEFAULT_AI_CONFIG.model,
+    baseUrl: runtimeSettings.aiBaseUrls?.[activeProvider] ||
+             runtimeSettings.ai?.baseUrl ||
+             legacySettings.ai?.baseUrl ||
+             undefined,
   };
 
   // Filters 병합 (companySettings -> legacySettings -> Subscriptions -> Default)
