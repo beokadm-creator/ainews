@@ -22,8 +22,8 @@ const DATE_PRESETS = [
 const STATUS_OPTIONS = [
   { value: 'analyzed', label: 'AI 분석 완료' },
   { value: 'published', label: '보고서 포함됨' },
-  { value: 'pending_filter', label: '필터링 대기' },
-  { value: 'collected', label: '수집됨' },
+  { value: 'filtered', label: '필터링 대기' },
+  { value: 'pending', label: '수집됨' },
 ];
 
 function TagInput({
@@ -79,7 +79,7 @@ export default function Articles() {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['analyzed', 'published', 'collected', 'pending_filter']);
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['analyzed', 'published', 'pending', 'filtered']);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [filterRegion, setFilterRegion] = useState<'all' | 'domestic' | 'global'>('all');
   const [showFilters, setShowFilters] = useState(true);

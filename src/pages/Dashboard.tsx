@@ -99,7 +99,7 @@ export default function Dashboard() {
     setSourcesLoading(true);
     try {
       const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
-      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).sourceIds || [] : [];
+      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).subscribedSourceIds || [] : [];
       if (subscribedIds.length === 0) { setSourcesLoading(false); return; }
 
       const snap = await getDocs(collection(db, 'globalSources'));
