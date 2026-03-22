@@ -66,10 +66,19 @@ export interface CollectionResult {
 }
 
 // ─── 메인 수집 함수 ───────────────────────────────────────────────
+// pipelineRunId 생성 헬퍼
+function generatePipelineRunId(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const yyyyMMdd = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const HHmmss = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `local-${yyyyMMdd}-${HHmmss}`;
+}
+
 export async function collectAllArticles(
   marketInsightService: MarketInsightService,
   thebellService: ThebellService,
-  options: { skipBusinessHoursCheck?: boolean; onlyTheBell?: boolean; onlyMarketInsight?: boolean } = {},
+  options: { skipBusinessHoursCheck?: boolean; onlyTheBell?: boolean; onlyMarketInsight?: boolean; pipelineRunId?: string } = {},
 ): Promise<CollectionResult> {
 
   if (!options.skipBusinessHoursCheck && !isKoreanBusinessHours()) {
@@ -84,6 +93,9 @@ export async function collectAllArticles(
     };
   }
 
+  // pipelineRunId 생성 (제공되지 않으면 타임스탐프 기반 생성)
+  const pipelineRunId = options.pipelineRunId || generatePipelineRunId();
+
   const result: CollectionResult = {
     success: true,
     marketinsight: { found: 0, relevant: 0, detailFetched: 0, collected: 0, skipped: 0, errors: [] },
@@ -94,7 +106,7 @@ export async function collectAllArticles(
 
   // 슈퍼어드민이 전체 수집 — 회사 구분 없음
   if (!options.onlyTheBell) {
-    await collectMarketInsight(marketInsightService, result.marketinsight);
+    await collectMarketInsight(marketInsightService, result.marketinsight, pipelineRunId);
   }
 
   // 소스 간 자연스러운 간격 (5~15초)
@@ -103,7 +115,7 @@ export async function collectAllArticles(
   }
 
   if (!options.onlyMarketInsight) {
-    await collectTheBell(thebellService, result.thebell);
+    await collectTheBell(thebellService, result.thebell, pipelineRunId);
   }
 
   result.totalCollected = result.marketinsight.collected + result.thebell.collected;
@@ -121,6 +133,7 @@ export async function collectAllArticles(
 async function collectMarketInsight(
   service: MarketInsightService,
   stats: SourceResult,
+  pipelineRunId: string,
 ): Promise<void> {
   const startedAt = new Date();
   try {
@@ -189,6 +202,7 @@ async function collectMarketInsight(
           category: article.category,
           subtitle: detail?.subtitle || '',
           date: detail?.date || '',
+          pipelineRunId,
         });
         if (saved) stats.collected++;
         else stats.skipped++;
@@ -211,6 +225,7 @@ async function collectMarketInsight(
 async function collectTheBell(
   service: ThebellService,
   stats: SourceResult,
+  pipelineRunId: string,
 ): Promise<void> {
   const startedAt = new Date();
   try {
@@ -291,6 +306,7 @@ async function collectTheBell(
           subtitle: detail?.subtitle || '',
           author: detail?.author || '',
           date: detail?.date || '',
+          pipelineRunId,
         });
         if (saved) stats.collected++;
         else stats.skipped++;

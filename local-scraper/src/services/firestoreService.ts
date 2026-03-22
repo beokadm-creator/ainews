@@ -73,6 +73,7 @@ export interface ArticleData {
   author?: string;
   subtitle?: string;
   date?: string;
+  pipelineRunId?: string; // 추적용 ID (없으면 저장 시 생성)
 }
 
 /**
@@ -108,6 +109,7 @@ export async function saveArticleGlobal(article: ArticleData): Promise<boolean> 
     subtitle: article.subtitle || null,
     date: article.date || null,
     companyId: null, // 전역 기사 — 특정 회사 소속 아님
+    pipelineRunId: article.pipelineRunId || null, // 로컬 수집 추적용
     collectedAt: admin.firestore.FieldValue.serverTimestamp(),
     status: 'pending',
     urlHash,
