@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Filter, ChevronDown, ChevronUp, ExternalLink,
-  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Activity, Trash2
+  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Activity, Trash2, Zap
 } from 'lucide-react';
-import { db } from '@/lib/firebase';
+import { db, functions } from '@/lib/firebase';
+import { httpsCallable } from 'firebase/functions';
 import { useAuthStore } from '@/store/useAuthStore';
 import {
   collection, query, where, orderBy, limit, getDocs,
@@ -63,10 +64,11 @@ function ScoreBar({ score }: { score: number }) {
 }
 
 // ─── Article row ─────────────────────────────────────────
-function ArticleRow({ article, expanded, onToggle }: {
+function ArticleRow({ article, expanded, onToggle, onAnalyze }: {
   article: Article;
   expanded: boolean;
   onToggle: () => void;
+  onAnalyze?: (article: Article) => Promise<void>;
 }) {
   const status = STATUS_CONFIG[article.status] || STATUS_CONFIG.pending;
   const StatusIcon = status.icon;
@@ -134,8 +136,8 @@ function ArticleRow({ article, expanded, onToggle }: {
                   </div>
                 )}
               </div>
-              {/* Right: tags + links */}
-              <div className="space-y-2">
+              {/* Right: tags + links + actions */}
+              <div className="space-y-3">
                 {article.tags && article.tags.length > 0 && (
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-white/25 mb-1">태그</p>
@@ -146,18 +148,29 @@ function ArticleRow({ article, expanded, onToggle }: {
                     </div>
                   </div>
                 )}
-                {article.url && (
-                  <a
-                    href={article.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    className="inline-flex items-center gap-1 text-xs text-[#d4af37]/70 hover:text-[#d4af37] transition-colors"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    원문 보기
-                  </a>
-                )}
+                <div className="flex items-center gap-2">
+                  {article.url && (
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 text-xs text-[#d4af37]/70 hover:text-[#d4af37] transition-colors"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      원문 보기
+                    </a>
+                  )}
+                  {onAnalyze && article.status !== 'analyzed' && (
+                    <button
+                      onClick={e => { e.stopPropagation(); onAnalyze(article); }}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors font-medium"
+                    >
+                      <Zap className="w-3 h-3" />
+                      AI 분석
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </td>
@@ -233,6 +246,10 @@ export default function AdminArticles() {
 
   // Stats
   const [stats, setStats] = useState({ total: 0, pending: 0, analyzed: 0, rejected: 0 });
+
+  // Analyzing state
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // ─── Load articles ───────────────────────────────────────
   const loadArticles = useCallback(async (reset = true) => {
@@ -427,6 +444,36 @@ export default function AdminArticles() {
     }
   };
 
+  const handleAnalyze = async (article: Article) => {
+    setAnalyzing(true);
+    setAnalyzeResult(null);
+    try {
+      const fn = httpsCallable(functions, 'analyzeManualArticle');
+      const result = await fn({
+        title: article.title,
+        content: article.summary?.join(' ') || '',
+        source: article.source,
+        url: article.url,
+        publishedAt: article.publishedAt,
+      }) as any;
+
+      if (result.data.success) {
+        setAnalyzeResult({
+          success: true,
+          message: `✅ 기사가 분석되었습니다. (관련도: ${(result.data.confidence * 100).toFixed(0)}%)`
+        });
+        // 분석 완료 후 목록 새로고침
+        setTimeout(() => loadArticles(true), 1500);
+      } else {
+        setAnalyzeResult({ success: false, message: `❌ 분석 실패: ${result.data.error}` });
+      }
+    } catch (err: any) {
+      setAnalyzeResult({ success: false, message: `❌ 오류: ${err.message}` });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Page header */}
@@ -473,6 +520,18 @@ export default function AdminArticles() {
           </button>
         </div>
       </div>
+
+      {/* 분석 결과 메시지 */}
+      {analyzeResult && (
+        <div className={`px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-2 ${
+          analyzeResult.success
+            ? 'bg-green-500/10 border border-green-500/30 text-green-400'
+            : 'bg-red-500/10 border border-red-500/30 text-red-400'
+        }`}>
+          {analyzeResult.success ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+          {analyzeResult.message}
+        </div>
+      )}
 
       {/* 매체별 수집 현황 */}
       {sourceHealth.length > 0 && (
@@ -594,6 +653,7 @@ export default function AdminArticles() {
                       article={article}
                       expanded={expandedId === article.id}
                       onToggle={() => setExpandedId(expandedId === article.id ? null : article.id)}
+                      onAnalyze={handleAnalyze}
                     />
                   ))}
                 </tbody>
