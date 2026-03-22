@@ -216,22 +216,40 @@ async function collectTheBell(
   try {
     await reportScraperStatus({ source: 'thebell', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
 
-    console.log('[Collection] TheBell: fetching keyword news (max 5 pages, recent 3 days, excluding duplicates)...');
-    const listResult = await (service as any).scrapeKeywordNews(5);
-    if (!listResult.success || !listResult.data) {
-      const errMsg = listResult.error || 'No data returned';
-      stats.errors.push(errMsg);
-      await reportScraperStatus({ source: 'thebell', status: 'error', found: 0, collected: 0, skipped: 0, errorMessage: errMsg, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
-      return;
-    }
-
-    stats.found = listResult.data.length;
-    console.log(`[Collection] TheBell: ${stats.found} articles found in MyKeywordNews`);
-
     const existingHashes = await getCollectedUrlHashes('thebell');
     console.log(`[Collection] TheBell: ${existingHashes.size} already collected URLs loaded`);
 
-    const scored = listResult.data
+    let allArticles: any[] = [];
+
+    // 1️⃣ 키워드 뉴스 (MyKeywordNews)
+    console.log('[Collection] TheBell: [1/2] Fetching keyword news (max 5 pages, recent 3 days)...');
+    const keywordResult = await (service as any).scrapeKeywordNews(5);
+    if (keywordResult.success && keywordResult.data) {
+      console.log(`[Collection] TheBell: ${keywordResult.data.length} keyword news articles found`);
+      allArticles.push(...keywordResult.data.map((a: any) => ({ ...a, source_type: 'keyword' })));
+    } else {
+      console.warn('[Collection] TheBell: Keyword news fetch failed:', keywordResult.error);
+    }
+
+    // 2️⃣ 메인 페이지 뉴스 (Code=01 - M&A/거래)
+    console.log('[Collection] TheBell: [2/2] Fetching main page articles (Code=01)...');
+    const mainResult = await (service as any).scrapeArticles('deal', true);
+    if (mainResult.success && mainResult.data) {
+      console.log(`[Collection] TheBell: ${mainResult.data.length} main page articles found`);
+      allArticles.push(...mainResult.data.map((a: any) => ({ ...a, source_type: 'main' })));
+    } else {
+      console.warn('[Collection] TheBell: Main page fetch failed:', mainResult.error);
+    }
+
+    stats.found = allArticles.length;
+    console.log(`[Collection] TheBell: Total ${stats.found} articles (keyword + main)`);
+
+    if (stats.found === 0) {
+      await reportScraperStatus({ source: 'thebell', status: 'success', found: 0, collected: 0, skipped: 0, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
+      return;
+    }
+
+    const scored = allArticles
       .map((a: any) => ({
         ...a,
         score: scoreRelevance(a.title, (a as any).summary || ''),
@@ -253,8 +271,9 @@ async function collectTheBell(
       if (i > 0) await humanDelay(3000, 7000);
 
       try {
+        const sourceLabel = article.source_type === 'keyword' ? '키워드' : '메인';
         console.log(
-          `[Collection] TB detail [${i + 1}/${scored.length}]:` +
+          `[Collection] TB detail [${i + 1}/${scored.length}] (${sourceLabel}):` +
           ` ${article.title.slice(0, 40)}... [${article.isPaid ? '유료' : '무료'}]`
         );
         const detail = await service.scrapeArticleDetail(article.link);
@@ -267,7 +286,7 @@ async function collectTheBell(
           publishedAt: new Date(),
           source: 'TheBell',
           sourceId: 'thebell',
-          category: article.category || 'keyword',
+          category: article.category || article.source_type || 'news',
           isPaid: true,
           subtitle: detail?.subtitle || '',
           author: detail?.author || '',

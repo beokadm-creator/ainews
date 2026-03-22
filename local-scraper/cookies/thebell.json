@@ -1,20 +1,7 @@
 [
   {
-    "name": "ASPSESSIONIDCGSAQTSB",
-    "value": "EEIKAPKCGHIAPBAAJJIEPGKP",
-    "domain": "www.thebell.co.kr",
-    "path": "/",
-    "expires": -1,
-    "size": 44,
-    "httpOnly": false,
-    "secure": true,
-    "session": true,
-    "priority": "Medium",
-    "sourceScheme": "Secure"
-  },
-  {
-    "name": "ASPSESSIONIDQWQSCADQ",
-    "value": "NPHDFBJDHPIAGABMJIKGCGOD",
+    "name": "ASPSESSIONIDSWRRCBCR",
+    "value": "PIGOGFMCDIJDMJIEAJBDLJDI",
     "domain": "www.thebell.co.kr",
     "path": "/",
     "expires": -1,
@@ -39,8 +26,21 @@
     "sourceScheme": "Secure"
   },
   {
-    "name": "ASPSESSIONIDSWRRCBCR",
-    "value": "PIGOGFMCDIJDMJIEAJBDLJDI",
+    "name": "ASPSESSIONIDQWQSCADQ",
+    "value": "NPHDFBJDHPIAGABMJIKGCGOD",
+    "domain": "www.thebell.co.kr",
+    "path": "/",
+    "expires": -1,
+    "size": 44,
+    "httpOnly": false,
+    "secure": true,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "ASPSESSIONIDCGSAQTSB",
+    "value": "EEIKAPKCGHIAPBAAJJIEPGKP",
     "domain": "www.thebell.co.kr",
     "path": "/",
     "expires": -1,
