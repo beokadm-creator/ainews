@@ -194,6 +194,7 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
     if (!url.endsWith('/chat/completions')) {
       url += '/chat/completions';
     }
+    console.log(`[AI-START] Calling ${aiConfig.provider} (${aiConfig.model}) at ${url}...`);
     const response = await axios.post(
       url,
       {
@@ -202,7 +203,10 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
         temperature: options?.temperature ?? 0.2,
         ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
       },
-      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
+      { 
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        timeout: 240000 // 4분 타임아웃
+      }
     );
     const rawContent = response.data.choices?.[0]?.message?.content;
     if (rawContent == null) {

@@ -1,81 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Key, CheckCircle2, XCircle, Loader2, Database, RefreshCw, Eye, EyeOff, ChevronDown, ChevronUp, Plus, Trash2, Mail } from 'lucide-react';
+import { CheckCircle2, Loader2, Database, RefreshCw, Plus, Trash2, Mail, ExternalLink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
-import { collection, query, where, getDocs, doc, updateDoc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuthStore } from '@/store/useAuthStore';
-
-type AiProvider = 'glm' | 'gemini' | 'openai' | 'claude';
-
-interface ProviderInfo {
-  label: string;
-  modelDefault: string;
-  models: string[];
-  docsUrl: string;
-  color: string;
-  placeholder: string;
-}
-
-const PROVIDERS: Record<AiProvider, ProviderInfo> = {
-  glm: {
-    label: 'Zhipu GLM',
-    modelDefault: 'glm-4.7',
-    models: ['glm-4.7'],
-    docsUrl: 'https://open.bigmodel.cn',
-    color: '#6366f1',
-    placeholder: 'GLM API Key (from open.bigmodel.cn)',
-  },
-  gemini: {
-    label: 'Google Gemini',
-    modelDefault: 'gemini-1.5-pro',
-    models: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-pro'],
-    docsUrl: 'https://aistudio.google.com',
-    color: '#4285F4',
-    placeholder: 'Gemini API Key (from aistudio.google.com)',
-  },
-  openai: {
-    label: 'OpenAI GPT',
-    modelDefault: 'gpt-4o',
-    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-    docsUrl: 'https://platform.openai.com',
-    color: '#10A37F',
-    placeholder: 'OpenAI API Key (sk-...)',
-  },
-  claude: {
-    label: 'Anthropic Claude',
-    modelDefault: 'claude-3-5-sonnet-20241022',
-    models: ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
-    docsUrl: 'https://console.anthropic.com',
-    color: '#cc785c',
-    placeholder: 'Anthropic API Key (sk-ant-...)',
-  },
-};
-
-interface ProviderStatus {
-  hasKey: boolean;
-  testing: boolean;
-  testResult: { success: boolean; message: string; latencyMs?: number } | null;
-  saving: boolean;
-  showKey: boolean;
-  expanded: boolean;
-  apiKeyInput: string;
-  baseUrlInput: string; // ★ New: Base URL input
-  selectedModel: string;
-}
-
-function initialProviderStatus(modelDefault: string): ProviderStatus {
-  return { 
-    hasKey: false, 
-    testing: false, 
-    testResult: null, 
-    saving: false, 
-    showKey: false, 
-    expanded: false, 
-    apiKeyInput: '', 
-    baseUrlInput: '', // ★ Initial value
-    selectedModel: modelDefault 
-  };
-}
 
 export default function Settings() {
   const { user } = useAuthStore();
@@ -84,21 +13,18 @@ export default function Settings() {
   const canEdit = userRole === 'superadmin' || userRole === 'company_admin';
 
   const [loading, setLoading] = useState(true);
-  const [providerState, setProviderState] = useState<Record<AiProvider, ProviderStatus>>({
-    glm: initialProviderStatus(PROVIDERS.glm.modelDefault),
-    gemini: initialProviderStatus(PROVIDERS.gemini.modelDefault),
-    openai: initialProviderStatus(PROVIDERS.openai.modelDefault),
-    claude: initialProviderStatus(PROVIDERS.claude.modelDefault),
-  });
 
-  // Sources state
-  const [sources, setSources] = useState<any[]>([]);
+  // Sources state (subscribed only, read-only display)
+  const [subscribedSources, setSubscribedSources] = useState<{ id: string; name: string; type: string; pricingTier: string }[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
 
-  // Subscribers state
+  // Notification state
   const [subscriberEmails, setSubscriberEmails] = useState<string[]>([]);
   const [newEmail, setNewEmail] = useState('');
-  const [savingSubscribers, setSavingSubscribers] = useState(false);
+  const [telegramConfig, setTelegramConfig] = useState({ botToken: '', chatId: '' });
+  const [savingNotifications, setSavingNotifications] = useState(false);
+
+  // Relevance prompt state
   const [relevancePrompt, setRelevancePrompt] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
 
@@ -117,25 +43,9 @@ export default function Settings() {
       const settingsDoc = await getDoc(doc(db, 'companySettings', companyId));
       if (settingsDoc.exists()) {
         const data = settingsDoc.data() as any;
-        const storedKeys = data.apiKeys || {};
-        const storedModels = data.aiModels || {};
-        const storedBaseUrls = data.aiBaseUrls || {}; // ★ Load custom URLs
-        const emails = data.subscriberEmails || [];
-        setSubscriberEmails(emails);
+        setSubscriberEmails(data.subscriberEmails || []);
+        setTelegramConfig(data.notifications?.telegram || { botToken: '', chatId: '' });
         setRelevancePrompt(data.ai?.relevancePrompt || '');
-        
-        setProviderState(prev => {
-          const updated = { ...prev };
-          (Object.keys(PROVIDERS) as AiProvider[]).forEach(p => {
-            updated[p] = {
-              ...updated[p],
-              hasKey: !!storedKeys[p],
-              selectedModel: storedModels[p] || PROVIDERS[p].modelDefault,
-              baseUrlInput: storedBaseUrls[p] || '', // ★ Load to input
-            };
-          });
-          return updated;
-        });
       }
     } catch (err) {
       console.error('Failed to load company settings:', err);
@@ -148,9 +58,19 @@ export default function Settings() {
     if (!companyId) return;
     setSourcesLoading(true);
     try {
-      const q = query(collection(db, 'sources'), where('companyId', '==', companyId));
-      const snap = await getDocs(q);
-      setSources(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
+      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).subscribedSourceIds || [] : [];
+      if (subscribedIds.length === 0) {
+        setSubscribedSources([]);
+        return;
+      }
+      const snap = await getDocs(collection(db, 'globalSources'));
+      const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      setSubscribedSources(
+        all
+          .filter(s => subscribedIds.includes(s.id))
+          .map(s => ({ id: s.id, name: s.name, type: s.type, pricingTier: s.pricingTier || 'free' }))
+      );
     } catch (err) {
       console.error('Failed to load sources:', err);
     } finally {
@@ -158,64 +78,20 @@ export default function Settings() {
     }
   };
 
-  const updateProvider = (provider: AiProvider, updates: Partial<ProviderStatus>) => {
-    setProviderState(prev => ({ ...prev, [provider]: { ...prev[provider], ...updates } }));
-  };
-
-  const handleSaveApiKey = async (provider: AiProvider) => {
-    const state = providerState[provider];
+  const handleSaveNotifications = async () => {
     if (!companyId) return;
-
-    // API 키 입력이 있어야 저장 (baseUrl/model은 항상 같이 저장됨)
-    if (!state.apiKeyInput.trim() && !state.hasKey) return;
-
-    updateProvider(provider, { saving: true, testResult: null });
+    setSavingNotifications(true);
     try {
-      const saveFn = httpsCallable(functions, 'saveAiApiKey');
-      await saveFn({
+      await httpsCallable(functions, 'updateNotificationSettings')({
         companyId,
-        provider,
-        apiKey: state.apiKeyInput.trim() || null,
-        baseUrl: state.baseUrlInput.trim() || null,
-        model: state.selectedModel
+        emails: subscriberEmails,
+        telegram: telegramConfig,
       });
-
-      updateProvider(provider, { saving: false, hasKey: true, apiKeyInput: '', showKey: false });
+      alert('알림 설정이 저장되었습니다.');
     } catch (err: any) {
-      updateProvider(provider, { saving: false, testResult: { success: false, message: err.message } });
-    }
-  };
-
-  const handleTestConnection = async (provider: AiProvider) => {
-    if (!companyId) return;
-    updateProvider(provider, { testing: true, testResult: null });
-    try {
-      const testFn = httpsCallable(functions, 'testAiConnection');
-      const result = await testFn({ 
-        companyId, 
-        provider, 
-        model: providerState[provider].selectedModel,
-        baseUrl: providerState[provider].baseUrlInput.trim() || null // ★ Pass for test
-      }) as any;
-      updateProvider(provider, { testing: false, testResult: result.data });
-    } catch (err: any) {
-      updateProvider(provider, { testing: false, testResult: { success: false, message: err.message } });
-    }
-  };
-
-  const handleSaveSubscribers = async () => {
-    if (!companyId) return;
-    setSavingSubscribers(true);
-    try {
-      await setDoc(
-        doc(db, 'companySettings', companyId),
-        { subscriberEmails },
-        { merge: true }
-      );
-    } catch (err: any) {
-      alert('Failed to save: ' + err.message);
+      alert('저장 실패: ' + err.message);
     } finally {
-      setSavingSubscribers(false);
+      setSavingNotifications(false);
     }
   };
 
@@ -224,12 +100,10 @@ export default function Settings() {
     setSavingPrompt(true);
     try {
       const ref = doc(db, 'companySettings', companyId);
-      // updateDoc + dot notation: ai.relevancePrompt만 업데이트 (provider/model 보존)
       try {
         await updateDoc(ref, { 'ai.relevancePrompt': relevancePrompt });
       } catch (e: any) {
         if (e.code === 'not-found') {
-          // 문서가 없으면 새로 생성
           await setDoc(ref, { ai: { relevancePrompt } }, { merge: true });
         } else {
           throw e;
@@ -240,15 +114,6 @@ export default function Settings() {
       alert('저장 실패: ' + err.message);
     } finally {
       setSavingPrompt(false);
-    }
-  };
-
-  const toggleSourceActive = async (id: string, currentStatus: boolean) => {
-    try {
-      await updateDoc(doc(db, 'sources', id), { active: !currentStatus });
-      setSources(prev => prev.map(s => s.id === id ? { ...s, active: !currentStatus } : s));
-    } catch (err) {
-      console.error('Failed to toggle source:', err);
     }
   };
 
@@ -271,13 +136,11 @@ export default function Settings() {
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
-        <p className="text-gray-600 dark:text-gray-400 mt-1">
-          Manage AI providers, news sources, and email subscribers for your company.
-        </p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">설정</h1>
+        <p className="text-gray-600 dark:text-gray-400 mt-1">AI 판단 기준, 매체 구독, 알림 수신자를 관리합니다.</p>
       </div>
 
-      {/* ─── AI Relevance Sensitivity ─── */}
+      {/* ─── AI 기사 적합성 판단 기준 ─── */}
       <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
         <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2">
           <RefreshCw className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
@@ -285,17 +148,15 @@ export default function Settings() {
         </div>
         <div className="p-6 space-y-4">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            AI가 수집된 기사를 분석 리포트에 포함시킬지 결정하는 '판단 기준'을 직접 수정할 수 있습니다. 
+            AI가 수집된 기사를 분석 리포트에 포함시킬지 결정하는 '판단 기준'을 직접 수정할 수 있습니다.
             내용이 구체적일수록 원하는 기사만 정확하게 골라낼 수 있습니다.
           </p>
-          <div>
-            <textarea
-              value={relevancePrompt}
-              onChange={(e) => setRelevancePrompt(e.target.value)}
-              placeholder="예: 당신은 전문 투자 분석가입니다. 제시된 기사 제목과 본문을 읽고, 해당 기사가 '기업 인수합병(M&A)', '스타트업 투자', 'IPO'와 직접적인 관련이 있는지 판단하세요. 단순한 인물 동정이나 광고성 기사는 제외하세요."
-              className="w-full h-32 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-900/50 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] resize-none"
-            />
-          </div>
+          <textarea
+            value={relevancePrompt}
+            onChange={e => setRelevancePrompt(e.target.value)}
+            placeholder="예: 당신은 전문 투자 분석가입니다. 기사가 'M&A', '스타트업 투자', 'IPO'와 직접 관련 있는지 판단하세요. 단순 인물 동정이나 광고성 기사는 제외하세요."
+            className="w-full h-32 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-900/50 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] resize-none"
+          />
           <div className="flex justify-end">
             <button
               onClick={handleSaveRelevancePrompt}
@@ -309,345 +170,158 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* ─── AI Provider Management ─── */}
-      <section className="space-y-4">
-        <div className="flex items-center gap-2 mb-2">
-          <Key className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">AI Provider API Keys</h2>
-        </div>
-        <p className="text-sm text-gray-500 dark:text-gray-400 -mt-2">
-          API keys are stored securely on the server. Once saved, the key value is not shown again. Click "Test" to verify connectivity.
-        </p>
-
-        {(Object.keys(PROVIDERS) as AiProvider[]).map(provider => {
-          const info = PROVIDERS[provider];
-          const state = providerState[provider];
-          return (
-            <div key={provider} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-              {/* Header */}
-              <button
-                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-                onClick={() => updateProvider(provider, { expanded: !state.expanded })}
-              >
-                <div className="flex items-center gap-3">
-                  <span
-                    className="w-3 h-3 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: info.color }}
-                  />
-                  <span className="font-semibold text-gray-900 dark:text-white">{info.label}</span>
-                  {state.hasKey && (
-                    <span className="flex items-center text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-0.5 rounded-full">
-                      <CheckCircle2 className="w-3 h-3 mr-1" />Key saved
-                    </span>
-                  )}
-                  {!state.hasKey && (
-                    <span className="text-xs text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full">
-                      Not configured
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  {/* Test button (quick access) */}
-                  {state.hasKey && (
-                    <button
-                      onClick={e => { e.stopPropagation(); handleTestConnection(provider); }}
-                      disabled={state.testing}
-                      className="flex items-center px-3 py-1.5 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
-                    >
-                      {state.testing
-                        ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Testing...</>
-                        : <><RefreshCw className="w-3 h-3 mr-1" />Test</>
-                      }
-                    </button>
-                  )}
-                  {state.expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-                </div>
-              </button>
-
-              {/* Test result banner */}
-              {state.testResult && (
-                <div className={`px-6 py-2 text-sm flex items-center gap-2 ${
-                  state.testResult.success
-                    ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                }`}>
-                  {state.testResult.success
-                    ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                    : <XCircle className="w-4 h-4 flex-shrink-0" />}
-                  {state.testResult.message}
-                  {state.testResult.latencyMs && (
-                    <span className="ml-auto text-xs opacity-70">{state.testResult.latencyMs}ms</span>
-                  )}
-                </div>
-              )}
-
-              {/* Expanded body */}
-              {state.expanded && (
-                <div className="px-6 pb-6 pt-2 space-y-4 border-t border-gray-100 dark:border-gray-700">
-                  {/* Model selection */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                        Model Name
-                      </label>
-                      <div className="flex gap-2">
-                        <select
-                          value={info.models.includes(state.selectedModel) ? state.selectedModel : 'custom'}
-                          onChange={e => {
-                            if (e.target.value === 'custom') {
-                              // keep current for editing
-                            } else {
-                              updateProvider(provider, { selectedModel: e.target.value });
-                            }
-                          }}
-                          disabled={!canEdit}
-                          className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                        >
-                          {info.models.map(m => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                          <option value="custom">Other (Manual Input)</option>
-                        </select>
-                        {(!info.models.includes(state.selectedModel) || state.selectedModel === 'custom') && (
-                          <input
-                            type="text"
-                            value={state.selectedModel === 'custom' ? '' : state.selectedModel}
-                            onChange={e => updateProvider(provider, { selectedModel: e.target.value })}
-                            placeholder="e.g. glm-4.7"
-                            className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                          />
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                        API Endpoint (Select or Custom)
-                      </label>
-                      <div className="space-y-2">
-                        {info.label === 'Zhipu GLM' && (
-                          <div className="flex flex-wrap gap-2 mb-2">
-                            {[
-                              { label: 'GLM v4 API', url: 'https://api.z.ai/api/paas/v4' },
-                              { label: 'Coding Plan', url: 'https://api.z.ai/api/coding/paas/v4' },
-                            ].map(opt => (
-                              <button
-                                key={opt.url}
-                                onClick={() => updateProvider(provider, { baseUrlInput: opt.url })}
-                                className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
-                                  state.baseUrlInput.includes(opt.url)
-                                    ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                                    : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50'
-                                }`}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        <input
-                          type="text"
-                          value={state.baseUrlInput}
-                          onChange={e => updateProvider(provider, { baseUrlInput: e.target.value })}
-                          placeholder={info.label === 'Zhipu GLM' ? 'Enter endpoint URL' : 'Default endpoint'}
-                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-gray-400">
-                    Get API key at <a href={info.docsUrl} target="_blank" rel="noreferrer" className="text-[#1e3a5f] dark:text-blue-400 hover:underline">{info.docsUrl}</a>
-                  </p>
-
-                  {/* API Key input */}
-                  {canEdit && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {state.hasKey ? 'Replace API Key' : 'API Key'}
-                      </label>
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <input
-                            type={state.showKey ? 'text' : 'password'}
-                            value={state.apiKeyInput}
-                            onChange={e => updateProvider(provider, { apiKeyInput: e.target.value })}
-                            placeholder={info.placeholder}
-                            className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => updateProvider(provider, { showKey: !state.showKey })}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                          >
-                            {state.showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => handleSaveApiKey(provider)}
-                          disabled={state.saving || (!state.apiKeyInput.trim() && !state.hasKey)}
-                          className="flex items-center px-4 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50 whitespace-nowrap"
-                        >
-                          {state.saving ? <Loader2 className="w-4 h-4 animate-spin" /> : (state.hasKey ? '설정 저장' : 'API 키 저장')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Test button (in expanded view) */}
-                  <button
-                    onClick={() => handleTestConnection(provider)}
-                    disabled={state.testing || !state.hasKey}
-                    className="flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-40"
-                  >
-                    {state.testing
-                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Testing Connection...</>
-                      : <><RefreshCw className="w-4 h-4 mr-2" />Test Connection</>
-                    }
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </section>
-
-      {/* ─── Email Subscribers ─── */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Mail className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Email Subscribers</h2>
-          </div>
-          <button
-            onClick={handleSaveSubscribers}
-            disabled={savingSubscribers || !canEdit}
-            className="flex items-center px-4 py-1.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
-          >
-            {savingSubscribers ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
-            Save
-          </button>
-        </div>
-        <div className="p-6 space-y-3">
-          {subscriberEmails.map((email, idx) => (
-            <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-              <span className="text-sm text-gray-800 dark:text-gray-200">{email}</span>
-              {canEdit && (
-                <button
-                  onClick={() => setSubscriberEmails(prev => prev.filter((_, i) => i !== idx))}
-                  className="text-gray-400 hover:text-red-500 transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          ))}
-          {canEdit && (
-            <form
-              onSubmit={e => {
-                e.preventDefault();
-                if (newEmail.trim() && !subscriberEmails.includes(newEmail.trim())) {
-                  setSubscriberEmails(prev => [...prev, newEmail.trim()]);
-                  setNewEmail('');
-                }
-              }}
-              className="flex gap-2"
-            >
-              <input
-                type="email"
-                value={newEmail}
-                onChange={e => setNewEmail(e.target.value)}
-                placeholder="Add subscriber email..."
-                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-              />
-              <button
-                type="submit"
-                className="flex items-center px-3 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg text-sm hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-              >
-                <Plus className="w-4 h-4 mr-1" />Add
-              </button>
-            </form>
-          )}
-          {subscriberEmails.length === 0 && (
-            <p className="text-sm text-gray-400 text-center py-2">No subscribers configured.</p>
-          )}
-        </div>
-      </section>
-
-      {/* ─── News Source Management ─── */}
+      {/* ─── 구독 매체 ─── */}
       <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Database className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">News Sources</h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">구독 매체</h2>
+            {!sourcesLoading && (
+              <span className="text-xs bg-[#1e3a5f] text-white px-2.5 py-1 rounded-full">{subscribedSources.length}개</span>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs bg-[#1e3a5f] text-white px-2.5 py-1 rounded-full">{sources.length} sources</span>
-            <button
-              onClick={loadSources}
-              disabled={sourcesLoading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-            >
+            <button onClick={loadSources} disabled={sourcesLoading} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
               <RefreshCw className={`w-4 h-4 ${sourcesLoading ? 'animate-spin' : ''}`} />
             </button>
+            <Link
+              to="/media"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1e3a5f] hover:bg-[#2a4a73] text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              매체 구독 관리
+            </Link>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          {sources.length === 0 ? (
-            <div className="px-6 py-8 text-center text-gray-400 text-sm">
-              No sources configured for this company.
+        <div className="p-6">
+          {sourcesLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+            </div>
+          ) : subscribedSources.length === 0 ? (
+            <div className="text-center py-8 text-gray-400 text-sm">
+              <p>구독 중인 매체가 없습니다.</p>
+              <Link to="/media" className="mt-2 inline-flex items-center gap-1 text-[#1e3a5f] dark:text-blue-400 hover:underline font-medium">
+                매체 구독 선택하러 가기 <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
             </div>
           ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600">
-                <tr>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Source</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">URL / Note</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Last Run</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400 text-right">Active</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {sources.map(source => (
-                  <tr key={source.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                    <td className="px-6 py-4 font-medium text-gray-900 dark:text-white">{source.name}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                        source.type === 'rss' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
-                        source.type === 'puppeteer' ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300' :
-                        'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
-                      }`}>
-                        {(source.type || '').toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400 max-w-xs truncate" title={source.note || source.url}>
-                      {source.note || source.url}
-                    </td>
-                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400 text-xs">
-                      {source.lastScrapedAt?.toDate
-                        ? source.lastScrapedAt.toDate().toLocaleString('ko-KR')
-                        : 'Never'}
-                      {source.lastStatus === 'error' && (
-                        <span className="ml-1 text-red-500">⚠</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="sr-only peer"
-                          checked={!!source.active}
-                          disabled={!canEdit}
-                          onChange={() => toggleSourceActive(source.id, source.active)}
-                        />
-                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-[#d4af37]" />
-                      </label>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="flex flex-wrap gap-2">
+              {subscribedSources.map(s => (
+                <span
+                  key={s.id}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border ${
+                    s.pricingTier === 'paid'
+                      ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
+                      : s.pricingTier === 'requires_subscription'
+                      ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'
+                      : 'bg-gray-100 dark:bg-gray-700 border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  {s.name}
+                  {s.pricingTier === 'paid' && <span className="text-[10px] font-bold bg-red-500 text-white px-1 rounded">유료</span>}
+                  {s.pricingTier === 'requires_subscription' && <span className="text-[10px] font-bold bg-amber-500 text-white px-1 rounded">구독</span>}
+                </span>
+              ))}
+            </div>
           )}
+        </div>
+      </section>
+
+      {/* ─── 알림 설정 ─── */}
+      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">보고서 알림 설정</h2>
+          </div>
+          <button
+            onClick={handleSaveNotifications}
+            disabled={savingNotifications || !canEdit}
+            className="flex items-center px-4 py-1.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
+          >
+            {savingNotifications ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <CheckCircle2 className="w-3 h-3 mr-1" />}
+            설정 저장
+          </button>
+        </div>
+
+        <div className="p-6 space-y-8">
+          {/* 이메일 */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider">이메일 수신인</h3>
+            <div className="space-y-3">
+              {subscriberEmails.map((email, idx) => (
+                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <span className="text-sm text-gray-800 dark:text-gray-200 font-medium">{email}</span>
+                  {canEdit && (
+                    <button
+                      onClick={() => setSubscriberEmails(prev => prev.filter((_, i) => i !== idx))}
+                      className="text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            {canEdit && (
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={e => setNewEmail(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && newEmail.trim()) {
+                      setSubscriberEmails(prev => [...prev, newEmail.trim()]);
+                      setNewEmail('');
+                    }
+                  }}
+                  placeholder="이메일 주소 추가..."
+                  className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
+                />
+                <button
+                  onClick={() => {
+                    if (newEmail.trim()) {
+                      setSubscriberEmails(prev => [...prev, newEmail.trim()]);
+                      setNewEmail('');
+                    }
+                  }}
+                  className="px-3 py-2 bg-[#1e3a5f] text-white rounded-lg hover:bg-[#2a4a73] transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Telegram */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider">텔레그램 알림</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase">Bot Token</label>
+                <input
+                  type="password"
+                  value={telegramConfig.botToken || ''}
+                  onChange={e => setTelegramConfig(prev => ({ ...prev, botToken: e.target.value }))}
+                  placeholder="1234567890:AAF..."
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
+                  disabled={!canEdit}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase">Channel/Chat ID</label>
+                <input
+                  type="text"
+                  value={telegramConfig.chatId || ''}
+                  onChange={e => setTelegramConfig(prev => ({ ...prev, chatId: e.target.value }))}
+                  placeholder="@your_channel_id or -100123456789"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
+                  disabled={!canEdit}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </div>

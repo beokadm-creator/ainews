@@ -1,8 +1,9 @@
 import Parser from 'rss-parser';
 import * as admin from 'firebase-admin';
+import axios from 'axios';
 import { isDuplicateArticle, hashUrl } from './duplicateService';
 import { sendErrorNotificationToAdmin } from './telegramService';
-import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
+import { cleanHtmlContent, decodeBuffer } from '../utils/encodingUtils';
 import { matchesRuntimeFilters } from '../utils/textUtils';
 import { RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
@@ -63,38 +64,36 @@ function preprocessXml(xml: string): string {
  * 한국 뉴스 RSS 피드의 비표준 XML 엔티티 문제를 처리합니다.
  */
 export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
+  // Always fetch with axios to control encoding at byte level
+  // This correctly handles EUC-KR feeds (연합뉴스 등) that report wrong charset
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    timeout: REQUEST_TIMEOUT_MS,
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+    },
+  });
+
+  const buffer = Buffer.from(response.data);
+  const contentType = response.headers['content-type'] || '';
+
+  // XML encoding declaration is the most reliable source for RSS/XML files
+  // e.g. <?xml version="1.0" encoding="EUC-KR"?>
+  const xmlAscii = buffer.slice(0, 400).toString('ascii');
+  const encDeclMatch = xmlAscii.match(/encoding=["']([^"']+)/i);
+  const declaredEnc = encDeclMatch ? encDeclMatch[1].toLowerCase() : '';
+
+  const rawXml = decodeBuffer(buffer, declaredEnc || undefined, contentType);
+  const fixedXml = preprocessXml(rawXml);
+
   let feed: any;
-
   try {
-    // 1차 시도: 일반 파싱
-    feed = await parser.parseURL(url);
-  } catch (firstError: any) {
-    // 2차 시도: 수동 fetch + XML 전처리 후 재파싱
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-      const response = await fetch(url, {
-        signal: controller.signal as any,
-        headers: {
-          'User-Agent': USER_AGENT,
-          'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const rawXml = await response.text();
-      const fixedXml = preprocessXml(rawXml);
-      feed = await parser.parseString(fixedXml);
-      console.log(`RSS fallback parsing succeeded for ${url}`);
-    } catch (secondError: any) {
-      throw new Error(`RSS parse failed [${firstError.message}] | Fallback: [${secondError.message}]`);
-    }
+    feed = await parser.parseString(fixedXml);
+  } catch (err: any) {
+    console.error(`RSS parse failed for ${url}: ${err.message}`);
+    throw new Error(`RSS parse failed for ${url}: ${err.message}`);
   }
 
   if (!feed?.items) return [];
@@ -102,19 +101,28 @@ export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
   const articles: ParsedArticle[] = [];
 
   for (const item of feed.items) {
-    const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
     if (!item.title || !item.link) continue;
+    const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
+
+    // Clean title: strip any HTML tags and decode entities
+    let title = item.title ? item.title.trim() : '';
+
+    // Skip articles with severely corrupted titles (detect broken UTF-8)
+    // Patterns: too many consecutive mojibake characters (U+FFFD, control chars, etc.)
+    if (title.match(/[\uFFFD\u0080-\u009F]{3,}/)) {
+      console.warn(`Skipping article with corrupted title: "${title.substring(0, 50)}"`);
+      continue;
+    }
+
+    title = cleanHtmlContent(title);
+
+    // Skip if title is empty after cleaning or too short
+    if (!title || title.length < 3) continue;
 
     let content = item.contentEncoded || item.description || item.content || '';
-    content = fixEncodingIssues(content);
     content = cleanHtmlContent(content);
 
-    articles.push({
-      title: fixEncodingIssues(item.title || ''),
-      url: item.link,
-      content,
-      publishedAt: pubDate
-    });
+    articles.push({ title, url: item.link, content, publishedAt: pubDate });
   }
 
   return articles;

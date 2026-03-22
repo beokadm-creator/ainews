@@ -9,7 +9,7 @@ import {
   cleanNoise,
   matchesRuntimeFilters
 } from '../utils/textUtils';
-import { fixEncodingIssues } from '../utils/encodingUtils';
+import { fixEncodingIssues, decodeBuffer } from '../utils/encodingUtils';
 import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
@@ -101,13 +101,13 @@ export async function enrichArticles(articles: ScrapedArticle[]): Promise<Scrape
 
       try {
         const articleResponse = await axios.get(article.url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0'
-          },
-          timeout: 10000
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          timeout: 10000,
+          responseType: 'arraybuffer'
         });
 
-        const fullContent = extractTextFromHtml(articleResponse.data);
+        const html = decodeBuffer(articleResponse.data, undefined, articleResponse.headers['content-type']);
+        const fullContent = extractTextFromHtml(html);
         const cleanedContent = cleanNoise(fullContent);
 
         if (isContentSufficient(cleanedContent, 50)) {
@@ -132,10 +132,12 @@ export async function scrapeWebsiteDynamic(url: string, source: DynamicSourceCon
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
       'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
     },
-    timeout: 10000
+    timeout: 10000,
+    responseType: 'arraybuffer'
   });
 
-  const $ = cheerio.load(response.data);
+  const html = decodeBuffer(response.data, undefined, response.headers['content-type']);
+  const $ = cheerio.load(html);
   const articles: ScrapedArticle[] = [];
   const listContainer = source.listSelector
     ? $(source.listSelector)
@@ -184,11 +186,13 @@ export async function scrapeWebsite(url: string, sourceId: string): Promise<Scra
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
       'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
     },
-    timeout: 10000
+    timeout: 10000,
+    responseType: 'arraybuffer'
   });
 
+  const html = decodeBuffer(response.data, undefined, response.headers['content-type']);
   const scraper = scraperMap[sourceId] || scraperMap.default;
-  const articles = scraper(response.data, url);
+  const articles = scraper(html, url);
   return enrichArticles(articles);
 }
 

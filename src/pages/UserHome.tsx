@@ -141,7 +141,7 @@ function QuickAction({ icon: Icon, title, desc, to, color }: {
 // ─── Main ─────────────────────────────────────────────────
 export default function UserHome() {
   const { user } = useAuthStore();
-  const companyId = (user as any)?.companyId;
+  const companyId = (user as any)?.primaryCompanyId;
   const [recentArticles, setRecentArticles] = useState<RecentArticle[]>([]);
   const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
   const [loadingArticles, setLoadingArticles] = useState(true);

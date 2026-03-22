@@ -308,26 +308,22 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const systemPrompt = `당신은 국내 최고 수준의 투자·산업 분석 전문가입니다.
 제공된 기사들을 바탕으로 전문적인 분석 보고서를 HTML 형식으로 작성하세요.
 
-보고서 작성 규칙:
-- 반드시 완전한 HTML 구조로 작성 (<!DOCTYPE html>부터 </html>까지)
-- 보고서 내용은 100% 한국어로 작성
-- 기업명, 고유명사는 영문 병기 가능 (예: 삼성전자(Samsung Electronics))
-- 각 주요 주장/분석에는 반드시 근거 기사를 각주로 표시: <sup><a class="footnote-ref" data-ref="N">[N]</a></sup>
-- 각주 번호는 기사 번호와 일치 (기사 1 → [1], 기사 2 → [2])
-- 마지막 섹션은 반드시 참고 기사 원문 전체를 포함
+[분석 및 정제 원칙]
+1. 원문 정제: 기사 원문에 포함된 '좋아요', '댓글', '공유하기', '글자크기 조절', '로그인' 등 기사 내용과 관련 없는 사이트 UI 텍스트는 분석에서 반드시 무시하고 제거하세요.
+2. 언어: 모든 분석 내용(제목, 본문, 요약, 트렌드 등)은 반드시 자연스러운 한국어로 작성하세요.
+3. 통찰력: 단순한 기사 요약을 넘어, 각 이슈가 향후 시장이나 관련 기업에 미칠 영향(So-what)을 전문적으로 분석하세요.
+4. 각주 표시: 분석 근거가 되는 기사는 반드시 <sup><a class="footnote-ref" data-ref="N">[N]</a></sup> 형식으로 표시하세요. (N은 기사 번호)
+5. 구조: <!DOCTYPE html>부터 </html>까지 완전한 HTML 구조를 유지하되, 세련된 투자 인텔리전스 보고서 형식을 갖추세요.
 
-보고서 HTML 구조:
+보고서 HTML 권장 구조:
 <article class="report-content">
-  <header class="report-header">...</header>
-  <section class="section-summary"><h2>핵심 요약</h2>...</section>
-  <section class="section-highlights"><h2>주요 이슈</h2>...</section>
-  <section class="section-trends"><h2>시장 동향 분석</h2>...</section>
-  <section class="section-risks"><h2>리스크 & 기회요인</h2>...</section>
-  <section class="section-outlook"><h2>향후 전망</h2>...</section>
-  <section class="section-references">
-    <h2>참고 기사 원문</h2>
-    <div id="ref-N" class="reference-item">...</div>
-  </section>
+  <header class="report-header"><h1>[주제] 분석 보고서</h1></header>
+  <section class="section-summary"><h2>핵심 요약</h2><p>전문가적인 요약 세 문장 내외</p></section>
+  <section class="section-highlights"><h2>주요 이슈 및 딜 분석</h2><!-- 카드 형태의 구조화된 분석 --></section>
+  <section class="section-trends"><h2>시장 동향 및 거시적 시사점</h2></section>
+  <section class="section-risks"><h2>리스크 & 기회요인</h2></section>
+  <section class="section-outlook"><h2>향후 전망 및 전략적 제언</h2></section>
+  <section class="section-references"><h2>참고 자료</h2><!-- 각 기사 출처 및 링크 명시 --></section>
 </article>`;
 
   const userPrompt = `${keywordsText}

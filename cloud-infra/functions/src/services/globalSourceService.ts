@@ -701,7 +701,47 @@ async function testScrapingSource(source: GlobalSource, startMs: number) {
   };
 }
 
-async function testApiSource(source: GlobalSource, startMs: number) {
+async function testApiSource(source: GlobalSource & { apiType?: string }, startMs: number) {
+  const NAVER_ENDPOINT = 'https://openapi.naver.com/v1/search/news.json';
+
+  // ── 네이버 뉴스 API 테스트 ──────────────────────────────
+  if ((source as any).apiType === 'naver') {
+    const db = admin.firestore();
+    const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
+    const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+    if (!cfg.clientId || !cfg.clientSecret) {
+      return {
+        success: false,
+        message: '네이버 API 자격증명 미설정 — 슈퍼어드민 > AI 설정 > 네이버 탭에서 저장하세요.',
+        latencyMs: Date.now() - startMs,
+      };
+    }
+    const kw = (source.defaultKeywords || ['M&A'])[0];
+    const resp = await axios.get(NAVER_ENDPOINT, {
+      headers: {
+        'X-Naver-Client-Id': cfg.clientId,
+        'X-Naver-Client-Secret': cfg.clientSecret,
+      },
+      params: { query: kw, display: 5, start: 1, sort: 'date' },
+      timeout: 10000,
+    });
+    const latencyMs = Date.now() - startMs;
+    const items = resp.data?.items || [];
+    const sampleTitles = items.slice(0, 3).map((i: any) =>
+      (i.title || '').replace(/<\/?b>/gi, '').replace(/&[a-z]+;/gi, ' ').trim()
+    );
+    return {
+      success: items.length > 0,
+      message: items.length > 0
+        ? `OK — 키워드 "${kw}" 검색 결과 ${items.length}건`
+        : '검색 결과 없음',
+      articlesFound: items.length,
+      latencyMs,
+      sampleTitles,
+    };
+  }
+
+  // ── 일반 API 엔드포인트 테스트 ──────────────────────────
   if (!source.apiEndpoint) {
     return { success: false, message: 'No API endpoint configured' };
   }

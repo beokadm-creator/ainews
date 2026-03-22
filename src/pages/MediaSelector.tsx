@@ -124,10 +124,10 @@ export default function MediaSelector() {
   };
 
   const filtered = allSources.filter(s => {
-    // 1. Inactive는 이미 선택한 구독 목록에 있는 것만 노출
-    if (s.status === 'inactive' && !selectedIds.has(s.id)) return false;
+    // 1. 슈퍼어드민이 활성화(active)한 매체만 노출
+    if (s.status !== 'active') return false;
 
-    // 2. 유료(paid, requires_subscription) 매체의 경우 승인된 회사(allowedCompanyIds에 포함)이거나 Superadmin일 때만 노출
+    // 2. 유료(paid, requires_subscription) 매체는 allowedCompanyIds에 포함된 회사 또는 Superadmin만 노출
     const isPremium = s.pricingTier === 'paid' || s.pricingTier === 'requires_subscription';
     if (isPremium && !isSuperadmin) {
       if (!s.allowedCompanyIds || !s.allowedCompanyIds.includes(companyId)) {
@@ -145,10 +145,11 @@ export default function MediaSelector() {
 
   // Group by category
   const groups: Record<string, GlobalSource[]> = {};
-  const categoryOrder = ['tech', 'startup', 'domestic', 'asian', 'global', 'other'];
+  const categoryOrder = ['tech', 'startup', 'M&A', 'domestic', 'asian', 'global', 'other'];
   const categoryLabel: Record<string, string> = {
     tech: '💻 테크 매체',
     startup: '🚀 스타트업/PE·VC',
+    'M&A': '📊 M&A / 유료 매체',
     domestic: '🇰🇷 국내 매체',
     asian: '🌏 아시아 매체',
     global: '🌐 글로벌 매체',
@@ -218,6 +219,7 @@ export default function MediaSelector() {
           <option value="global">글로벌</option>
           <option value="tech">테크</option>
           <option value="startup">스타트업/PE·VC</option>
+          <option value="M&A">M&A / 유료</option>
         </select>
         <select
           value={filterType}
