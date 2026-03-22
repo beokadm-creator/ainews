@@ -163,12 +163,16 @@ export class ThebellService {
     }
   }
 
-  // ─── 마이페이지 키워드 뉴스 (모든 페이지) ───────────────────────────
-  async scrapeKeywordNews(maxPages: number = 50): Promise<ScrapingResult> {
+  // ─── 마이페이지 키워드 뉴스 (최근 30일만 수집) ───────────────────────────
+  async scrapeKeywordNews(maxPages: number = 10): Promise<ScrapingResult> {
     if (!this.browser) await this.init();
 
     const allArticles: any[] = [];
     const seen = new Set<string>();
+
+    // 최근 30일 필터링
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
     try {
       const savedCookies = this.loadCookies();
@@ -194,7 +198,7 @@ export class ThebellService {
         return { success: false, error: 'Not logged in - please login to MyKeywordNews first' };
       }
 
-      // 모든 페이지 순회
+      // 모든 페이지 순회 (최대 maxPages)
       for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
         const page = await this.browser!.newPage();
         try {
@@ -237,15 +241,29 @@ export class ThebellService {
             break;
           }
 
-          // 중복 제거
+          // 날짜 필터링 + 중복 제거
+          let pageCount = 0;
           pageArticles.forEach((a: any) => {
             if (!seen.has(a.link)) {
-              seen.add(a.link);
-              allArticles.push(a);
+              try {
+                // 날짜 파싱 (예: "2026.03.21", "2026-03-21", "03.21" 등)
+                const dateStr = a.date.replace(/\./g, '-');
+                const articleDate = new Date(dateStr);
+
+                // 유효한 날짜이고 30일 내 데이터만 추가
+                if (!isNaN(articleDate.getTime()) && articleDate >= oneMonthAgo) {
+                  seen.add(a.link);
+                  allArticles.push(a);
+                  pageCount++;
+                }
+              } catch (e) {
+                // 날짜 파싱 실패 시 스킵
+                console.warn(`[Thebell] Failed to parse date: ${a.date}`);
+              }
             }
           });
 
-          console.log(`[Thebell] Page ${pageNum}: ${pageArticles.length} articles (${allArticles.length} total)`);
+          console.log(`[Thebell] Page ${pageNum}: ${pageCount} articles within last 30 days (${allArticles.length} total)`);
           await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000)); // 페이지 간 대기
         } catch (error: any) {
           console.warn(`[Thebell] Page ${pageNum} failed:`, error.message);
@@ -256,7 +274,7 @@ export class ThebellService {
         }
       }
 
-      console.log(`[Thebell] Total keyword news articles: ${allArticles.length}`);
+      console.log(`[Thebell] Total keyword news articles (last 30 days): ${allArticles.length}`);
       return { success: true, data: allArticles };
     } catch (error) {
       return {

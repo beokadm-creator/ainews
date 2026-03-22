@@ -13,6 +13,19 @@
     "sourceScheme": "Secure"
   },
   {
+    "name": "ASPSESSIONIDQWQSCADQ",
+    "value": "NPHDFBJDHPIAGABMJIKGCGOD",
+    "domain": "www.thebell.co.kr",
+    "path": "/",
+    "expires": -1,
+    "size": 44,
+    "httpOnly": false,
+    "secure": true,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
     "name": "ASPSESSIONIDSWRRCBCR",
     "value": "PIGOGFMCDIJDMJIEAJBDLJDI",
     "domain": "www.thebell.co.kr",
@@ -21,6 +34,19 @@
     "size": 44,
     "httpOnly": false,
     "secure": true,
+    "session": true,
+    "priority": "Medium",
+    "sourceScheme": "Secure"
+  },
+  {
+    "name": "preurl",
+    "value": "",
+    "domain": "www.thebell.co.kr",
+    "path": "/",
+    "expires": -1,
+    "size": 6,
+    "httpOnly": false,
+    "secure": false,
     "session": true,
     "priority": "Medium",
     "sourceScheme": "Secure"
