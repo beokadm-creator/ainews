@@ -25,6 +25,7 @@ import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFA
 import { saveApiKeyForCompany } from './utils/secretManager';
 import { seedGlobalSources, testGlobalSource } from './services/globalSourceService';
 admin.initializeApp();
+admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (필요 시 수동 실행 또는 별도 트리거로 이동 권장)
 // ensureCollectionsExist().catch(console.error);
 // seedPromptTemplates().catch(err => {
@@ -56,6 +57,34 @@ async function resolveRuntime(uid: string, companyId?: string, overrides?: Pipel
   const resolvedCompanyId = companyId || await getPrimaryCompanyId(uid);
   await assertCompanyAccess(uid, resolvedCompanyId);
   return getCompanyRuntimeConfig(resolvedCompanyId, overrides);
+}
+
+// superadmin용: systemSettings/aiConfig + systemSettings/promptConfig에서 AI 설정 로드
+async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; companyId: string }> {
+  const db = admin.firestore();
+  const [sysDoc, promptDoc] = await Promise.all([
+    db.collection('systemSettings').doc('aiConfig').get(),
+    db.collection('systemSettings').doc('promptConfig').get(),
+  ]);
+  const sysData = (sysDoc.data() || {}) as any;
+  const promptData = (promptDoc.data() || {}) as any;
+  const provider: AiProvider = sysData['ai.provider'] || sysData.ai?.provider || 'glm';
+  const defaults = PROVIDER_DEFAULTS[provider];
+  const aiConfig: RuntimeAiConfig = {
+    ...defaults,
+    provider,
+    model: sysData[`aiModels.${provider}`] || sysData.ai?.model || defaults.model,
+    baseUrl: sysData[`aiBaseUrls.${provider}`] || sysData.ai?.baseUrl || null,
+    maxPendingBatch: 20,
+    maxAnalysisBatch: 10,
+    // 슈퍼어드민이 커스텀 설정한 프롬프트가 있으면 사용, 없으면 코드 기본값
+    relevancePrompt: promptData.relevancePrompt || undefined,
+    analysisPrompt: promptData.analysisPrompt || undefined,
+  };
+  // 첫 번째 활성 회사를 fallback companyId로 사용
+  const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();
+  const companyId = companiesSnap.empty ? '__system__' : companiesSnap.docs[0].id;
+  return { aiConfig, companyId };
 }
 // ─────────────────────────────────────────
 // [NEW] Global Source Management (Superadmin)
@@ -335,56 +364,138 @@ export const deleteCompanyUser = onCall({ region: 'us-central1', cors: true, inv
 });
 
 // ─────────────────────────────────────────
+// [NEW] Save/Load AI Prompt Config (Superadmin)
+// ─────────────────────────────────────────
+export const savePromptConfig = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin required');
+  const { relevancePrompt, analysisPrompt } = request.data || {};
+  const db = admin.firestore();
+  const updates: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+  if (relevancePrompt !== undefined) updates.relevancePrompt = relevancePrompt || null;
+  if (analysisPrompt !== undefined) updates.analysisPrompt = analysisPrompt || null;
+  await db.collection('systemSettings').doc('promptConfig').set(updates, { merge: true });
+  return { success: true };
+});
+
+export const getPromptConfig = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin required');
+  const db = admin.firestore();
+  const doc = await db.collection('systemSettings').doc('promptConfig').get();
+  const data = doc.data() || {};
+  return {
+    relevancePrompt: data.relevancePrompt || null,
+    analysisPrompt: data.analysisPrompt || null,
+  };
+});
+
+// ─────────────────────────────────────────
 // [NEW] Save AI Provider API Key
 // ─────────────────────────────────────────
 export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Authentication required');
-  }
-  const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, setAsActive } = request.data || {};
-  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
-  const access = await assertCompanyAccess(request.auth.uid, companyId);
-  if (access.role !== 'superadmin' && access.role !== 'company_admin') {
-    throw new HttpsError('permission-denied', 'Company admin or superadmin required');
-  }
-  if (!provider || !['glm', 'gemini', 'openai', 'claude'].includes(provider)) {
-    throw new HttpsError('invalid-argument', 'Valid provider required: glm, gemini, openai, claude');
-  }
-  // 1. API Key 저장 (Secret Manager - 기존 로직 유지)
-  if (apiKey) {
-    if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
-      throw new HttpsError('invalid-argument', 'Valid API key is required');
+  try {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Authentication required');
     }
-    await saveApiKeyForCompany(companyId, provider as AiProvider, apiKey.trim());
-  }
-  // 2. Base URL 및 선택된 모델 저장 (Firestore companySettings에 저장)
-  const db = admin.firestore();
-  const updates: any = {};
-  if (baseUrl !== undefined) {
-    updates[`aiBaseUrls.${provider}`] = baseUrl;
-  }
-  if (model !== undefined) {
-    updates[`aiModels.${provider}`] = model;
-  }
-  // setAsActive이면 활성 프로바이더로 설정
-  if (setAsActive) {
-    updates['ai.provider'] = provider;
-    if (model) updates['ai.model'] = model;
-    if (baseUrl) updates['ai.baseUrl'] = baseUrl;
-  }
-  await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
-  // Superadmin: also save to global systemSettings as fallback for all companies
-  const userDoc = await db.collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role === 'superadmin') {
-    const sysUpdates = { ...updates };
-    // 시스템 레벨에서는 항상 활성화 (또는 선택적)
-    if (!sysUpdates['ai.provider']) sysUpdates['ai.provider'] = provider;
-    await db.collection('systemSettings').doc('aiConfig').set(sysUpdates, { merge: true });
+    console.log('saveAiApiKey: Starting with data:', { ...request.data, apiKey: request.data?.apiKey ? '***' : undefined });
+    const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, setAsActive } = request.data || {};
+
+    let companyId: string;
+    try {
+      companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+      console.log('saveAiApiKey: companyId resolved:', companyId);
+    } catch (err: any) {
+      console.error('saveAiApiKey: getPrimaryCompanyId failed:', err.message);
+      throw new HttpsError('invalid-argument', `Failed to get company ID: ${err.message}`);
+    }
+
+    let access: any;
+    try {
+      access = await assertCompanyAccess(request.auth.uid, companyId);
+      console.log('saveAiApiKey: access verified:', { role: access.role });
+    } catch (err: any) {
+      console.error('saveAiApiKey: assertCompanyAccess failed:', err.message);
+      throw new HttpsError('permission-denied', `Access denied: ${err.message}`);
+    }
+
+    if (access.role !== 'superadmin' && access.role !== 'company_admin') {
+      throw new HttpsError('permission-denied', 'Company admin or superadmin required');
+    }
+    if (!provider || !['glm', 'gemini', 'openai', 'claude'].includes(provider)) {
+      throw new HttpsError('invalid-argument', 'Valid provider required: glm, gemini, openai, claude');
+    }
+
+    // 1. API Key 저장
     if (apiKey) {
-      await saveApiKeyForCompany('__system__', provider as AiProvider, apiKey.trim());
+      if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
+        throw new HttpsError('invalid-argument', 'Valid API key is required');
+      }
+      console.log('saveAiApiKey: Saving API key for', provider, companyId);
+      try {
+        await saveApiKeyForCompany(companyId, provider as AiProvider, apiKey.trim());
+        console.log('saveAiApiKey: API key saved successfully');
+      } catch (keyErr: any) {
+        console.error('saveAiApiKey: API key save failed, continuing anyway:', keyErr.message);
+        // API 키 저장 실패해도 계속 진행 (나중에 환경 변수나 다른 곳에서 로드 가능)
+      }
     }
+
+    // 2. Base URL 및 선택된 모델 저장
+    const db = admin.firestore();
+    const updates: any = {};
+    if (baseUrl !== undefined) {
+      updates[`aiBaseUrls.${provider}`] = baseUrl;
+    }
+    if (model !== undefined) {
+      updates[`aiModels.${provider}`] = model;
+    }
+    // setAsActive이면 활성 프로바이더로 설정
+    if (setAsActive) {
+      updates['ai.provider'] = provider;
+      if (model) updates['ai.model'] = model;
+      if (baseUrl) updates['ai.baseUrl'] = baseUrl;
+    }
+    console.log('saveAiApiKey: Writing to companySettings:', { companyId, updates });
+    await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
+    console.log('saveAiApiKey: Wrote to companySettings successfully');
+
+    // Superadmin: also save to global systemSettings
+    const userDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (userDoc.data()?.role === 'superadmin') {
+      console.log('saveAiApiKey: User is superadmin, also saving to systemSettings');
+      const sysDocRef = db.collection('systemSettings').doc('aiConfig');
+      // update()는 dot-notation을 nested path로 해석 (set+merge는 literal 필드명으로 저장)
+      const sysUpdates: any = { ...updates };
+      if (!sysUpdates['ai.provider']) sysUpdates['ai.provider'] = provider;
+      if (apiKey) {
+        sysUpdates[`apiKeys.${provider}`] = apiKey.trim();
+      }
+      try {
+        await sysDocRef.update(sysUpdates);
+      } catch {
+        // document가 없으면 set으로 fallback (nested object 구조 사용)
+        const nested: any = {};
+        if (apiKey) nested.apiKeys = { [provider]: apiKey.trim() };
+        if (baseUrl !== undefined) { nested.aiBaseUrls = { [provider]: baseUrl }; }
+        if (model !== undefined) { nested.aiModels = { [provider]: model }; }
+        if (setAsActive) { nested.ai = { provider, model: model || undefined, baseUrl: baseUrl || undefined }; }
+        else { nested.ai = { provider }; }
+        await sysDocRef.set(nested, { merge: true });
+      }
+      console.log('saveAiApiKey: Superadmin updates complete');
+    }
+    console.log('saveAiApiKey: Success');
+    return { success: true, message: `Settings for ${provider} saved` };
+  } catch (err: any) {
+    console.error('saveAiApiKey: ERROR:', err.code, err.message, err.stack);
+    // HttpsError는 그대로 re-throw (Firebase가 올바르게 처리)
+    if (typeof err.code === 'string' && err.code.startsWith('functions/')) throw err;
+    // 일반 Error는 명시적으로 HttpsError로 변환
+    throw new HttpsError('internal', err.message || 'Unknown error');
   }
-  return { success: true, message: `Settings for ${provider} saved` };
 });
 /** 회사별 파이프라인 설정 (필터, 출력 등) 업데이트 */
 export const updateCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
@@ -440,27 +551,436 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
   if (!title) {
     throw new HttpsError('invalid-argument', 'Title is required');
   }
-  const articleContent = content || title; // content 없으면 title로 fallback
-  const runtime = await resolveRuntime(request.auth.uid, companyId);
+  const articleContent = content || title;
+
+  // superadmin은 companyId 없이도 systemSettings AI 설정으로 실행
+  let aiConfig: RuntimeAiConfig;
+  let resolvedCompanyId: string;
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const isSuperadmin = userDoc.data()?.role === 'superadmin';
+
+  if (isSuperadmin && !companyId) {
+    const sys = await getSystemAiConfig();
+    aiConfig = sys.aiConfig;
+    resolvedCompanyId = sys.companyId;
+  } else {
+    const runtime = await resolveRuntime(request.auth.uid, companyId);
+    aiConfig = runtime.ai;
+    resolvedCompanyId = runtime.companyId;
+  }
+
   const relevanceResult = await checkRelevance(
     { title, content: articleContent, source: source || 'manual' },
-    runtime.ai,
-    { companyId: runtime.companyId }
+    aiConfig,
+    { companyId: resolvedCompanyId }
   );
   const analysis = await analyzeArticle(
     { title, content: articleContent, source: source || 'manual', url: url || '', publishedAt: publishedAt || new Date().toISOString() },
-    runtime.ai,
-    { companyId: runtime.companyId }
+    aiConfig,
+    { companyId: resolvedCompanyId }
   );
   return {
     success: true,
-    companyId: runtime.companyId,
+    companyId: resolvedCompanyId,
     isRelevant: relevanceResult.isRelevant,
     confidence: relevanceResult.confidence,
     relevanceReason: relevanceResult.reason,
     analysis,
   };
 });
+// ─────────────────────────────────────────
+// Bulk AI Analysis (전체 기사 일괄 AI 분석)
+// ─────────────────────────────────────────
+/** Callable: 전체 기사 일괄 분석 시작 (fire-and-forget) */
+export const runBulkAiAnalysis = onCall({ region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+  const jobRef = admin.firestore().collection('bulkAiJobs').doc();
+  await jobRef.set({
+    id: jobRef.id,
+    status: 'pending',
+    triggeredBy: request.auth.uid,
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  const execUrl = `https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`;
+  fetch(execUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobId: jobRef.id }),
+  }).catch(err => console.error('Failed to trigger runBulkAiAnalysisHttp:', err));
+  return { success: true, jobId: jobRef.id };
+});
+
+// ── Pipeline abort checker ──
+async function isPipelineAborted(db: FirebaseFirestore.Firestore, type: 'pipeline' | 'aionly'): Promise<boolean> {
+  try {
+    const snap = await db.collection('systemSettings').doc('pipelineControl').get();
+    const data = snap.data() || {};
+    return type === 'pipeline' ? !data.pipelineEnabled : !data.aiOnlyEnabled;
+  } catch { return false; }
+}
+
+/** HTTP: 슈퍼어드민 전체 파이프라인 - 수집 → 분류 → 분석 → 보고서 (최대 60분) */
+export const runBulkAiAnalysisHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 3600, memory: '2GiB' },
+  async (req, res) => {
+    const { jobId } = req.body || {};
+    res.json({ accepted: true, jobId });
+
+    const db = admin.firestore();
+    const jobRef = jobId ? db.collection('bulkAiJobs').doc(jobId) : null;
+    const controlRef = db.collection('systemSettings').doc('pipelineControl');
+
+    const updateJob = async (data: any) => {
+      if (jobRef) await jobRef.update(data).catch(() => {});
+    };
+    const updateControl = async (data: any) => {
+      await controlRef.set(data, { merge: true }).catch(() => {});
+    };
+    // Abort checker that AI functions can call between batches
+    const abortChecker = () => isPipelineAborted(db, 'pipeline');
+
+    try {
+      // systemSettings에서 AI 설정 로드
+      const sys = await getSystemAiConfig();
+      const aiConfig = sys.aiConfig;
+      const companyId = sys.companyId;
+      console.log(`[Pipeline] Starting: provider=${aiConfig.provider}, model=${aiConfig.model}, companyId=${companyId}`);
+
+      // ── 회사별 런타임 설정 로드 (구독 소스 포함) ──
+      let runtimeFilters: any = { sourceIds: [] };
+      try {
+        const runtime = await getCompanyRuntimeConfig(companyId);
+        runtimeFilters = runtime.filters;
+        console.log(`[Pipeline] Company filters loaded: sourceIds=${(runtimeFilters.sourceIds || []).length}, dateRange=${runtimeFilters.dateRange}`);
+      } catch (err: any) {
+        console.warn(`[Pipeline] Could not load runtime config for ${companyId}: ${err.message}, using all active sources`);
+      }
+
+      // ── 1단계: 수집 ──
+      await updateJob({ status: 'running', currentStep: '1/3 수집 중...' });
+      await updateControl({ currentStep: '1/3 수집 중...' });
+      let totalCollected = 0;
+
+      // 구독된 소스가 있으면 구독 기반, 없으면 모든 active 소스 사용
+      const sourceFilter = (runtimeFilters.sourceIds && runtimeFilters.sourceIds.length > 0)
+        ? { filters: runtimeFilters, aiConfig }
+        : { filters: { sourceIds: (await db.collection('globalSources').where('status', '==', 'active').get()).docs.map(d => d.id) }, aiConfig };
+
+      const [rssResult, scrapingResult, apiResult] = await Promise.allSettled([
+        processRssSources(sourceFilter),
+        processScrapingSources(sourceFilter),
+        processApiSources(sourceFilter),
+      ]);
+      if (rssResult.status === 'fulfilled') totalCollected += (rssResult.value as any)?.totalCollected || 0;
+      if (scrapingResult.status === 'fulfilled') totalCollected += (scrapingResult.value as any)?.totalCollected || 0;
+      if (apiResult.status === 'fulfilled') totalCollected += (apiResult.value as any)?.totalCollected || 0;
+      if (rssResult.status === 'rejected') console.error('[Pipeline] RSS error:', (rssResult as any).reason?.message);
+      if (scrapingResult.status === 'rejected') console.error('[Pipeline] Scraping error:', (scrapingResult as any).reason?.message);
+      if (apiResult.status === 'rejected') console.error('[Pipeline] API error:', (apiResult as any).reason?.message);
+      console.log(`[Pipeline] Step 1 done: collected=${totalCollected}`);
+
+      // ── 중단 체크 ──
+      if (await abortChecker()) {
+        console.log('[Pipeline] Abort requested after collection step.');
+        await updateJob({ status: 'aborted', currentStep: null, completedAt: admin.firestore.FieldValue.serverTimestamp(), result: { totalCollected, totalFiltered: 0, totalAnalyzed: 0 } });
+        await updateControl({ pipelineRunning: false, currentStep: null });
+        return;
+      }
+
+      // ── 2단계: AI 관련성 분류 (전체 pending 기사) ──
+      await updateJob({ currentStep: '2/3 AI 관련성 분류 중...' });
+      await updateControl({ currentStep: '2/3 AI 관련성 분류 중...' });
+      const filterResult = await processRelevanceFiltering({ aiConfig, companyId, filters: runtimeFilters, abortChecker });
+      const totalFiltered = (filterResult as any).processed || 0;
+      console.log(`[Pipeline] Step 2 done: filtered=${totalFiltered}, passed=${(filterResult as any).passed || 0}`);
+
+      // ── 중단 체크 ──
+      if (await abortChecker()) {
+        console.log('[Pipeline] Abort requested after filter step.');
+        await updateJob({ status: 'aborted', currentStep: null, completedAt: admin.firestore.FieldValue.serverTimestamp(), result: { totalCollected, totalFiltered, totalAnalyzed: 0 } });
+        await updateControl({ pipelineRunning: false, currentStep: null });
+        return;
+      }
+
+      // ── 3단계: AI 심층 분석 + 요약 (전체 filtered 기사) ──
+      await updateJob({ currentStep: '3/3 AI 분석·요약 중...' });
+      await updateControl({ currentStep: '3/3 AI 분석·요약 중...' });
+      const analysisResult = await processDeepAnalysis({ aiConfig, companyId, abortChecker });
+      const totalAnalyzed = (analysisResult as any).processed || 0;
+      console.log(`[Pipeline] Step 3 done: analyzed=${totalAnalyzed}`);
+
+      await updateJob({
+        status: 'completed',
+        currentStep: null,
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        result: { totalCollected, totalFiltered, totalAnalyzed },
+      });
+    } catch (err: any) {
+      console.error('[Pipeline] Fatal error:', err.message, err.stack);
+      await updateJob({ status: 'failed', error: err.message });
+    } finally {
+      try {
+        await controlRef.set({ pipelineRunning: false, currentStep: null }, { merge: true });
+        const controlSnap = await controlRef.get();
+        if (controlSnap.data()?.pipelineEnabled) {
+          setTimeout(async () => {
+            try {
+              const newJobRef = db.collection('bulkAiJobs').doc();
+              await newJobRef.set({ id: newJobRef.id, status: 'pending', triggeredBy: 'auto', startedAt: admin.firestore.FieldValue.serverTimestamp() });
+              await controlRef.set({ pipelineRunning: true }, { merge: true });
+              fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jobId: newJobRef.id }),
+              }).catch(() => {});
+            } catch { await controlRef.set({ pipelineRunning: false }, { merge: true }); }
+          }, 10000);
+        }
+      } catch { /* non-critical */ }
+    }
+  }
+);
+
+/** Callable: 파이프라인 / AI전용 ON/OFF 제어 */
+export const setPipelineControl = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin only');
+
+  const { type, enabled } = request.data as { type: 'pipeline' | 'aionly' | 'stopall'; enabled: boolean };
+  const db = admin.firestore();
+  const controlRef = db.collection('systemSettings').doc('pipelineControl');
+
+  if (type === 'stopall') {
+    // 모든 파이프라인 강제 종료
+    await controlRef.set({
+      pipelineEnabled: false, pipelineRunning: false,
+      aiOnlyEnabled: false, aiOnlyRunning: false,
+      currentStep: null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    return { success: true, enabled: false };
+  } else if (type === 'pipeline') {
+    await controlRef.set({ pipelineEnabled: enabled, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    if (enabled) {
+      const snap = await controlRef.get();
+      if (!snap.data()?.pipelineRunning) {
+        const newJobRef = db.collection('bulkAiJobs').doc();
+        await newJobRef.set({ id: newJobRef.id, status: 'pending', triggeredBy: request.auth!.uid, startedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await controlRef.set({ pipelineRunning: true }, { merge: true });
+        fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: newJobRef.id }),
+        }).catch(() => {});
+      }
+    }
+  } else if (type === 'aionly') {
+    await controlRef.set({ aiOnlyEnabled: enabled, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    if (enabled) {
+      const snap = await controlRef.get();
+      if (!snap.data()?.aiOnlyRunning) {
+        await controlRef.set({ aiOnlyRunning: true }, { merge: true });
+        fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runAiOnlyHttp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        }).catch(() => {});
+      }
+    }
+  }
+  return { success: true, enabled };
+});
+
+/** HTTP: AI 전용 루프 - 관련성 분류 + 심층 분석 (반복 실행, 최대 60분) */
+export const runAiOnlyHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 3600, memory: '2GiB' },
+  async (req, res) => {
+    res.json({ accepted: true });
+    const db = admin.firestore();
+    const controlRef = db.collection('systemSettings').doc('pipelineControl');
+    const abortChecker = () => isPipelineAborted(db, 'aionly');
+    try {
+      await controlRef.set({ aiOnlyRunning: true }, { merge: true });
+      const sys = await getSystemAiConfig();
+      const aiConfig = sys.aiConfig;
+      const companyId = sys.companyId;
+      console.log(`[AI-Only] Starting: provider=${aiConfig.provider}, model=${aiConfig.model}, companyId=${companyId}`);
+
+      const filterResult = await processRelevanceFiltering({ aiConfig, companyId, abortChecker });
+      const totalFiltered = (filterResult as any).processed || 0;
+      console.log(`[AI-Only] Filter done: processed=${totalFiltered}, passed=${(filterResult as any).passed || 0}`);
+
+      if (await abortChecker()) {
+        console.log('[AI-Only] Abort requested after filter step.');
+        await controlRef.set({ aiOnlyRunning: false, aiOnlyLastResult: { totalFiltered, totalAnalyzed: 0 } }, { merge: true });
+        return;
+      }
+
+      const analysisResult = await processDeepAnalysis({ aiConfig, companyId, abortChecker });
+      const totalAnalyzed = (analysisResult as any).processed || 0;
+      console.log(`[AI-Only] Analysis done: analyzed=${totalAnalyzed}`);
+
+      await controlRef.set({ lastAiOnlyAt: admin.firestore.FieldValue.serverTimestamp(), aiOnlyLastResult: { totalFiltered, totalAnalyzed } }, { merge: true });
+    } catch (err: any) {
+      console.error('[AI-Only] Error:', err.message, err.stack);
+    } finally {
+      try {
+        await controlRef.set({ aiOnlyRunning: false }, { merge: true });
+        const snap = await controlRef.get();
+        if (snap.data()?.aiOnlyEnabled) {
+          setTimeout(async () => {
+            try {
+              await controlRef.set({ aiOnlyRunning: true }, { merge: true });
+              fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runAiOnlyHttp`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+              }).catch(() => {});
+            } catch { await controlRef.set({ aiOnlyRunning: false }, { merge: true }); }
+          }, 5000);
+        }
+      } catch { /* non-critical */ }
+    }
+  }
+);
+
+// ─────────────────────────────────────────
+// Diagnostic endpoint (시스템 상태 확인용)
+// ─────────────────────────────────────────
+export const diagnosticHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 30 },
+  async (req, res) => {
+    const db = admin.firestore();
+    try {
+      // POST: 상태 초기화 액션
+      if (req.method === 'POST') {
+        const { action } = req.body || {};
+        if (action === 'resetPipelineState') {
+          await db.collection('systemSettings').doc('pipelineControl').set({
+            pipelineEnabled: false, pipelineRunning: false,
+            aiOnlyEnabled: false, aiOnlyRunning: false,
+            currentStep: null,
+          }, { merge: true });
+          res.json({ success: true, message: 'Pipeline state reset' });
+          return;
+        }
+        if (action === 'clearStaleJobs') {
+          // running/pending 상태 job을 모두 aborted로 표시 (force=true 시 시간 무관)
+          const force = req.body?.force === true;
+          const cutoff = new Date(Date.now() - 30 * 60 * 1000); // 30분 기준
+          const staleSnap = await db.collection('bulkAiJobs')
+            .where('status', 'in', ['running', 'pending'])
+            .get();
+          const batch = db.batch();
+          let count = 0;
+          staleSnap.docs.forEach(d => {
+            const startedAt = d.data().startedAt?.toDate?.() || new Date(0);
+            if (force || startedAt < cutoff) {
+              batch.update(d.ref, { status: 'aborted', completedAt: admin.firestore.FieldValue.serverTimestamp() });
+              count++;
+            }
+          });
+          if (count > 0) await batch.commit();
+          res.json({ success: true, message: `Marked ${count} stale jobs as aborted` });
+          return;
+        }
+      }
+      // 1. AI config
+      const aiDoc = await db.collection('systemSettings').doc('aiConfig').get();
+      const aiData = aiDoc.data() || {};
+      const provider = aiData['ai.provider'] || 'unknown';
+
+      // 2. Active sources
+      const srcSnap = await db.collection('globalSources').where('status', '==', 'active').get();
+      const sources = srcSnap.docs.map(d => {
+        const data = d.data();
+        return { id: d.id, name: data.name, type: data.type, rssUrl: (data.rssUrl || '').substring(0, 80), url: (data.url || '').substring(0, 80) };
+      });
+
+      // 3. Pipeline control
+      const ctrlDoc = await db.collection('systemSettings').doc('pipelineControl').get();
+      const ctrl = ctrlDoc.data() || {};
+
+      // 4. Article status counts
+      const [pending, filtered, analyzed, rejected] = await Promise.all([
+        db.collection('articles').where('status', '==', 'pending').count().get(),
+        db.collection('articles').where('status', '==', 'filtered').count().get(),
+        db.collection('articles').where('status', '==', 'analyzed').count().get(),
+        db.collection('articles').where('status', '==', 'rejected').count().get(),
+      ]);
+
+      // 5. API key check
+      const hasKeyNested = !!(aiData.apiKeys && aiData.apiKeys[provider]);
+      const hasKeyLiteral = !!aiData[`apiKeys.${provider}`];
+
+      // 6. Company settings fallback
+      const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();
+      const fallbackCompanyId = companiesSnap.empty ? null : companiesSnap.docs[0].id;
+      let hasCompanyKey = false;
+      if (fallbackCompanyId) {
+        const compDoc = await db.collection('companySettings').doc(fallbackCompanyId).get();
+        hasCompanyKey = !!(compDoc.data()?.apiKeys?.[provider]);
+      }
+
+      // 7. Recent articles by source (last 24h)
+      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentSnap = await db.collection('articles')
+        .where('collectedAt', '>=', admin.firestore.Timestamp.fromDate(since24h))
+        .limit(200)
+        .get();
+      const sourceCount: Record<string, number> = {};
+      recentSnap.docs.forEach(d => {
+        const src = d.data().source || 'unknown';
+        sourceCount[src] = (sourceCount[src] || 0) + 1;
+      });
+      const recentBySource = Object.entries(sourceCount)
+        .sort((a, b) => b[1] - a[1])
+        .map(([source, count]) => ({ source, count }));
+
+      // 8. Company subscription info
+      let subscribedSourceIds: string[] = [];
+      if (fallbackCompanyId) {
+        const subDoc = await db.collection('companySourceSubscriptions').doc(fallbackCompanyId).get();
+        subscribedSourceIds = subDoc.exists ? ((subDoc.data() as any).subscribedSourceIds ?? []) : [];
+      }
+      // Map subscribed IDs to names
+      const allSourceMap: Record<string, string> = {};
+      srcSnap.docs.forEach(d => { allSourceMap[d.id] = d.data().name; });
+      const subscribedSources = subscribedSourceIds.map(id => ({ id, name: allSourceMap[id] || id }));
+      const notSubscribed = sources.filter(s => !subscribedSourceIds.includes(s.id)).map(s => ({ id: s.id, name: s.name, type: s.type }));
+
+      res.json({
+        ai: {
+          provider,
+          model: aiData[`aiModels.${provider}`] || aiData['ai.model'],
+          baseUrl: aiData[`aiBaseUrls.${provider}`] || aiData['ai.baseUrl'] || null,
+          hasKeyNested,
+          hasKeyLiteral,
+          hasCompanyKey,
+          fallbackCompanyId,
+          allFields: Object.keys(aiData),
+        },
+        pipelineControl: ctrl,
+        activeSources: { count: sources.length, sources },
+        articleCounts: {
+          pending: pending.data().count,
+          filtered: filtered.data().count,
+          analyzed: analyzed.data().count,
+          rejected: rejected.data().count,
+        },
+        recentArticlesBySource: recentBySource,
+        subscription: {
+          companyId: fallbackCompanyId,
+          subscribedCount: subscribedSourceIds.length,
+          subscribedSources,
+          notSubscribed,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 // ─────────────────────────────────────────
 // HTTP triggers (collection)
 // ─────────────────────────────────────────
@@ -484,6 +1004,22 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
 });
 // getPaidSourceAccess, managePaidSourceAccess: removed (paid source access UI removed)
 // scheduledNewsCollection: removed (replaced by local PC scraper auto-scheduler)
+// ─────────────────────────────────────────
+// Scheduled: AI Analysis (every 4 hours)
+// ─────────────────────────────────────────
+export const scheduledAiAnalysis = onSchedule('0 */4 * * *', async () => {
+  const db = admin.firestore();
+  const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
+  for (const companyDoc of companiesSnapshot.docs) {
+    try {
+      const runtime = await getCompanyRuntimeConfig(companyDoc.id);
+      await processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai, filters: runtime.filters });
+      await processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
+    } catch (err: any) {
+      console.error(`Scheduled AI analysis failed for company ${companyDoc.id}:`, err.message);
+    }
+  }
+});
 // ─────────────────────────────────────────
 // Scheduled: Briefing generation (daily 22:00)
 // ─────────────────────────────────────────
@@ -509,8 +1045,24 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
 // ─────────────────────────────────────────
 export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 60 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  try {
+    // superadmin이고 companyId가 없으면 첫 번째 활성 회사 사용
+    let targetCompanyId = request.data?.companyId;
+    if (!targetCompanyId) {
+      const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+      if (userDoc.data()?.role === 'superadmin') {
+        const companiesSnap = await admin.firestore().collection('companies').where('active', '==', true).limit(1).get();
+        if (!companiesSnap.empty) {
+          targetCompanyId = companiesSnap.docs[0].id;
+          console.log('runFullPipeline: superadmin using companyId:', targetCompanyId);
+        } else {
+          throw new HttpsError('not-found', '활성화된 회사가 없습니다');
+        }
+      }
+    }
 
-  const runtime = await resolveRuntime(request.auth.uid, request.data?.companyId, request.data?.overrides);
+    console.log('runFullPipeline: resolveRuntime for', targetCompanyId);
+    const runtime = await resolveRuntime(request.auth.uid, targetCompanyId, request.data?.overrides);
   const db = admin.firestore();
   const pipelineRef = db.collection('pipelineRuns').doc();
   const pipelineId = pipelineRef.id;
@@ -535,7 +1087,12 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
     body: JSON.stringify({ pipelineId, companyId: runtime.companyId }),
   }).catch(err => console.error('Failed to trigger executePipelineHttp:', err));
 
-  return { pipelineId, success: true };
+    return { pipelineId, success: true };
+  } catch (err: any) {
+    console.error('runFullPipeline error:', err.code, err.message);
+    if (typeof err.code === 'string' && err.code.startsWith('functions/')) throw err;
+    throw new HttpsError('internal', err.message || 'Pipeline failed');
+  }
 });
 
 // ─────────────────────────────────────────
@@ -809,7 +1366,7 @@ export const executeScrapingRule = onCall({ region: 'us-central1', cors: true, i
           source: sourceId === 'thebell' ? '더벨' : '마켓인사이트',
           sourceId,
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'new',
+          status: 'pending',  // 'new' → 'pending' (다른 수집 경로와 일치)
         });
       }
 

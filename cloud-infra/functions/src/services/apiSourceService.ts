@@ -53,16 +53,19 @@ export async function processApiSources(options?: {
     return { success: true, totalCollected: 0 };
   }
 
-  // Batch Firestore 'in' queries (max 30 per query)
+  // 복합 인덱스 문제 회피: documentId()만으로 쿼리, type/status는 코드 필터링
   const allApiSources: { id: string; data: any }[] = [];
   for (let i = 0; i < subscribedIds.length; i += 30) {
     const chunk = subscribedIds.slice(i, i + 30);
     const snap = await db.collection('globalSources')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-      .where('type', '==', 'api')
-      .where('status', '==', 'active')
       .get();
-    snap.docs.forEach(d => allApiSources.push({ id: d.id, data: d.data() }));
+    snap.docs.forEach(d => {
+      const data = d.data();
+      if (data.type === 'api' && data.status === 'active') {
+        allApiSources.push({ id: d.id, data });
+      }
+    });
   }
 
   if (allApiSources.length === 0) {
@@ -126,8 +129,8 @@ async function collectFromNewsApi(
     throw new Error(`NewsAPI key not found — set env var '${envVarName}' in Cloud Functions`);
   }
 
+  // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음 → AI가 관련성 판단
   const anyKeywords: string[] = [
-    ...(source.defaultKeywords || []),
     ...(options?.filters?.keywords || []),
   ];
 
@@ -183,9 +186,10 @@ async function collectFromNewsApi(
       continue;
     }
 
+    // ★ 수집 중 AI 중복 체크 비활성화 (API 쿼터 보존) → URL 해시 매칭만
     const dupCheck = await isDuplicateArticle(
       { title, url: item.url, content, publishedAt },
-      { companyId: options?.companyId, aiConfig: options?.aiConfig },
+      { companyId: options?.companyId },
     );
     if (dupCheck.isDuplicate) continue;
 
@@ -245,8 +249,8 @@ async function collectFromNaverNews(
     throw new Error('네이버 API 자격증명 미설정 — 슈퍼어드민 > AI 설정 > 네이버 뉴스 탭에서 저장하세요.');
   }
 
+  // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음 → AI가 관련성 판단
   const keywords: string[] = [
-    ...(source.defaultKeywords || []),
     ...(options?.filters?.keywords || []),
   ];
   if (keywords.length === 0) keywords.push('M&A', '인수합병', '스타트업 투자');
