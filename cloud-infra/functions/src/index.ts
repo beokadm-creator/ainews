@@ -437,17 +437,18 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
   const { title, content, source, url, publishedAt, companyId } = request.data || {};
-  if (!title || !content) {
-    throw new HttpsError('invalid-argument', 'Title and content are required');
+  if (!title) {
+    throw new HttpsError('invalid-argument', 'Title is required');
   }
+  const articleContent = content || title; // content 없으면 title로 fallback
   const runtime = await resolveRuntime(request.auth.uid, companyId);
   const relevanceResult = await checkRelevance(
-    { title, content, source: source || 'manual' },
+    { title, content: articleContent, source: source || 'manual' },
     runtime.ai,
     { companyId: runtime.companyId }
   );
   const analysis = await analyzeArticle(
-    { title, content, source: source || 'manual', url: url || '', publishedAt: publishedAt || new Date().toISOString() },
+    { title, content: articleContent, source: source || 'manual', url: url || '', publishedAt: publishedAt || new Date().toISOString() },
     runtime.ai,
     { companyId: runtime.companyId }
   );

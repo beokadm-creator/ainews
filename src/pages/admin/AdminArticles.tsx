@@ -20,6 +20,7 @@ interface Article {
   sourceId: string;
   url: string;
   status: string;
+  content?: string;
   relevanceScore?: number;
   filterReason?: string;
   category?: string;
@@ -449,9 +450,10 @@ export default function AdminArticles() {
     setAnalyzeResult(null);
     try {
       const fn = httpsCallable(functions, 'analyzeManualArticle');
+      const content = article.content || article.summary?.join(' ') || article.title;
       const result = await fn({
         title: article.title,
-        content: article.summary?.join(' ') || '',
+        content,
         source: article.source,
         url: article.url,
         publishedAt: article.publishedAt,
