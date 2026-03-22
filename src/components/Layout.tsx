@@ -13,7 +13,10 @@ import {
   Newspaper,
   Users,
   Search,
-  BookOpen
+  BookOpen,
+  ShieldCheck,
+  Database,
+  TrendingUp
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -38,6 +41,7 @@ export default function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const role = (user as any)?.role;
+  const isSuperadmin = role === 'superadmin';
   const isAdminOrAbove = role === 'company_admin' || role === 'superadmin';
 
   useEffect(() => {
@@ -46,17 +50,22 @@ export default function Layout({ children }: LayoutProps) {
   }, [theme]);
 
   // ─────────────────────────────────────────
-  // Navigation: company users only
+  // Navigation: role-aware (company + superadmin)
   // ─────────────────────────────────────────
   const navigation = [
-    { name: '대시보드', href: '/home', icon: LayoutDashboard, show: true },
-    { name: '기사 검색', href: '/articles', icon: Search, show: true },
-    { name: '보고서', href: '/briefing', icon: BookOpen, show: true },
+    { name: '대시보드', href: '/', icon: LayoutDashboard, show: true },
     { name: '실행 이력', href: '/history', icon: History, show: isAdminOrAbove },
+    { name: '분석 결과', href: '/briefing', icon: BookOpen, show: true },
     { name: '수동 입력', href: '/manual-entry', icon: Newspaper, show: isAdminOrAbove },
     { name: '매체 구독', href: '/media', icon: Library, show: isAdminOrAbove },
     { name: '팀 관리', href: '/team', icon: Users, show: role === 'company_admin' },
     { name: '설정', href: '/settings', icon: Settings, show: isAdminOrAbove },
+
+    // ──── Superadmin only section ────
+    { name: '관리 도구', href: '#', icon: ShieldCheck, show: isSuperadmin },
+    { name: '매체 관리', href: '/admin/media', icon: Database, show: isSuperadmin },
+    { name: '사용자 관리', href: '/admin/management', icon: Users, show: isSuperadmin },
+    { name: '스크래핑 규칙', href: '/admin/scraping', icon: TrendingUp, show: isSuperadmin },
   ];
 
   const handleLogout = async () => {
