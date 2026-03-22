@@ -80,7 +80,8 @@ async function runMarketInsightCollection() {
     return;
   }
 
-  const randomDelay = Math.floor(Math.random() * (30 * 60 * 1000)); // 31~60분 내 랜덤 (30분 + 0~30분)
+  // 31~60분 = 30분(기본) + 0~30분(랜덤)
+  const randomDelay = (30 * 60 * 1000) + Math.floor(Math.random() * (30 * 60 * 1000));
   console.log(`[MarketInsight Collect] Will start in ${Math.round(randomDelay / 1000)}s`);
 
   setTimeout(async () => {
@@ -100,22 +101,31 @@ function startHourlyScheduler() {
   console.log('[Scheduler] TheBell: every hour at 0-30 min (random within 0-30min)');
   console.log('[Scheduler] MarketInsight: every hour at 31-60 min (random within 31-60min)');
 
+  let lastTheBellTrigger = -1;
+  let lastMarketInsightTrigger = -1;
+
   hourlyScheduler = setInterval(() => {
     const now = new Date();
     const minute = now.getMinutes();
 
-    // TheBell: 정시(0분)에 시작
-    if (minute === 0) {
+    // TheBell: 0분대에만 한 번 시작 (중복 방지)
+    if (minute < 1 && lastTheBellTrigger !== minute) {
       console.log(`[Scheduler] ${now.toISOString()} - Triggering TheBell collection`);
       runTheBellCollection();
+      lastTheBellTrigger = minute;
+    } else if (minute >= 1) {
+      lastTheBellTrigger = -1; // 다음 시간을 위해 초기화
     }
 
-    // MarketInsight: 31분에 시작
-    if (minute === 31) {
+    // MarketInsight: 31분대에만 한 번 시작 (중복 방지)
+    if (minute >= 31 && minute < 32 && lastMarketInsightTrigger !== minute) {
       console.log(`[Scheduler] ${now.toISOString()} - Triggering MarketInsight collection`);
       runMarketInsightCollection();
+      lastMarketInsightTrigger = minute;
+    } else if (minute < 31 || minute >= 32) {
+      lastMarketInsightTrigger = -1; // 다음 시간을 위해 초기화
     }
-  }, 60 * 1000); // 매 분마다 체크
+  }, 10 * 1000); // 10초마다 체크 (더 정확함)
 }
 
 // Health check
