@@ -63,13 +63,16 @@ async function runTheBellCollection() {
   console.log(`[TheBell Collect] Will start in ${Math.round(randomDelay / 1000)}s`);
 
   setTimeout(async () => {
-    if (!isKoreanBusinessHours()) return;
-    console.log('[TheBell Collect] Starting...');
     try {
-      const { thebell } = await collectAllArticles(marketInsightService, thebellService, { onlyTheBell: true });
-      console.log(`[TheBell Collect] ✓ Complete: ${thebell.collected} saved`);
+      if (!isKoreanBusinessHours()) {
+        console.log('[TheBell Collect] Outside business hours at execution time — skipping');
+        return;
+      }
+      console.log('[TheBell Collect] Starting...');
+      const result = await collectAllArticles(marketInsightService, thebellService, { onlyTheBell: true, skipBusinessHoursCheck: true });
+      console.log(`[TheBell Collect] ✓ Complete: ${result.thebell.collected} saved, ${result.thebell.skipped} skipped`);
     } catch (e: any) {
-      console.error('[TheBell Collect] Error:', e.message);
+      console.error('[TheBell Collect] Error:', e.message, e.stack);
     }
   }, randomDelay);
 }
@@ -85,13 +88,16 @@ async function runMarketInsightCollection() {
   console.log(`[MarketInsight Collect] Will start in ${Math.round(randomDelay / 1000)}s`);
 
   setTimeout(async () => {
-    if (!isKoreanBusinessHours()) return;
-    console.log('[MarketInsight Collect] Starting...');
     try {
-      const { marketinsight } = await collectAllArticles(marketInsightService, thebellService, { onlyMarketInsight: true });
-      console.log(`[MarketInsight Collect] ✓ Complete: ${marketinsight.collected} saved`);
+      if (!isKoreanBusinessHours()) {
+        console.log('[MarketInsight Collect] Outside business hours at execution time — skipping');
+        return;
+      }
+      console.log('[MarketInsight Collect] Starting...');
+      const result = await collectAllArticles(marketInsightService, thebellService, { onlyMarketInsight: true, skipBusinessHoursCheck: true });
+      console.log(`[MarketInsight Collect] ✓ Complete: ${result.marketinsight.collected} saved, ${result.marketinsight.skipped} skipped`);
     } catch (e: any) {
-      console.error('[MarketInsight Collect] Error:', e.message);
+      console.error('[MarketInsight Collect] Error:', e.message, e.stack);
     }
   }, randomDelay);
 }
