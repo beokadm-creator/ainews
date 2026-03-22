@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Rss, Globe, Code2, Cpu, Play, RefreshCw, CheckCircle,
-  XCircle, Clock, AlertTriangle, Loader2, ChevronDown, ChevronUp,
-  Database, TrendingUp, Activity, Newspaper
+  XCircle, Clock, AlertTriangle, Loader2,
+  TrendingUp, Activity, Newspaper, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
@@ -87,10 +87,10 @@ export default function AdminDashboard() {
   const [activeType, setActiveType] = useState<string>('all');
   const [sources, setSources] = useState<any[]>([]);
   const [sourceStats, setSourceStats] = useState<SourceStat[]>([]);
-  const [companyStats, setCompanyStats] = useState<CompanyStat[]>([]);
   const [trendData, setTrendData] = useState<any[]>([]);
   const [globalStats, setGlobalStats] = useState({
     totalToday: 0,
+    totalPending: 0,
     totalAnalyzed: 0,
     totalSources: 0,
     errorSources: 0,
@@ -101,8 +101,6 @@ export default function AdminDashboard() {
   // 파이프라인 실행
   const [recentRuns, setRecentRuns] = useState<any[]>([]);
   const [runningId, setRunningId] = useState<string | null>(null);
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [selectedCompany, setSelectedCompany] = useState('');
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const unsubRef = useRef<(() => void) | null>(null);
 
@@ -118,7 +116,6 @@ export default function AdminDashboard() {
         loadGlobalStats(),
         loadTrendData(),
         loadRecentRuns(),
-        loadCompanies(),
         loadPcScraperStatus(),
       ]);
     } finally {
@@ -130,13 +127,13 @@ export default function AdminDashboard() {
     const snap = await getDocs(collection(db, 'globalSources'));
     const srcs = snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
     setSources(srcs);
-    // 소스별 오늘 수집 건수
+    // 소스별 오늘 수집 건수 (sourceId 필드로 조회)
     const today = startOfDay(new Date());
-    const stats: SourceStat[] = await Promise.all(srcs.slice(0, 20).map(async src => {
+    const stats: SourceStat[] = await Promise.all(srcs.slice(0, 30).map(async src => {
       try {
         const q = query(
           collection(db, 'articles'),
-          where('globalSourceId', '==', src.id),
+          where('sourceId', '==', src.id),
           where('collectedAt', '>=', today)
         );
         const cnt = await getCountFromServer(q);
@@ -165,8 +162,9 @@ export default function AdminDashboard() {
 
   const loadGlobalStats = async () => {
     const today = startOfDay(new Date());
-    const [todaySnap, analyzedSnap, sourcesSnap] = await Promise.all([
+    const [todaySnap, pendingSnap, analyzedSnap, sourcesSnap] = await Promise.all([
       getCountFromServer(query(collection(db, 'articles'), where('collectedAt', '>=', today))),
+      getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'pending'))),
       getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'analyzed'))),
       getCountFromServer(collection(db, 'globalSources')),
     ]);
@@ -175,31 +173,11 @@ export default function AdminDashboard() {
     ))).size;
     setGlobalStats({
       totalToday: todaySnap.data().count,
+      totalPending: pendingSnap.data().count,
       totalAnalyzed: analyzedSnap.data().count,
       totalSources: sourcesSnap.data().count,
       errorSources: errorSrc,
     });
-
-    // 회사별 통계
-    const companiesSnap = await getDocs(query(collection(db, 'companies'), where('active', '==', true)));
-    const cStats: CompanyStat[] = await Promise.all(
-      companiesSnap.docs.slice(0, 10).map(async cd => {
-        const cid = cd.id;
-        const [totalQ, analyzedQ, todayQ] = await Promise.all([
-          getCountFromServer(query(collection(db, 'articles'), where('companyId', '==', cid))),
-          getCountFromServer(query(collection(db, 'articles'), where('companyId', '==', cid), where('status', '==', 'analyzed'))),
-          getCountFromServer(query(collection(db, 'articles'), where('companyId', '==', cid), where('collectedAt', '>=', today))),
-        ]);
-        return {
-          companyId: cid,
-          name: (cd.data() as any).name || cid,
-          total: totalQ.data().count,
-          analyzed: analyzedQ.data().count,
-          today: todayQ.data().count,
-        };
-      })
-    );
-    setCompanyStats(cStats.sort((a, b) => b.today - a.today));
   };
 
   const loadTrendData = async () => {
@@ -239,20 +217,12 @@ export default function AdminDashboard() {
     setRecentRuns(snap.docs.map(d => ({ id: d.id, ...d.data() as any })));
   };
 
-  const loadCompanies = async () => {
-    const snap = await getDocs(query(collection(db, 'companies'), where('active', '==', true), orderBy('name')));
-    const list = snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
-    setCompanies(list);
-    if (list.length > 0) setSelectedCompany(list[0].id);
-  };
-
-  const handleRunPipeline = async (companyId: string) => {
-    if (!companyId) return;
+  const handleRunPipeline = async () => {
     if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
 
     try {
       const fn = httpsCallable(functions, 'runFullPipeline');
-      const result = await fn({ companyId }) as any;
+      const result = await fn({}) as any;
       const pid = result.data?.pipelineId;
       if (pid) {
         setRunningId(pid);
@@ -327,8 +297,8 @@ export default function AdminDashboard() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[
               { label: '오늘 수집', value: globalStats.totalToday, icon: Newspaper, color: 'text-blue-400' },
+              { label: 'AI 필터링 대기', value: globalStats.totalPending, icon: Clock, color: 'text-yellow-400' },
               { label: '분석 완료 (전체)', value: globalStats.totalAnalyzed.toLocaleString(), icon: CheckCircle, color: 'text-green-400' },
-              { label: '활성 매체', value: globalStats.totalSources, icon: Globe, color: 'text-purple-400' },
               { label: '오류 매체', value: globalStats.errorSources, icon: AlertTriangle, color: globalStats.errorSources > 0 ? 'text-red-400' : 'text-white/30' },
             ].map(card => (
               <div key={card.label} className="bg-gray-900 border border-white/5 rounded-xl p-4">
@@ -367,19 +337,10 @@ export default function AdminDashboard() {
                 <Activity className="w-4 h-4 text-white/30" />파이프라인 즉시 실행
               </h2>
               <div className="space-y-3">
-                <div>
-                  <label className="text-xs text-white/40 block mb-1.5">대상 회사 선택</label>
-                  <select
-                    value={selectedCompany}
-                    onChange={e => setSelectedCompany(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-800 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-[#d4af37]/50"
-                  >
-                    {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
+                <p className="text-xs text-white/40">전체 매체 수집 → AI 필터링 → 심층 분석을 순서대로 실행합니다.</p>
                 <button
-                  onClick={() => handleRunPipeline(selectedCompany)}
-                  disabled={!!runningId || !selectedCompany}
+                  onClick={() => handleRunPipeline()}
+                  disabled={!!runningId}
                   className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#d4af37]/20 border border-[#d4af37]/30 text-[#d4af37] rounded-lg text-sm font-semibold hover:bg-[#d4af37]/30 transition-colors disabled:opacity-40"
                 >
                   {runningId ? <><Loader2 className="w-4 h-4 animate-spin" />실행 중...</> : <><Play className="w-4 h-4" />수집 + 분석 실행</>}
@@ -389,46 +350,6 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* 회사별 통계 */}
-          {companyStats.length > 0 && (
-            <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">
-              <div className="px-5 py-3.5 border-b border-white/5">
-                <h2 className="text-sm font-semibold text-white/70 flex items-center gap-2">
-                  <Database className="w-4 h-4 text-white/30" />회사별 수집 현황
-                </h2>
-              </div>
-              <div className="divide-y divide-white/5">
-                {companyStats.map(c => (
-                  <div key={c.companyId} className="px-5 py-3 flex items-center gap-4">
-                    <div className="w-32 flex-shrink-0">
-                      <p className="text-sm font-medium text-white truncate">{c.name}</p>
-                    </div>
-                    <div className="flex-1 flex items-center gap-6">
-                      <div>
-                        <p className="text-[10px] text-white/30 mb-0.5">오늘</p>
-                        <p className="text-sm font-bold text-blue-400">{c.today}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-white/30 mb-0.5">분석완료</p>
-                        <p className="text-sm font-bold text-green-400">{c.analyzed}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-white/30 mb-0.5">전체</p>
-                        <p className="text-sm font-bold text-white/60">{c.total.toLocaleString()}</p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleRunPipeline(c.companyId)}
-                      disabled={!!runningId}
-                      className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 hover:text-white rounded-lg text-xs transition-colors disabled:opacity-40"
-                    >
-                      <Play className="w-3 h-3" />실행
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* 로컬 PC 스크래퍼 상태 */}
           <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">

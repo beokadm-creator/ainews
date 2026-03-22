@@ -1,24 +1,26 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Globe, Plus, Edit2, Trash2, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
-  Loader2, ChevronDown, ChevronUp, Rss, Code2, Cpu, Mail, Star, Eye, EyeOff,
-  Search, Filter, Lock
+  Loader2, Rss, Code2, Cpu, Mail, Star, Search, Activity,
+  ChevronDown, ChevronUp, Zap, Clock, BarChart2, Lock, Unlock
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
-import { collection, getDocs, orderBy, query, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, orderBy, query, getCountFromServer, where, limit } from 'firebase/firestore';
 import { functions, db } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { getAuth } from 'firebase/auth';
+import { format } from 'date-fns';
 
+// ─── Types ──────────────────────────────────────────────────────
 type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
 type PricingTier = 'free' | 'paid' | 'requires_subscription';
 type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
-type Category = 'domestic' | 'asian' | 'global' | 'tech' | 'all';
+type TabId = 'all' | 'health' | 'errors';
 
 interface GlobalSource {
   id: string;
   name: string;
-  description: string;
+  description?: string;
   url: string;
   type: SourceType;
   language: 'ko' | 'en' | 'ja' | 'zh';
@@ -26,15 +28,14 @@ interface GlobalSource {
   category: string;
   rssUrl?: string;
   apiEndpoint?: string;
+  apiType?: 'naver' | 'newsapi' | 'custom';
   apiKeyRequired?: boolean;
-  apiKeyEnvName?: string;
   listSelector?: string;
   titleSelector?: string;
   linkSelector?: string;
   contentSelector?: string;
   dateSelector?: string;
   loginRequired?: boolean;
-  authType?: string;
   defaultKeywords: string[];
   status: SourceStatus;
   lastTestedAt?: any;
@@ -43,25 +44,45 @@ interface GlobalSource {
     message: string;
     articlesFound?: number;
     latencyMs?: number;
-    sampleTitles?: string[];
   };
   notes?: string;
   pricingTier: PricingTier;
+  allowedCompanyIds?: string[];
+  localScraperId?: string;
 }
 
+interface SourceHealth {
+  sourceId: string;
+  todayCount: number;
+  lastCollectedAt: any;
+  status: 'ok' | 'idle' | 'error';
+}
+
+// ─── Constants ──────────────────────────────────────────────────
 const TYPE_META: Record<SourceType, { label: string; icon: any; color: string; bg: string }> = {
-  rss: { label: 'RSS', icon: Rss, color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-100 dark:bg-orange-900/30' },
-  scraping: { label: 'Scraping', icon: Code2, color: 'text-purple-600 dark:text-purple-400', bg: 'bg-purple-100 dark:bg-purple-900/30' },
-  puppeteer: { label: 'Puppeteer', icon: Cpu, color: 'text-indigo-600 dark:text-indigo-400', bg: 'bg-indigo-100 dark:bg-indigo-900/30' },
-  api: { label: 'API', icon: Globe, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-100 dark:bg-blue-900/30' },
-  newsletter: { label: 'Newsletter', icon: Mail, color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-900/30' },
+  rss:        { label: 'RSS',        icon: Rss,    color: 'text-orange-500',  bg: 'bg-orange-500/10' },
+  scraping:   { label: 'Scraping',   icon: Code2,  color: 'text-purple-500',  bg: 'bg-purple-500/10' },
+  puppeteer:  { label: 'Puppeteer',  icon: Cpu,    color: 'text-indigo-400',  bg: 'bg-indigo-500/10' },
+  api:        { label: 'API',        icon: Globe,  color: 'text-blue-400',    bg: 'bg-blue-500/10' },
+  newsletter: { label: 'Newsletter', icon: Mail,   color: 'text-green-400',   bg: 'bg-green-500/10' },
 };
 
-const PRICING_META: Record<PricingTier, { label: string; color: string }> = {
-  free: { label: '무료', color: 'text-green-600 dark:text-green-400' },
-  paid: { label: '유료', color: 'text-white bg-red-500 rounded px-1 font-bold' },
-  requires_subscription: { label: '구독 필요', color: 'text-white bg-amber-500 rounded px-1 font-bold' },
+const STATUS_META: Record<SourceStatus, { label: string; color: string; dot: string }> = {
+  active:   { label: '활성',    color: 'text-green-400',  dot: 'bg-green-400' },
+  inactive: { label: '비활성',  color: 'text-gray-400',   dot: 'bg-gray-500' },
+  error:    { label: '오류',    color: 'text-red-400',    dot: 'bg-red-400' },
+  testing:  { label: '테스트중', color: 'text-yellow-400', dot: 'bg-yellow-400' },
 };
+
+const CATEGORY_OPTIONS = [
+  { value: 'all',      label: '전체 분야' },
+  { value: 'domestic', label: '국내' },
+  { value: 'asian',    label: '아시아' },
+  { value: 'global',   label: '글로벌' },
+  { value: 'tech',     label: '테크' },
+  { value: 'startup',  label: '스타트업/PE·VC' },
+  { value: 'M&A',      label: 'M&A / 유료 매체' },
+];
 
 const BLANK_SOURCE: Partial<GlobalSource> = {
   type: 'rss',
@@ -72,39 +93,261 @@ const BLANK_SOURCE: Partial<GlobalSource> = {
   pricingTier: 'free',
   defaultKeywords: ['M&A', '인수', '합병'],
   loginRequired: false,
-  authType: 'none',
 };
 
-function StarRating({ score }: { score: number }) {
+// ─── Sub-components ─────────────────────────────────────────────
+function TypeBadge({ type }: { type: SourceType }) {
+  const m = TYPE_META[type] || TYPE_META.rss;
+  const Icon = m.icon;
   return (
-    <span className="flex items-center gap-0.5">
-      {[1, 2, 3, 4, 5].map(s => (
-        <Star
-          key={s}
-          className={`w-3 h-3 ${s <= score ? 'text-yellow-400 fill-yellow-400' : 'text-gray-300 dark:text-gray-600'}`}
-        />
-      ))}
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${m.color} ${m.bg}`}>
+      <Icon className="w-2.5 h-2.5" />{m.label}
     </span>
   );
 }
 
+function StatusDot({ status }: { status: SourceStatus }) {
+  const m = STATUS_META[status] || STATUS_META.inactive;
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+      <span className={`text-xs ${m.color}`}>{m.label}</span>
+    </span>
+  );
+}
+
+function HealthBadge({ health }: { health?: SourceHealth }) {
+  if (!health) return <span className="text-xs text-white/30">—</span>;
+  const color = health.status === 'ok' ? 'text-green-400' : health.status === 'error' ? 'text-red-400' : 'text-yellow-400';
+  const lastStr = health.lastCollectedAt?.toDate
+    ? format(health.lastCollectedAt.toDate(), 'MM/dd HH:mm')
+    : health.lastCollectedAt?._seconds
+      ? format(new Date(health.lastCollectedAt._seconds * 1000), 'MM/dd HH:mm')
+      : '—';
+  return (
+    <div className="text-xs">
+      <span className={`font-semibold ${color}`}>{health.todayCount}건</span>
+      <span className="text-white/30 ml-1">{lastStr}</span>
+    </div>
+  );
+}
+
+// ─── Source Edit Modal ──────────────────────────────────────────
+function SourceModal({
+  source, onSave, onClose, saving
+}: {
+  source: Partial<GlobalSource>;
+  onSave: (s: Partial<GlobalSource>) => void;
+  onClose: () => void;
+  saving: boolean;
+}) {
+  const [form, setForm] = useState<Partial<GlobalSource>>(source);
+  const set = (k: keyof GlobalSource, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-[#141c2e] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-white/10">
+          <h2 className="text-lg font-bold text-white">{form.id ? '매체 편집' : '새 매체 추가'}</h2>
+        </div>
+        <div className="p-6 space-y-4">
+          {/* Row 1 */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-white/50 mb-1">매체명 *</label>
+              <input value={form.name || ''} onChange={e => set('name', e.target.value)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50" />
+            </div>
+            <div>
+              <label className="block text-xs text-white/50 mb-1">수집 방식 *</label>
+              <select value={form.type || 'rss'} onChange={e => set('type', e.target.value)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                {Object.entries(TYPE_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {/* Row 2 */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-white/50 mb-1">분야</label>
+              <select value={form.category || 'domestic'} onChange={e => set('category', e.target.value)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                {CATEGORY_OPTIONS.filter(o => o.value !== 'all').map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-white/50 mb-1">상태</label>
+              <select value={form.status || 'inactive'} onChange={e => set('status', e.target.value as SourceStatus)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                <option value="active">활성</option>
+                <option value="inactive">비활성</option>
+                <option value="error">오류</option>
+              </select>
+            </div>
+          </div>
+          {/* URLs */}
+          <div>
+            <label className="block text-xs text-white/50 mb-1">사이트 URL *</label>
+            <input value={form.url || ''} onChange={e => set('url', e.target.value)}
+              placeholder="https://..."
+              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50" />
+          </div>
+          {(form.type === 'rss') && (
+            <div>
+              <label className="block text-xs text-white/50 mb-1">RSS URL</label>
+              <input value={form.rssUrl || ''} onChange={e => set('rssUrl', e.target.value)}
+                placeholder="https://.../feed"
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50" />
+            </div>
+          )}
+          {(form.type === 'api') && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-white/50 mb-1">API 종류</label>
+                <select value={(form as any).apiType || ''} onChange={e => set('apiType', e.target.value)}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50">
+                  <option value="">선택...</option>
+                  <option value="naver">네이버 뉴스 검색 API</option>
+                  <option value="newsapi">NewsAPI.org</option>
+                  <option value="custom">커스텀 엔드포인트</option>
+                </select>
+              </div>
+              {(form as any).apiType !== 'naver' && (
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">API 엔드포인트</label>
+                  <input value={form.apiEndpoint || ''} onChange={e => set('apiEndpoint', e.target.value)}
+                    placeholder="https://api..."
+                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50" />
+                </div>
+              )}
+              {(form as any).apiType === 'naver' && (
+                <p className="text-xs text-blue-300/70 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
+                  네이버 API 자격증명은 슈퍼어드민 → AI 설정 → 네이버 탭에서 설정합니다.
+                  아래 "기본 키워드"에 검색할 키워드를 입력하세요 (쉼표 구분).
+                </p>
+              )}
+            </div>
+          )}
+          {(form.type === 'scraping' || form.type === 'puppeteer') && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-white/50 mb-1">목록 셀렉터</label>
+                <input value={form.listSelector || ''} onChange={e => set('listSelector', e.target.value)}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs text-white/50 mb-1">제목 셀렉터</label>
+                <input value={form.titleSelector || ''} onChange={e => set('titleSelector', e.target.value)}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs text-white/50 mb-1">링크 셀렉터</label>
+                <input value={form.linkSelector || ''} onChange={e => set('linkSelector', e.target.value)}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs text-white/50 mb-1">날짜 셀렉터</label>
+                <input value={form.dateSelector || ''} onChange={e => set('dateSelector', e.target.value)}
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+              </div>
+            </div>
+          )}
+          {/* Meta */}
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs text-white/50 mb-1">언어</label>
+              <select value={form.language || 'ko'} onChange={e => set('language', e.target.value)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                <option value="ko">한국어</option><option value="en">영어</option>
+                <option value="ja">일본어</option><option value="zh">중국어</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-white/50 mb-1">요금</label>
+              <select value={form.pricingTier || 'free'} onChange={e => set('pricingTier', e.target.value as PricingTier)}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                <option value="free">무료</option>
+                <option value="paid">유료</option>
+                <option value="requires_subscription">구독 필요</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-white/50 mb-1">중요도</label>
+              <select value={form.relevanceScore || 3} onChange={e => set('relevanceScore', Number(e.target.value))}
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+                {[1,2,3,4,5].map(n => <option key={n} value={n}>{'★'.repeat(n)}</option>)}
+              </select>
+            </div>
+          </div>
+          {/* Description */}
+          <div>
+            <label className="block text-xs text-white/50 mb-1">설명</label>
+            <textarea value={form.description || ''} onChange={e => set('description', e.target.value)} rows={2}
+              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none resize-none" />
+          </div>
+          {/* Keywords */}
+          <div>
+            <label className="block text-xs text-white/50 mb-1">기본 키워드 (쉼표 구분)</label>
+            <input
+              value={(form.defaultKeywords || []).join(', ')}
+              onChange={e => set('defaultKeywords', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="loginRequired" checked={!!form.loginRequired}
+              onChange={e => set('loginRequired', e.target.checked)} className="rounded" />
+            <label htmlFor="loginRequired" className="text-sm text-white/70">로그인 필요 (유료/구독)</label>
+          </div>
+          {(form.pricingTier === 'paid' || form.pricingTier === 'requires_subscription') && (
+            <div>
+              <label className="block text-xs text-white/50 mb-1">허용 고객사 ID (쉼표 구분, 비워두면 전체 유료 회사)</label>
+              <input
+                value={(form.allowedCompanyIds || []).join(', ')}
+                onChange={e => set('allowedCompanyIds', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                placeholder="company-id-1, company-id-2"
+                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-amber-500/50"
+              />
+              <p className="text-[10px] text-white/30 mt-1">여기 등록된 고객사만 /media 구독 화면에서 이 매체를 볼 수 있습니다.</p>
+            </div>
+          )}
+        </div>
+        <div className="p-6 border-t border-white/10 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-white/60 hover:text-white transition-colors">취소</button>
+          <button
+            onClick={() => onSave(form)}
+            disabled={saving || !form.name || !form.url}
+            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : '저장'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ─────────────────────────────────────────────
 export default function MediaAdmin() {
   const { user } = useAuthStore();
-  const isSuperadmin = (user as any)?.role === 'superadmin';
 
   const [sources, setSources] = useState<GlobalSource[]>([]);
+  const [health, setHealth] = useState<Record<string, SourceHealth>>({});
   const [loading, setLoading] = useState(true);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  const [tab, setTab] = useState<TabId>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<SourceType | 'all'>('all');
-  const [filterCategory, setFilterCategory] = useState<Category>('all');
-  const [filterPricing, setFilterPricing] = useState<PricingTier | 'all'>('all');
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [filterStatus, setFilterStatus] = useState<SourceStatus | 'all'>('all');
+
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [editingSource, setEditingSource] = useState<Partial<GlobalSource> | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [savingSource, setSavingSource] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // ─── Load sources ──────────────────────────────────────────
   const loadSources = useCallback(async () => {
     setLoading(true);
     try {
@@ -118,32 +361,58 @@ export default function MediaAdmin() {
     }
   }, []);
 
-  useEffect(() => { loadSources(); }, [loadSources]);
+  // ─── Load health data ──────────────────────────────────────
+  const loadHealthSimple = useCallback(async (srcs: GlobalSource[]) => {
+    if (srcs.length === 0) return;
+    setHealthLoading(true);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const map: Record<string, SourceHealth> = {};
 
+    await Promise.all(srcs.map(async src => {
+      try {
+        const [recentSnap, todaySnap] = await Promise.all([
+          getDocs(query(collection(db, 'articles'), where('sourceId', '==', src.id), orderBy('collectedAt', 'desc'), limit(1))),
+          getCountFromServer(query(collection(db, 'articles'), where('sourceId', '==', src.id), where('collectedAt', '>=', today))),
+        ]);
+        const last = recentSnap.docs[0]?.data()?.collectedAt ?? null;
+        const lastDate = last?.toDate ? last.toDate() : last?._seconds ? new Date(last._seconds * 1000) : null;
+        const isRecent = lastDate && (Date.now() - lastDate.getTime()) < 6 * 3600000;
+        map[src.id] = {
+          sourceId: src.id,
+          todayCount: todaySnap.data().count,
+          lastCollectedAt: last,
+          status: (isRecent ? 'ok' : 'idle') as 'ok' | 'idle' | 'error',
+        };
+      } catch {
+        map[src.id] = { sourceId: src.id, todayCount: 0, lastCollectedAt: null, status: 'idle' };
+      }
+    }));
+    setHealth(map);
+    setHealthLoading(false);
+  }, []);
+
+  useEffect(() => { loadSources(); }, [loadSources]);
+  useEffect(() => { if (sources.length > 0) loadHealthSimple(sources); }, [sources, loadHealthSimple]);
+
+  // ─── Test source ───────────────────────────────────────────
   const handleTest = async (source: GlobalSource) => {
     setTestingId(source.id);
     try {
-      const auth = getAuth();
-      const token = await auth.currentUser?.getIdToken();
+      const token = await getAuth().currentUser?.getIdToken();
       if (!token) throw new Error('Not authenticated');
-
-      const response = await fetch(
+      const res = await fetch(
         'https://us-central1-eumnews-9a99c.cloudfunctions.net/testSourceConnectionHttp',
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ sourceId: source.id }),
         }
       );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Test failed');
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Test failed');
       }
-
       await loadSources();
     } catch (err: any) {
       console.error('Test failed:', err);
@@ -152,22 +421,23 @@ export default function MediaAdmin() {
     }
   };
 
-  const handleSave = async () => {
-    if (!editingSource?.name || !editingSource?.url || !editingSource?.type) return;
+  // ─── Save source ───────────────────────────────────────────
+  const handleSave = async (form: Partial<GlobalSource>) => {
+    if (!form.name || !form.url || !form.type) return;
     setSavingSource(true);
     try {
       const fn = httpsCallable(functions, 'upsertGlobalSource');
-      await fn(editingSource);
+      await fn(form);
       await loadSources();
-      setIsModalOpen(false);
       setEditingSource(null);
     } catch (err: any) {
-      alert('Save failed: ' + err.message);
+      alert('저장 실패: ' + err.message);
     } finally {
       setSavingSource(false);
     }
   };
 
+  // ─── Delete source ─────────────────────────────────────────
   const handleDelete = async (id: string) => {
     if (!confirm('이 매체를 삭제하시겠습니까?')) return;
     setDeletingId(id);
@@ -176,594 +446,326 @@ export default function MediaAdmin() {
       await fn({ id });
       setSources(prev => prev.filter(s => s.id !== id));
     } catch (err: any) {
-      alert('Delete failed: ' + err.message);
+      alert('삭제 실패: ' + err.message);
     } finally {
       setDeletingId(null);
     }
   };
 
+  // ─── Filter logic ──────────────────────────────────────────
   const filtered = sources.filter(s => {
-    const matchSearch = !searchTerm || s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.url.toLowerCase().includes(searchTerm.toLowerCase());
+    if (tab === 'errors' && s.status !== 'error' && !(s.lastTestResult && !s.lastTestResult.success)) return false;
+    if (tab === 'health') {
+      // Health tab: show active sources only
+      if (s.status !== 'active') return false;
+    }
+    const matchSearch = !searchTerm || s.name.toLowerCase().includes(searchTerm.toLowerCase()) || (s.url || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchType = filterType === 'all' || s.type === filterType;
     const matchCat = filterCategory === 'all' || s.category === filterCategory;
-    const matchPricing = filterPricing === 'all' || s.pricingTier === filterPricing;
-    return matchSearch && matchType && matchCat && matchPricing;
+    const matchStatus = filterStatus === 'all' || s.status === filterStatus;
+    return matchSearch && matchType && matchCat && matchStatus;
   });
 
-  if (!isSuperadmin) {
+  // ─── Stats ─────────────────────────────────────────────────
+  const stats = {
+    total: sources.length,
+    active: sources.filter(s => s.status === 'active').length,
+    rss: sources.filter(s => s.type === 'rss').length,
+    api: sources.filter(s => s.type === 'api').length,
+    scraping: sources.filter(s => s.type === 'scraping' || s.type === 'puppeteer').length,
+    errors: sources.filter(s => s.status === 'error' || (s.lastTestResult && !s.lastTestResult.success)).length,
+  };
+
+  const TABS: { id: TabId; label: string; count?: number }[] = [
+    { id: 'all',    label: '전체 매체',  count: stats.total },
+    { id: 'health', label: '수집 현황',  count: stats.active },
+    { id: 'errors', label: '오류/알림',  count: stats.errors },
+  ];
+
+  if (loading) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center text-gray-500">
-        <Globe className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-        <p className="font-medium">Superadmin access required.</p>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Media Library</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
-            글로벌 매체 라이브러리 관리. 회사는 이 목록에서 구독할 매체를 선택합니다.
-          </p>
+          <h1 className="text-2xl font-bold text-white">마스터 매체 관리</h1>
+          <p className="text-white/40 text-sm mt-0.5">모든 수집 매체를 통합 관리합니다</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={loadSources}
-            disabled={loading}
-            className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
-            title="새로고침"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-          <button
-            onClick={() => {
-              // 모든 RSS 일괄 테스트
-              const rssSources = sources.filter(s => s.type === 'rss');
-              rssSources.forEach(src => setTimeout(() => handleTest(src), 200));
-            }}
-            disabled={loading || testingId !== null}
-            className="flex items-center px-3 py-2 text-xs font-medium bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
-            title="모든 RSS 연결 테스트"
-          >
-            <RefreshCw className={`w-3 h-3 mr-1.5 ${testingId ? 'animate-spin' : ''}`} />
-            RSS 일괄 테스트
-          </button>
-          <button
-            onClick={() => { setEditingSource(BLANK_SOURCE); setIsModalOpen(true); }}
-            className="flex items-center px-4 py-2 bg-[#1e3a5f] text-white rounded-lg font-medium text-sm hover:bg-[#2a4a73] transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4 mr-2" />매체 추가
-          </button>
-        </div>
+        <button
+          onClick={() => setEditingSource({ ...BLANK_SOURCE })}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          <Plus className="w-4 h-4" /> 매체 추가
+        </button>
       </div>
 
       {/* Stats bar */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {(Object.keys(TYPE_META) as SourceType[]).map(type => {
-          const count = sources.filter(s => s.type === type).length;
-          const meta = TYPE_META[type];
-          return (
-            <button
-              key={type}
-              onClick={() => setFilterType(filterType === type ? 'all' : type)}
-              className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
-                filterType === type
-                  ? 'border-[#1e3a5f] bg-[#1e3a5f]/5 shadow-sm dark:border-blue-500 dark:bg-blue-900/20'
-                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className={`p-1.5 rounded-lg ${meta.bg}`}>
-                  <meta.icon className={`w-3.5 h-3.5 ${meta.color}`} />
-                </span>
-                <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{meta.label}</span>
-              </div>
-              <span className="text-lg font-bold text-gray-900 dark:text-white">{count}</span>
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+        {[
+          { label: '전체',    value: stats.total,    color: 'text-white' },
+          { label: '활성',    value: stats.active,   color: 'text-green-400' },
+          { label: 'RSS',     value: stats.rss,      color: 'text-orange-400' },
+          { label: 'API',     value: stats.api,      color: 'text-blue-400' },
+          { label: '스크래핑', value: stats.scraping, color: 'text-purple-400' },
+          { label: '오류',    value: stats.errors,   color: stats.errors > 0 ? 'text-red-400' : 'text-white/30' },
+        ].map(s => (
+          <div key={s.label} className="bg-white/5 border border-white/8 rounded-xl p-3 text-center">
+            <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
+            <div className="text-xs text-white/40 mt-0.5">{s.label}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
+      {/* Tabs */}
+      <div className="flex gap-1 bg-white/5 border border-white/8 rounded-xl p-1 w-fit">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              tab === t.id
+                ? 'bg-white/10 text-white'
+                : 'text-white/40 hover:text-white/70'
+            }`}
+          >
+            {t.label}
+            {t.count != null && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
+                tab === t.id ? 'bg-white/15 text-white' : 'bg-white/5 text-white/30'
+              }`}>{t.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" />
           <input
-            type="text"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
-            placeholder="매체명/URL 검색..."
-            className="pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f] w-56"
+            placeholder="매체 검색..."
+            className="pl-8 pr-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-white/30 outline-none focus:border-blue-500/40 w-48"
           />
         </div>
-        <select
-          value={filterCategory}
-          onChange={e => setFilterCategory(e.target.value as Category)}
-          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-        >
-          <option value="all">모든 분야</option>
-          <option value="domestic">국내</option>
-          <option value="asian">아시아</option>
-          <option value="global">글로벌</option>
-          <option value="tech">테크</option>
+        <select value={filterType} onChange={e => setFilterType(e.target.value as SourceType | 'all')}
+          className="px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+          <option value="all">모든 방식</option>
+          {Object.entries(TYPE_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
         </select>
-        <select
-          value={filterPricing}
-          onChange={e => setFilterPricing(e.target.value as PricingTier | 'all')}
-          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-        >
-          <option value="all">모든 가격</option>
-          <option value="free">무료</option>
-          <option value="paid">유료</option>
-          <option value="requires_subscription">구독 필요</option>
+        <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+          className="px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+          {CATEGORY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-        <span className="flex items-center text-sm text-gray-500 dark:text-gray-400 ml-2">
-          {filtered.length} / {sources.length} 매체
-        </span>
+        {tab === 'all' && (
+          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as SourceStatus | 'all')}
+            className="px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none">
+            <option value="all">모든 상태</option>
+            <option value="active">활성</option>
+            <option value="inactive">비활성</option>
+            <option value="error">오류</option>
+          </select>
+        )}
+        <button onClick={() => { loadSources(); }} className="ml-auto p-2 text-white/40 hover:text-white transition-colors">
+          <RefreshCw className="w-4 h-4" />
+        </button>
+        {healthLoading && <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />}
       </div>
 
-      {/* Source list */}
-      {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <Globe className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p>조건에 맞는 매체가 없습니다.</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map(source => {
-            const typeMeta = TYPE_META[source.type] ?? { label: source.type || '?', icon: Globe, color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-700' };
-            const pricingMeta = PRICING_META[source.pricingTier] ?? { label: source.pricingTier || '', color: 'text-gray-500' };
-            const isExpanded = expandedId === source.id;
-            const isTesting = testingId === source.id;
-            const isDeleting = deletingId === source.id;
-
-            return (
-              <div
-                key={source.id}
-                className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-md transition-shadow"
-              >
-                {/* Row header */}
-                <div className="flex items-center gap-3 p-4">
-                  {/* Type badge */}
-                  <span className={`flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium ${typeMeta.bg} ${typeMeta.color}`}>
-                    <typeMeta.icon className="w-3 h-3" />
-                    {typeMeta.label}
-                  </span>
-
-                  {/* Status dot */}
-                  <span className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${
-                    source.status === 'active' ? 'bg-green-400' :
-                    source.status === 'error' ? 'bg-red-400' :
-                    source.status === 'testing' ? 'bg-yellow-400 animate-pulse' :
-                    'bg-gray-300 dark:bg-gray-600'
-                  }`} />
-
-                  {/* Name + meta */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-gray-900 dark:text-white">{source.name}</span>
-                      <StarRating score={source.relevanceScore} />
-                      <span className={`text-[10px] font-bold uppercase py-0.5 px-1.5 rounded-full shadow-sm ${pricingMeta.color}`}>
-                        {pricingMeta.label}
-                      </span>
-                      <span className="text-xs text-gray-400 uppercase">{source.language}</span>
-                      <span className="text-xs text-gray-400">
-                        {source.category === 'domestic' ? '국내' : source.category === 'asian' ? '아시아' : source.category === 'global' ? '글로벌' : source.category}
-                      </span>
-                    </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{source.url}</p>
-                  </div>
-
-                  {/* Test result badge */}
-                  {source.lastTestResult && (
-                    <div className="flex-shrink-0 hidden md:flex items-center gap-1">
-                      {source.lastTestResult.success
-                        ? <CheckCircle2 className="w-4 h-4 text-green-500" />
-                        : <XCircle className="w-4 h-4 text-red-400" />}
-                      {source.lastTestResult.articlesFound !== undefined && (
-                        <span className="text-xs text-gray-500">{source.lastTestResult.articlesFound}건</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Actions */}
-                  <div className="flex-shrink-0 flex items-center gap-1">
-                    <button
-                      onClick={() => handleTest(source)}
-                      disabled={isTesting}
-                      title="연결 테스트"
-                      className="p-1.5 text-gray-400 hover:text-[#1e3a5f] dark:hover:text-blue-400 transition-colors disabled:opacity-50 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+      {/* Source table */}
+      <div className="bg-white/3 border border-white/8 rounded-xl overflow-hidden">
+        {filtered.length === 0 ? (
+          <div className="text-center py-16 text-white/30">
+            <Globe className="w-10 h-10 mx-auto mb-3 opacity-30" />
+            <p>조건에 맞는 매체가 없습니다.</p>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-white/5 text-xs text-white/30 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left">매체명</th>
+                <th className="px-4 py-3 text-left">방식</th>
+                <th className="px-4 py-3 text-left">분야</th>
+                <th className="px-4 py-3 text-left">상태</th>
+                <th className="px-4 py-3 text-left">수집 현황</th>
+                <th className="px-4 py-3 text-left">마지막 테스트</th>
+                <th className="px-4 py-3 text-right">액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(source => {
+                const h = health[source.id];
+                const isExpanded = expandedId === source.id;
+                const isTesting = testingId === source.id;
+                const catLabel = CATEGORY_OPTIONS.find(o => o.value === source.category)?.label || source.category;
+                return (
+                  <>
+                    <tr
+                      key={source.id}
+                      className="border-b border-white/5 hover:bg-white/3 transition-colors"
                     >
-                      {isTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    </button>
-                    <button
-                      onClick={() => { setEditingSource({ ...source }); setIsModalOpen(true); }}
-                      title="편집"
-                      className="p-1.5 text-gray-400 hover:text-[#1e3a5f] dark:hover:text-blue-400 transition-colors rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(source.id)}
-                      disabled={isDeleting}
-                      title="삭제"
-                      className="p-1.5 text-gray-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
-                    >
-                      {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                    </button>
-                    <button
-                      onClick={() => setExpandedId(isExpanded ? null : source.id)}
-                      className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Expanded detail */}
-                {isExpanded && (
-                  <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-4 bg-gray-50 dark:bg-gray-900/30 space-y-3">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                      <div className="space-y-1.5">
-                        {source.rssUrl && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">RSS URL</span>
-                            <a href={source.rssUrl} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline truncate">{source.rssUrl}</a>
-                          </div>
-                        )}
-                        {source.apiEndpoint && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">API</span>
-                            <span className="text-gray-700 dark:text-gray-300 truncate">{source.apiEndpoint}</span>
-                          </div>
-                        )}
-                        {source.listSelector && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">List</span>
-                            <code className="text-xs bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-gray-800 dark:text-gray-200">{source.listSelector}</code>
-                          </div>
-                        )}
-                        {source.titleSelector && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">Title</span>
-                            <code className="text-xs bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-gray-800 dark:text-gray-200">{source.titleSelector}</code>
-                          </div>
-                        )}
-                        {source.loginRequired && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">Auth</span>
-                            <span className="text-yellow-600 dark:text-yellow-400">로그인 필요 ({source.authType})</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="space-y-1.5">
-                        <div className="flex gap-2">
-                          <span className="text-gray-500 w-20 flex-shrink-0">키워드</span>
-                          <div className="flex flex-wrap gap-1">
-                            {(source.defaultKeywords || []).map(kw => (
-                              <span key={kw} className="text-xs bg-[#1e3a5f]/10 text-[#1e3a5f] dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded-full">{kw}</span>
-                            ))}
-                          </div>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : source.id)}
+                            className="text-left"
+                          >
+                            <div className="font-medium text-sm text-white flex items-center gap-1.5">
+                              {source.name}
+                              {source.loginRequired && <Lock className="w-3 h-3 text-amber-400" />}
+                              {source.pricingTier === 'paid' && (
+                                <span className="text-[9px] px-1 py-0 bg-red-500/20 text-red-400 rounded font-bold">유료</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-white/30 truncate max-w-[180px]">{source.url}</div>
+                          </button>
                         </div>
-                        {source.notes && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">메모</span>
-                            <span className="text-gray-600 dark:text-gray-400 text-xs">{source.notes}</span>
-                          </div>
-                        )}
-                        {source.lastTestedAt && (
-                          <div className="flex gap-2">
-                            <span className="text-gray-500 w-20 flex-shrink-0">마지막 테스트</span>
-                            <span className="text-gray-600 dark:text-gray-400 text-xs">
-                              {source.lastTestedAt?.toDate ? source.lastTestedAt.toDate().toLocaleString('ko-KR') : ''}
+                      </td>
+                      <td className="px-4 py-3">
+                        <TypeBadge type={source.type} />
+                      </td>
+                      <td className="px-4 py-3 text-xs text-white/50">{catLabel}</td>
+                      <td className="px-4 py-3">
+                        <StatusDot status={source.status} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <HealthBadge health={h} />
+                      </td>
+                      <td className="px-4 py-3">
+                        {source.lastTestResult ? (
+                          <div className="flex items-center gap-1">
+                            {source.lastTestResult.success
+                              ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+                              : <XCircle className="w-3.5 h-3.5 text-red-400" />}
+                            <span className={`text-xs ${source.lastTestResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                              {source.lastTestResult.success
+                                ? `${source.lastTestResult.articlesFound || 0}건`
+                                : '실패'}
                             </span>
                           </div>
+                        ) : (
+                          <span className="text-xs text-white/20">미테스트</span>
                         )}
-                      </div>
-                    </div>
-
-                    {/* Test result detail */}
-                    {source.lastTestResult && (
-                      <div className={`p-3 rounded-lg text-sm ${
-                        source.lastTestResult.success
-                          ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
-                          : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
-                      }`}>
-                        <div className="flex items-center gap-2 mb-1">
-                          {source.lastTestResult.success
-                            ? <CheckCircle2 className="w-4 h-4 text-green-600" />
-                            : <XCircle className="w-4 h-4 text-red-500" />}
-                          <span className={source.lastTestResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                            {source.lastTestResult.message}
-                          </span>
-                          {source.lastTestResult.latencyMs && (
-                            <span className="ml-auto text-xs text-gray-500">{source.lastTestResult.latencyMs}ms</span>
-                          )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => handleTest(source)}
+                            disabled={isTesting}
+                            title="연결 테스트"
+                            className="p-1.5 text-white/40 hover:text-blue-400 transition-colors disabled:opacity-40"
+                          >
+                            {isTesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : source.id)}
+                            title="상세 보기"
+                            className="p-1.5 text-white/40 hover:text-white transition-colors"
+                          >
+                            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => setEditingSource({ ...source })}
+                            title="편집"
+                            className="p-1.5 text-white/40 hover:text-white transition-colors"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(source.id)}
+                            disabled={deletingId === source.id}
+                            title="삭제"
+                            className="p-1.5 text-white/40 hover:text-red-400 transition-colors disabled:opacity-40"
+                          >
+                            {deletingId === source.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                          </button>
                         </div>
-                        {source.lastTestResult.sampleTitles && source.lastTestResult.sampleTitles.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            <p className="text-xs text-gray-500 font-medium">수집 샘플:</p>
-                            {source.lastTestResult.sampleTitles.map((title, i) => (
-                              <p key={i} className="text-xs text-gray-600 dark:text-gray-400 pl-3 border-l-2 border-gray-300">• {title}</p>
-                            ))}
+                      </td>
+                    </tr>
+
+                    {/* Expanded detail row */}
+                    {isExpanded && (
+                      <tr key={`${source.id}-detail`} className="border-b border-white/5 bg-white/2">
+                        <td colSpan={7} className="px-6 py-4">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-white/60">
+                            {source.rssUrl && (
+                              <div>
+                                <span className="text-white/30 block mb-0.5">RSS URL</span>
+                                <span className="text-white/70 break-all">{source.rssUrl}</span>
+                              </div>
+                            )}
+                            {source.apiEndpoint && (
+                              <div>
+                                <span className="text-white/30 block mb-0.5">API 엔드포인트</span>
+                                <span className="text-white/70 break-all">{source.apiEndpoint}</span>
+                              </div>
+                            )}
+                            {source.listSelector && (
+                              <div>
+                                <span className="text-white/30 block mb-0.5">목록 셀렉터</span>
+                                <code className="text-purple-300">{source.listSelector}</code>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-white/30 block mb-0.5">기본 키워드</span>
+                              <span className="text-white/70">{(source.defaultKeywords || []).join(', ') || '—'}</span>
+                            </div>
+                            <div>
+                              <span className="text-white/30 block mb-0.5">언어</span>
+                              <span className="text-white/70">{source.language?.toUpperCase() || '—'}</span>
+                            </div>
+                            <div>
+                              <span className="text-white/30 block mb-0.5">중요도</span>
+                              <span className="text-yellow-400">{'★'.repeat(source.relevanceScore || 3)}</span>
+                            </div>
+                            {source.localScraperId && (
+                              <div>
+                                <span className="text-white/30 block mb-0.5">로컬 스크래퍼 ID</span>
+                                <span className="text-indigo-300">{source.localScraperId}</span>
+                              </div>
+                            )}
+                            {source.notes && (
+                              <div className="col-span-2">
+                                <span className="text-white/30 block mb-0.5">메모</span>
+                                <span className="text-white/70">{source.notes}</span>
+                              </div>
+                            )}
+                            {source.lastTestResult?.message && (
+                              <div className="col-span-2">
+                                <span className="text-white/30 block mb-0.5">마지막 테스트 메시지</span>
+                                <span className={source.lastTestResult.success ? 'text-green-300' : 'text-red-300'}>
+                                  {source.lastTestResult.message}
+                                </span>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
+                        </td>
+                      </tr>
                     )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
 
-                    {/* Test button */}
-                    <button
-                      onClick={() => handleTest(source)}
-                      disabled={isTesting}
-                      className="flex items-center px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-                    >
-                      {isTesting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                      {isTesting ? '테스트 중...' : '연결 테스트 실행'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Edit/Create Modal */}
-      {isModalOpen && editingSource && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl my-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h2 className="text-lg font-bold text-gray-900 dark:text-white">
-                {editingSource.id ? '매체 편집' : '새 매체 추가'}
-              </h2>
-              <button
-                onClick={() => { setIsModalOpen(false); setEditingSource(null); }}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-              {/* Basic info */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">매체명 *</label>
-                  <input
-                    type="text"
-                    value={editingSource.name || ''}
-                    onChange={e => setEditingSource(s => ({ ...s, name: e.target.value }))}
-                    placeholder="한국경제신문"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">설명</label>
-                  <textarea
-                    value={editingSource.description || ''}
-                    onChange={e => setEditingSource(s => ({ ...s, description: e.target.value }))}
-                    rows={2}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">사이트 URL *</label>
-                  <input
-                    type="url"
-                    value={editingSource.url || ''}
-                    onChange={e => setEditingSource(s => ({ ...s, url: e.target.value }))}
-                    placeholder="https://www.example.com"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">수집 방식 *</label>
-                  <select
-                    value={editingSource.type || 'rss'}
-                    onChange={e => setEditingSource(s => ({ ...s, type: e.target.value as SourceType }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    <option value="rss">RSS</option>
-                    <option value="scraping">Scraping (Cheerio)</option>
-                    <option value="puppeteer">Puppeteer (JS 렌더링)</option>
-                    <option value="api">API</option>
-                    <option value="newsletter">Newsletter</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">언어</label>
-                  <select
-                    value={editingSource.language || 'ko'}
-                    onChange={e => setEditingSource(s => ({ ...s, language: e.target.value as any }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    <option value="ko">한국어</option>
-                    <option value="en">English</option>
-                    <option value="ja">日本語</option>
-                    <option value="zh">中文</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">분야</label>
-                  <select
-                    value={editingSource.category || 'domestic'}
-                    onChange={e => setEditingSource(s => ({ ...s, category: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    <option value="domestic">국내</option>
-                    <option value="asian">아시아</option>
-                    <option value="global">글로벌</option>
-                    <option value="tech">테크</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">가격</label>
-                  <select
-                    value={editingSource.pricingTier || 'free'}
-                    onChange={e => setEditingSource(s => ({ ...s, pricingTier: e.target.value as PricingTier }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    <option value="free">무료</option>
-                    <option value="paid">유료</option>
-                    <option value="requires_subscription">구독 필요</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">관련성 (★)</label>
-                  <select
-                    value={editingSource.relevanceScore || 3}
-                    onChange={e => setEditingSource(s => ({ ...s, relevanceScore: parseInt(e.target.value) as any }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    {[5,4,3,2,1].map(n => <option key={n} value={n}>{Array(n).fill('★').join('')}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">상태</label>
-                  <select
-                    value={editingSource.status || 'inactive'}
-                    onChange={e => setEditingSource(s => ({ ...s, status: e.target.value as SourceStatus }))}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
-                  >
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                  </select>
-                </div>
-              </div>
-
-{/* Type-specific fields */}
-              {editingSource.type === 'rss' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">RSS URL</label>
-                  <input
-                    type="url"
-                    value={editingSource.rssUrl || editingSource.url || ''}
-                    onChange={e => setEditingSource(s => ({ ...s, rssUrl: e.target.value }))}
-                    placeholder="https://www.example.com/rss"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  />
-                </div>
-              )}
-
-              {(editingSource.type === 'scraping' || editingSource.type === 'puppeteer') && (
-                <div className="space-y-3 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
-                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">CSS 셀렉터 설정</p>
-                  {[
-                    { key: 'listSelector', label: '리스트 컨테이너', placeholder: '.article-list li, .news-list li' },
-                    { key: 'titleSelector', label: '제목', placeholder: 'h3 a, .title a' },
-                    { key: 'linkSelector', label: '링크 (선택)', placeholder: 'a.read-more' },
-                    { key: 'contentSelector', label: '본문/요약 (선택)', placeholder: '.lead, .summary' },
-                    { key: 'dateSelector', label: '날짜 (선택)', placeholder: 'time, .date' },
-                  ].map(field => (
-                    <div key={field.key}>
-                      <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">{field.label}</label>
-                      <input
-                        type="text"
-                        value={(editingSource as any)[field.key] || ''}
-                        onChange={e => setEditingSource(s => ({ ...s, [field.key]: e.target.value }))}
-                        placeholder={field.placeholder}
-                        className="w-full px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f] font-mono"
-                      />
-                    </div>
-                  ))}
-                  <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={!!editingSource.loginRequired}
-                        onChange={e => setEditingSource(s => ({ ...s, loginRequired: e.target.checked }))}
-                        className="rounded"
-                      />
-                      <span className="text-sm text-gray-700 dark:text-gray-300">로그인 필요</span>
-                    </label>
-                    {editingSource.loginRequired && (
-                      <select
-                        value={editingSource.authType || 'session'}
-                        onChange={e => setEditingSource(s => ({ ...s, authType: e.target.value }))}
-                        className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-white outline-none"
-                      >
-                        <option value="session">Session Cookie</option>
-                        <option value="cookie">Cookie</option>
-                      </select>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {editingSource.type === 'api' && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">API Endpoint</label>
-                    <input
-                      type="url"
-                      value={editingSource.apiEndpoint || ''}
-                      onChange={e => setEditingSource(s => ({ ...s, apiEndpoint: e.target.value }))}
-                      placeholder="https://api.example.com/v1/articles"
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">API Key 환경변수명</label>
-                    <input
-                      type="text"
-                      value={editingSource.apiKeyEnvName || ''}
-                      onChange={e => setEditingSource(s => ({ ...s, apiKeyEnvName: e.target.value, apiKeyRequired: !!e.target.value }))}
-                      placeholder="NEWSAPI_KEY"
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none font-mono"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Keywords */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">기본 키워드 (쉼표 구분)</label>
-                <input
-                  type="text"
-                  value={(editingSource.defaultKeywords || []).join(', ')}
-                  onChange={e => setEditingSource(s => ({ ...s, defaultKeywords: e.target.value.split(',').map(k => k.trim()).filter(Boolean) }))}
-                  placeholder="M&A, 인수, 합병, PE, VC"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                />
-              </div>
-
-              {/* Notes */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">관리자 메모</label>
-                <textarea
-                  value={editingSource.notes || ''}
-                  onChange={e => setEditingSource(s => ({ ...s, notes: e.target.value }))}
-                  rows={2}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
-              <button
-                onClick={() => { setIsModalOpen(false); setEditingSource(null); }}
-                className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-white transition-colors"
-              >
-                취소
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={savingSource || !editingSource.name || !editingSource.url}
-                className="flex items-center px-5 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
-              >
-                {savingSource ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                {editingSource.id ? '수정 저장' : '매체 추가'}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Edit modal */}
+      {editingSource && (
+        <SourceModal
+          source={editingSource}
+          onSave={handleSave}
+          onClose={() => setEditingSource(null)}
+          saving={savingSource}
+        />
       )}
     </div>
   );

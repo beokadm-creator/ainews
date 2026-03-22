@@ -117,7 +117,7 @@ export default function ReportNew() {
 
     setGenerating(true);
     try {
-      const fn = httpsCallable(functions, 'generateReport');
+      const fn = httpsCallable(functions, 'generateReportV2', { timeout: 60000 }); // 60초 (빠름)
       const result = await fn({
         companyId,
         articleIds,
@@ -126,16 +126,52 @@ export default function ReportNew() {
         reportTitle: reportTitle || undefined,
       }) as any;
 
-      if (result.data?.success) {
-        setOutputId(result.data.outputId);
-        setDone(true);
+      if (result.data?.success && result.data?.outputId) {
+        const generatedOutputId = result.data.outputId;
+        setOutputId(generatedOutputId);
+
+        // 비동기: status polling 시작 (최대 10분)
+        const startTime = Date.now();
+        const maxWaitMs = 10 * 60 * 1000; // 10분
+
+        const pollStatus = async () => {
+          try {
+            while (Date.now() - startTime < maxWaitMs) {
+              const outputDoc = await getDoc(doc(db, 'outputs', generatedOutputId));
+              if (!outputDoc.exists()) {
+                throw new Error('보고서 문서를 찾을 수 없습니다.');
+              }
+
+              const data = outputDoc.data() as any;
+              const status = data?.status;
+
+              if (status === 'completed') {
+                setDone(true);
+                return;
+              } else if (status === 'failed') {
+                throw new Error(`보고서 생성 실패: ${data?.errorMessage || '알 수 없는 오류'}`);
+              }
+
+              // 2초마다 상태 확인
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
+            throw new Error('보고서 생성 시간 초과 (10분)');
+          } catch (err: any) {
+            console.error('Status polling error:', err);
+            alert('보고서 생성 중 오류 발생: ' + (err.message || '알 수 없는 오류'));
+            setGenerating(false);
+          }
+        };
+
+        // 백그라운드에서 polling 시작 (await 하지 않음)
+        pollStatus();
       } else {
-        throw new Error('보고서 생성 실패');
+        throw new Error('보고서 생성 실패: outputId를 받지 못했습니다');
       }
     } catch (err: any) {
       console.error('generateReport error:', err);
       alert('보고서 생성 실패: ' + (err.message || '알 수 없는 오류'));
-    } finally {
       setGenerating(false);
     }
   };

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Filter, Calendar, ChevronRight, Loader2, Bookmark, BookmarkCheck, Activity, Database, CheckCircle, XCircle } from 'lucide-react';
+import { Search, Filter, Calendar, ChevronRight, Loader2, Bookmark, BookmarkCheck, Activity, Database, FileText, Clock } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { collection, query, orderBy, limit, getDocs, where, startAfter, doc, updateDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -13,7 +13,7 @@ export default function History() {
   const isSuperadmin = (user as any)?.role === 'superadmin';
   const navigate = useNavigate();
 
-  const [activeTab, setActiveTab] = useState<'runs' | 'articles'>('runs');
+  const [activeTab, setActiveTab] = useState<'reports' | 'articles'>('reports');
 
   // Articles state
   const [articles, setArticles] = useState<any[]>([]);
@@ -25,11 +25,11 @@ export default function History() {
   const [showOnlyBookmarked, setShowOnlyBookmarked] = useState(false);
   const categories = ['all', 'M&A', 'PEF', 'VC', 'IPO', 'other'];
 
-  // Pipeline Runs state
-  const [runs, setRuns] = useState<any[]>([]);
-  const [runsLoading, setRunsLoading] = useState(false);
-  const [lastRunDoc, setLastRunDoc] = useState<any>(null);
-  const [hasMoreRuns, setHasMoreRuns] = useState(true);
+  // Reports (Outputs) state
+  const [reports, setReports] = useState<any[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [lastReportDoc, setLastReportDoc] = useState<any>(null);
+  const [hasMoreReports, setHasMoreReports] = useState(true);
   const [userMap, setUserMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -37,8 +37,8 @@ export default function History() {
       if (activeTab === 'articles') {
         if (articles.length === 0) fetchArticles();
       } else {
-        if (runs.length === 0) {
-          fetchRuns();
+        if (reports.length === 0) {
+          fetchReports();
           if (companyId && !isSuperadmin) loadUserMap();
         }
       }
@@ -60,7 +60,7 @@ export default function History() {
       const result = await fn({ companyId }) as any;
       const map: Record<string, string> = {};
       if (Array.isArray(result.data)) {
-        result.data.forEach((u: any) => map[u.uid] = u.email);
+        result.data.forEach((u: any) => map[u.uid] = u.email || u.displayName || '삭제된 사용자');
       }
       setUserMap(map);
     } catch (e) {
@@ -68,33 +68,33 @@ export default function History() {
     }
   };
 
-  const fetchRuns = async (isLoadMore = false) => {
+  const fetchReports = async (isLoadMore = false) => {
     if (!user) return;
     if (!isSuperadmin && !companyId) return;
 
-    if (!isLoadMore) setRunsLoading(true);
+    if (!isLoadMore) setReportsLoading(true);
 
     try {
-      const runsRef = collection(db, 'pipelineRuns');
+      const reportsRef = collection(db, 'outputs');
       const constraints: any[] = [];
       if (!isSuperadmin) {
         constraints.push(where('companyId', '==', companyId));
       }
 
-      const q = isLoadMore && lastRunDoc
-        ? query(runsRef, ...constraints, orderBy('startedAt', 'desc'), startAfter(lastRunDoc), limit(20))
-        : query(runsRef, ...constraints, orderBy('startedAt', 'desc'), limit(20));
+      const q = isLoadMore && lastReportDoc
+        ? query(reportsRef, ...constraints, orderBy('createdAt', 'desc'), startAfter(lastReportDoc), limit(20))
+        : query(reportsRef, ...constraints, orderBy('createdAt', 'desc'), limit(20));
 
       const querySnapshot = await getDocs(q);
-      const fetchedRuns = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() as any }));
+      const fetchedReports = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() as any }));
 
-      setRuns(prev => isLoadMore ? [...prev, ...fetchedRuns] : fetchedRuns);
-      setLastRunDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
-      setHasMoreRuns(querySnapshot.docs.length === 20);
+      setReports(prev => isLoadMore ? [...prev, ...fetchedReports] : fetchedReports);
+      setLastReportDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
+      setHasMoreReports(querySnapshot.docs.length === 20);
     } catch (err: any) {
-      console.error('Failed to fetch runs:', err);
+      console.error('Failed to fetch reports:', err);
     } finally {
-      setRunsLoading(false);
+      setReportsLoading(false);
     }
   };
 
@@ -106,7 +106,7 @@ export default function History() {
 
     try {
       const articlesRef = collection(db, 'articles');
-      const constraints: any[] = [where('status', '==', 'published')];
+      const constraints: any[] = [where('status', 'in', ['analyzed', 'published'])];
 
       if (!isSuperadmin) {
         constraints.push(where('companyId', '==', companyId));
@@ -114,10 +114,6 @@ export default function History() {
 
       if (selectedCategory !== 'all') {
         constraints.push(where('category', '==', selectedCategory));
-      }
-
-      if (showOnlyBookmarked) {
-        constraints.push(where('isBookmarked', '==', true));
       }
 
       const q = isLoadMore && lastArticleDoc
@@ -146,12 +142,14 @@ export default function History() {
   const filteredArticles = articles.filter(article => {
     if (!searchTerm) return true;
     const q = searchTerm.toLowerCase();
-    return (
-      article.title?.toLowerCase().includes(q) ||
-      article.companies?.target?.toLowerCase().includes(q) ||
-      article.companies?.acquiror?.toLowerCase().includes(q) ||
-      article.tags?.some((tag: string) => tag.toLowerCase().includes(q))
-    );
+    const matchesTitle = (article.title || '').toLowerCase().includes(q);
+    const matchesSource = (article.source || '').toLowerCase().includes(q);
+    const matchesSummary = (article.summary || []).some((s: string) => s.toLowerCase().includes(q));
+    
+    // 북마크 필터링 (메모리 내)
+    if (showOnlyBookmarked && !article.isBookmarked) return false;
+
+    return matchesTitle || matchesSource || matchesSummary;
   });
 
   const formatDate = (timestamp: any) => {
@@ -162,23 +160,31 @@ export default function History() {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-20">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">내역 조회</h1>
-        <p className="text-gray-600 dark:text-gray-400 mt-1">AI 파이프라인의 작업 내역과 분석된 기사 라이브러리를 확인합니다.</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">분야별 내역 및 라이브러리</h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">생성된 분석 보고서와 매칭된 핵심 기사들을 통합 관리합니다.</p>
+        </div>
+        <div className="flex items-center gap-2">
+           <Activity className="w-5 h-5 text-[#d4af37]" />
+           <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+             최근 {reports.length}개 보고서 조회됨
+           </span>
+        </div>
       </div>
 
       {/* Tabs */}
       <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-xl w-fit border border-gray-200 dark:border-gray-700">
         <button
-          onClick={() => setActiveTab('runs')}
+          onClick={() => setActiveTab('reports')}
           className={`flex items-center px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'runs'
+            activeTab === 'reports'
               ? 'bg-white dark:bg-gray-700 text-[#1e3a5f] dark:text-white shadow-sm'
               : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
           }`}
         >
-          <Activity className="w-4 h-4 mr-2" />
-          작업 내역 (Activities)
+          <FileText className="w-4 h-4 mr-2" />
+          분석 보고서 (Reports)
         </button>
         <button
           onClick={() => setActiveTab('articles')}
@@ -189,92 +195,77 @@ export default function History() {
           }`}
         >
           <Database className="w-4 h-4 mr-2" />
-          라이브러리 (Articles)
+          아카이브 (Articles)
         </button>
       </div>
 
       {/* ────────────────────────────────────────────────────────── */}
-      {/* 1. 작업 내역 (Pipeline Runs) */}
+      {/* 1. 분석 보고서 내역 (Reports) */}
       {/* ────────────────────────────────────────────────────────── */}
-      {activeTab === 'runs' && (
+      {activeTab === 'reports' && (
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-          {runsLoading && !runs.length ? (
+          {reportsLoading && !reports.length ? (
             <div className="flex items-center justify-center h-64">
-              <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
+              <Loader2 className="w-8 h-8 animate-spin text-[#d4af37]" />
             </div>
-          ) : runs.length === 0 ? (
-            <div className="text-center text-gray-500 py-16">기록된 작업 내역이 없습니다.</div>
+          ) : reports.length === 0 ? (
+            <div className="text-center text-gray-500 py-16 flex flex-col items-center gap-2">
+              <Activity className="w-10 h-10 text-gray-200 mb-2" />
+              아직 생성된 보고서가 없습니다.
+            </div>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {runs.map(run => {
-                const config = run.configSnapshot;
-                const filters = config?.filters || {};
-                const sourceName = isSuperadmin 
-                  ? (run.companyName || 'Unknown Company') 
-                  : (userMap[run.triggeredBy] || run.triggeredBy || '시스템_자동');
+              {reports.map(report => {
+                const creator = userMap[report.requestedBy] || report.requestedBy || (report.type === 'daily_briefing' ? '시스템 자동' : '알 수 없음');
+                const isCustom = report.type === 'custom_report';
 
                 return (
-                  <div key={run.id} className="p-5 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                  <div key={report.id} 
+                    onClick={() => navigate(`/briefing?outputId=${report.id}`)}
+                    className="p-5 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer group"
+                  >
                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
-                      
-                      {/* Left side */}
-                      <div>
-                        <div className="flex items-center gap-3 mb-2">
-                          <span className="text-sm font-bold text-gray-900 dark:text-white">
-                            {isSuperadmin ? '🏢 ' : '👤 '}{sourceName}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-1.5">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                            isCustom ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          }`}>
+                            {isCustom ? '커스텀 분석' : '정기 브리핑'}
                           </span>
                           <span className="text-xs text-gray-400 flex items-center">
-                            <Calendar className="w-3.5 h-3.5 mr-1" />
-                            {formatDate(run.startedAt)}
-                          </span>
-                          <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
-                            run.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
-                            run.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
-                            'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          }`}>
-                            {run.status === 'completed' ? '완료' : run.status === 'failed' ? '실패' : '진행중'}
+                            <Clock className="w-3.5 h-3.5 mr-1" />
+                            {formatDate(report.createdAt)}
                           </span>
                         </div>
                         
+                        <h3 className="text-base font-bold text-gray-900 dark:text-white group-hover:text-[#d4af37] transition-colors truncate">
+                          {report.title}
+                        </h3>
+                        
                         <div className="flex flex-wrap items-center gap-2 mt-2">
-                          <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-1 rounded border border-gray-200 dark:border-gray-600">
-                            기간: {filters.dateRange?.mode || filters.dateRange || 'today'}
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            👤 {creator}
                           </span>
-                          {filters.includeKeywords?.length > 0 && (
-                            <span className="text-xs text-[#1e3a5f] dark:text-blue-300 bg-[#1e3a5f]/10 dark:bg-blue-900/30 px-2 py-1 rounded font-medium">
-                              + 포함: {filters.includeKeywords.join(', ')}
-                            </span>
-                          )}
-                          {filters.excludeKeywords?.length > 0 && (
-                            <span className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/10 px-2 py-1 rounded font-medium">
-                              - 제외: {filters.excludeKeywords.join(', ')}
-                            </span>
+                          <span className="text-gray-200 dark:text-gray-700">|</span>
+                          <span className="text-xs text-gray-500">기사 {report.articleCount || 0}건 참조</span>
+                          {report.keywords?.length > 0 && (
+                            <>
+                              <span className="text-gray-200 dark:text-gray-700">|</span>
+                              <div className="flex gap-1">
+                                {report.keywords.slice(0, 3).map((k: string) => (
+                                  <span key={k} className="text-[10px] bg-gray-100 dark:bg-gray-700 text-gray-500 px-1.5 py-0.5 rounded">
+                                    #{k}
+                                  </span>
+                                ))}
+                              </div>
+                            </>
                           )}
                         </div>
                       </div>
 
-                      {/* Right side stats */}
-                      <div className="flex space-x-6 text-center bg-gray-50 dark:bg-gray-700/30 p-3 rounded-lg border border-gray-100 dark:border-gray-600">
-                        <div>
-                          <p className="text-[10px] text-gray-500 uppercase font-semibold">수집</p>
-                          <p className="text-sm font-bold text-gray-900 dark:text-white">
-                            {run.steps?.collection?.result?.totalCollected || 0}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-gray-500 uppercase font-semibold">필터 통과</p>
-                          <p className="text-sm font-bold text-green-600 dark:text-green-400">
-                            {run.steps?.filtering?.result?.passedCount || 0}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-gray-500 uppercase font-semibold">최종 분석</p>
-                          <p className="text-sm font-bold text-[#d4af37] dark:text-yellow-400">
-                            {run.steps?.analysis?.result?.analyzedCount || 0}
-                          </p>
-                        </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 self-center">
+                         <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-[#d4af37] group-hover:translate-x-1 transition-all" />
                       </div>
-
                     </div>
                   </div>
                 );
@@ -282,9 +273,9 @@ export default function History() {
             </div>
           )}
 
-          {hasMoreRuns && !runsLoading && (
+          {hasMoreReports && !reportsLoading && (
             <div className="p-4 border-t border-gray-100 dark:border-gray-700 text-center bg-gray-50 dark:bg-gray-800/50">
-              <button onClick={() => fetchRuns(true)} className="text-[#1e3a5f] dark:text-blue-400 font-medium hover:underline px-6 py-2">
+              <button onClick={() => fetchReports(true)} className="text-[#1e3a5f] dark:text-blue-400 font-medium hover:underline px-6 py-2">
                 더 보기
               </button>
             </div>
@@ -292,9 +283,8 @@ export default function History() {
         </div>
       )}
 
-
       {/* ────────────────────────────────────────────────────────── */}
-      {/* 2. 라이브러리 (Articles) [기존 History 기능] */}
+      {/* 2. 기사 아카이브 (Articles) */}
       {/* ────────────────────────────────────────────────────────── */}
       {activeTab === 'articles' && (
         <div className="space-y-4">
@@ -303,7 +293,7 @@ export default function History() {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
               <input
                 type="text"
-                placeholder="Search title, company, tag..."
+                placeholder="제목, 매체명, 요약 내용으로 검색..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-[#1e3a5f] outline-none bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white"
@@ -337,7 +327,7 @@ export default function History() {
                 }`}
               >
                 {showOnlyBookmarked ? <BookmarkCheck className="w-4 h-4 mr-1.5" /> : <Bookmark className="w-4 h-4 mr-1.5" />}
-                Bookmarked
+                북마크만 보기
               </button>
             </div>
           </div>
@@ -345,7 +335,7 @@ export default function History() {
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
             {articlesLoading && !articles.length ? (
               <div className="flex items-center justify-center h-64">
-                <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
+                <Loader2 className="w-8 h-8 animate-spin text-[#d4af37]" />
               </div>
             ) : filteredArticles.length === 0 ? (
               <div className="text-center text-gray-500 py-16">조건에 맞는 기사가 없습니다.</div>
@@ -356,7 +346,7 @@ export default function History() {
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex items-center space-x-2">
                         <span className="px-2.5 py-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-medium rounded border border-gray-200 dark:border-gray-600">
-                          {article.category || 'other'}
+                          {article.category || '기타'}
                         </span>
                         <span className="text-sm text-gray-500 flex items-center">
                           <Calendar className="w-3.5 h-3.5 mr-1" />
@@ -379,23 +369,25 @@ export default function History() {
                       </a>
                     </h3>
 
-                    <p className="text-gray-600 dark:text-gray-400 text-sm mb-3 line-clamp-2">
+                    <p className="text-gray-600 dark:text-gray-400 text-sm mb-3 line-clamp-2 leading-relaxed">
                       {article.summary?.[0] || `${article.content?.substring(0, 100) || ''}...`}
                     </p>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {article.tags?.slice(0, 3).map((tag: string, idx: number) => (
-                        <span key={idx} className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 px-2 py-1 rounded-md">
+                      {article.tags?.slice(0, 5).map((tag: string, idx: number) => (
+                        <span key={idx} className="text-[10px] text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 px-1.5 py-0.5 rounded">
                           #{tag}
                         </span>
                       ))}
 
-                      <button
-                        onClick={() => article.publishedInOutputId && navigate(`/briefing?outputId=${article.publishedInOutputId}`)}
-                        className="ml-auto flex items-center text-sm text-[#d4af37] font-medium hover:text-[#c19b26]"
-                      >
-                        결과 보고서 보기 <ChevronRight className="w-4 h-4 ml-0.5" />
-                      </button>
+                      {article.publishedInOutputId && (
+                        <button
+                          onClick={() => navigate(`/briefing?outputId=${article.publishedInOutputId}`)}
+                          className="ml-auto flex items-center text-sm text-[#d4af37] font-medium hover:underline"
+                        >
+                          관련 보고서 <ChevronRight className="w-4 h-4 ml-0.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

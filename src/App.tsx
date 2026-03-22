@@ -24,6 +24,7 @@ import Settings from '@/pages/Settings';
 // ─── Superadmin pages ──────────────────────────────────────
 import AdminDashboard from '@/pages/admin/AdminDashboard';
 import AdminArticles from '@/pages/admin/AdminArticles';
+import AdminSettings from '@/pages/admin/AdminSettings';
 import AdminManagement from '@/pages/AdminManagement';
 import MediaAdmin from '@/pages/MediaAdmin';
 import ScrapingRuleAdmin from '@/pages/ScrapingRuleAdmin';
@@ -123,6 +124,11 @@ export default function App() {
         <Route path="/admin/companies" element={
           <ProtectedRoute requiredRole="superadmin">
             <AdminLayout><AdminManagement /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/settings" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><AdminSettings /></AdminLayout>
           </ProtectedRoute>
         } />
         <Route path="/admin/scraping" element={

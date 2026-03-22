@@ -150,11 +150,15 @@ function HtmlReportRenderer({ htmlContent, articles, onFootnoteClick }: HtmlRepo
 
   // HTML에서 <body> 내부 또는 <article> 태그 내용만 추출
   const extractBody = (html: string) => {
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (!html) return '';
+    // 마크다운 코드 블록 태그 제거 (예: ```html ... ```)
+    let cleaned = html.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     if (bodyMatch) return bodyMatch[1];
-    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
+    const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
     if (articleMatch) return articleMatch[0];
-    return html;
+    return cleaned;
   };
 
   return (
@@ -339,7 +343,8 @@ export default function Briefing() {
   const [output, setOutput] = useState<any>(null);
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [articles, setArticles] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingList, setLoadingList] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [sending, setSending] = useState(false);
   const pdfRef = useRef<HTMLDivElement>(null);
   const { user } = useAuthStore();
@@ -355,12 +360,12 @@ export default function Briefing() {
   }, [articles]);
 
   const fetchOutput = async (outputId: string) => {
-    setLoading(true);
+    setLoadingDetail(true);
     setOutput(null);
     setArticles([]);
     try {
       const docSnap = await getDoc(doc(db, 'outputs', outputId));
-      if (!docSnap.exists()) { setLoading(false); return; }
+      if (!docSnap.exists()) { setLoadingDetail(false); return; }
       const data = docSnap.data();
       setOutput({ id: docSnap.id, ...data });
 
@@ -380,13 +385,13 @@ export default function Briefing() {
         setArticles(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
     } finally {
-      setLoading(false);
+      setLoadingDetail(false);
     }
   };
 
   const fetchRecentOutputs = async () => {
-    if (!companyId) { setLoading(false); return; }
-    setLoading(true);
+    if (!companyId) { setLoadingList(false); return; }
+    setLoadingList(true);
     try {
       const q = query(
         collection(db, 'outputs'),
@@ -397,20 +402,21 @@ export default function Briefing() {
       const snap = await getDocs(q);
       const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setRecentOutputs(items);
-      if (items.length > 0) {
-        await fetchOutput(items[0].id);
-        return;
-      }
     } finally {
-      setLoading(false);
+      setLoadingList(false);
     }
   };
 
   useEffect(() => {
+    fetchRecentOutputs();
+  }, [companyId]);
+
+  useEffect(() => {
     const outputId = searchParams.get('outputId');
-    if (outputId) fetchOutput(outputId);
-    else fetchRecentOutputs();
-  }, [searchParams, companyId]);
+    if (outputId) {
+      fetchOutput(outputId);
+    }
+  }, [searchParams]);
 
   const downloadPDF = async () => {
     if (!pdfRef.current || !output) return;
@@ -459,7 +465,7 @@ export default function Briefing() {
 
   const isHtmlReport = output?.type === 'custom_report' || (output?.htmlContent && output.htmlContent.length > 100);
 
-  if (loading) {
+  if (loadingList) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
@@ -467,95 +473,123 @@ export default function Briefing() {
     );
   }
 
-  // 보고서 없음 → 목록 표시
-  if (!output) {
-    return (
-      <div className="space-y-5 max-w-5xl mx-auto">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">보고서</h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">생성된 분석 보고서 목록</p>
-          </div>
+  // 보고서 목록 섹션 (항상 표시)
+  const listSection = (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">보고서</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">생성된 분석 보고서 목록</p>
+        </div>
+        <Link
+          to="/articles"
+          className="flex items-center gap-2 px-4 py-2 bg-[#d4af37] text-white rounded-lg font-semibold text-sm hover:bg-[#b8942d] transition-colors"
+        >
+          <Search className="w-4 h-4" />
+          기사 검색 · 새 보고서
+        </Link>
+      </div>
+
+      {recentOutputs.length > 0 ? (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+          {recentOutputs.map(o => (
+            <button
+              key={o.id}
+              onClick={() => navigate(`/briefing?outputId=${o.id}`)}
+              className="w-full text-left flex flex-col gap-2.5 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-gray-900 dark:text-white truncate">{o.title || '분석 보고서'}</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {o.createdAt?.toDate ? format(o.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : ''}
+                  </p>
+                </div>
+                {output?.id === o.id && <ChevronRight className="w-4 h-4 text-[#1e3a5f] flex-shrink-0" />}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {o.articleCount && (
+                  <span className="text-xs text-gray-500 dark:text-gray-400">기사 {o.articleCount}건</span>
+                )}
+                {o.type && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
+                    {o.type === 'custom_report' ? 'AI 분석' : o.type}
+                  </span>
+                )}
+                {(o.keywords || []).slice(0, 2).map((k: string) => (
+                  <span key={k} className="text-[10px] px-1.5 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded">
+                    {k}
+                  </span>
+                ))}
+              </div>
+
+              {o.analysisPrompt && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">분석 방향: {o.analysisPrompt}</p>
+              )}
+
+              {o.requestedBy && (
+                <p className="text-xs text-gray-400 dark:text-gray-500">작성자: {o.requestedBy}</p>
+              )}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center">
+          <FileText className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
+          <p className="font-medium text-gray-500 dark:text-gray-400">생성된 보고서가 없습니다.</p>
+          <p className="text-sm text-gray-400 mt-1">기사를 검색하고 선택하여 첫 보고서를 만들어보세요.</p>
           <Link
             to="/articles"
-            className="flex items-center gap-2 px-4 py-2 bg-[#d4af37] text-white rounded-lg font-semibold text-sm hover:bg-[#b8942d] transition-colors"
+            className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors"
           >
             <Search className="w-4 h-4" />
-            기사 검색 · 새 보고서
+            기사 검색하기
           </Link>
         </div>
+      )}
+    </div>
+  );
 
-        {recentOutputs.length > 0 ? (
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
-            {recentOutputs.map(o => (
-              <Link
-                key={o.id}
-                to={`/briefing?outputId=${o.id}`}
-                className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-gray-900 dark:text-white truncate">{o.title || '분석 보고서'}</p>
-                  <div className="flex flex-wrap items-center gap-2 mt-1">
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      {o.createdAt?.toDate ? format(o.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : o.id}
-                    </p>
-                    {o.articleCount && (
-                      <span className="text-xs text-gray-400">· 기사 {o.articleCount}건</span>
-                    )}
-                    {o.type && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
-                        {o.type === 'custom_report' ? 'AI 분석 보고서' : o.type}
-                      </span>
-                    )}
-                    {(o.keywords || []).slice(0, 3).map((k: string) => (
-                      <span key={k} className="text-[10px] px-1.5 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded">
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0 ml-3" />
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center">
-            <FileText className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
-            <p className="font-medium text-gray-500 dark:text-gray-400">생성된 보고서가 없습니다.</p>
-            <p className="text-sm text-gray-400 mt-1">기사를 검색하고 선택하여 첫 보고서를 만들어보세요.</p>
-            <Link
-              to="/articles"
-              className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors"
-            >
-              <Search className="w-4 h-4" />
-              기사 검색하기
-            </Link>
-          </div>
-        )}
+  // 보고서 없음 → 목록만 표시
+  if (!output) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        {listSection}
       </div>
     );
   }
 
+  // 보고서 상세 섹션과 목록 함께 표시
   return (
     <div className="space-y-5 max-w-5xl mx-auto">
-      {/* 각주 팝업 */}
-      {activeRefArticle && (
-        <ArticleModal
-          article={activeRefArticle.article}
-          refNumber={activeRefArticle.refNum}
-          onClose={() => setActiveRefArticle(null)}
-        />
-      )}
+      {/* 목록 섹션 */}
+      {listSection}
 
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-        <div>
-          <button
-            onClick={() => navigate('/briefing')}
-            className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 mb-2"
-          >
-            <ArrowLeft className="w-4 h-4" />보고서 목록
-          </button>
+      {loadingDetail ? (
+        <div className="flex items-center justify-center h-64 bg-white dark:bg-gray-800 rounded-xl">
+          <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
+        </div>
+      ) : (
+        <>
+          {/* 각주 팝업 */}
+          {activeRefArticle && (
+            <ArticleModal
+              article={activeRefArticle.article}
+              refNumber={activeRefArticle.refNum}
+              onClose={() => setActiveRefArticle(null)}
+            />
+          )}
+
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+            <div>
+              <button
+                onClick={() => navigate('/briefing')}
+                className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 mb-2"
+              >
+                <ArrowLeft className="w-4 h-4" />목록으로 돌아가기
+              </button>
           <h1 className="text-xl font-bold text-gray-900 dark:text-white leading-snug">
             {output.title || '분석 보고서'}
           </h1>
@@ -625,26 +659,69 @@ export default function Briefing() {
             <>
               {/* 보고서 스타일 */}
               <style>{`
-                .report-html-content h1 { font-size: 1.5rem; font-weight: 700; color: #1e3a5f; border-bottom: 2px solid #1e3a5f; padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
-                .report-html-content h2 { font-size: 1.15rem; font-weight: 700; color: #1e3a5f; border-left: 4px solid #1e3a5f; padding-left: 0.75rem; margin: 1.75rem 0 1rem; }
-                .report-html-content h3 { font-size: 1rem; font-weight: 700; color: #1f2937; margin: 1rem 0 0.5rem; }
-                .report-html-content p { color: #374151; line-height: 1.75; margin-bottom: 0.75rem; }
-                .report-html-content ul { list-style: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
-                .report-html-content li { color: #374151; line-height: 1.7; margin-bottom: 0.3rem; }
-                .report-html-content .section-summary { background: #f0f4f8; border-left: 4px solid #1e3a5f; padding: 1.25rem 1.5rem; border-radius: 0 0.5rem 0.5rem 0; margin-bottom: 2rem; }
-                .report-html-content .section-highlights .highlight, .report-html-content .highlight-item { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
-                .report-html-content .section-trends .trend-item, .report-html-content .trend-item { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
-                .report-html-content .section-risks .risk-item { background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
-                .report-html-content .section-references .reference-item { border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem; margin-bottom: 0.75rem; }
-                .report-html-content a.footnote-ref, .report-html-content sup a { display: inline-block; background: #1e3a5f; color: white; font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 0.25rem; margin-left: 0.25rem; text-decoration: none; cursor: pointer; vertical-align: super; }
-                .report-html-content a.footnote-ref:hover, .report-html-content sup a:hover { background: #2a4a73; }
-                .dark .report-html-content h1, .dark .report-html-content h2 { color: #93c5fd; }
-                .dark .report-html-content h3 { color: #e5e7eb; }
-                .dark .report-html-content p, .dark .report-html-content li { color: #d1d5db; }
-                .dark .report-html-content .section-summary { background: #1e3a5f/20; }
-                .dark .report-html-content .highlight-item { background: #374151; border-color: #4b5563; }
-                .dark .report-html-content .trend-item { background: #1e3a5f/20; border-color: #1e40af; }
-                .dark .report-html-content .reference-item { border-color: #4b5563; }
+                .report-html-content { font-family: 'Inter', -apple-system, blinkmacsystemfont, sans-serif; color: #1e293b; line-height: 1.8; font-size: 1.05rem; }
+                .report-html-content h1 { font-size: 2.25rem; font-weight: 800; background: linear-gradient(135deg, #1e3a8a, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 2.5rem; letter-spacing: -0.025em; border-bottom: 2px solid #f1f5f9; padding-bottom: 1.5rem; text-align: center; }
+                .report-html-content h2 { font-size: 1.5rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; margin: 3.5rem 0 1.5rem; padding-bottom: 0.75rem; border-bottom: 1px solid #e2e8f0; letter-spacing: -0.015em; }
+                .report-html-content h2::before { content: ''; display: inline-block; width: 6px; height: 26px; background: linear-gradient(to bottom, #d4af37, #fde047); border-radius: 4px; margin-right: 14px; box-shadow: 0 0 10px rgba(212, 175, 55, 0.3); }
+                .report-html-content h3 { font-size: 1.25rem; font-weight: 700; color: #1e293b; margin: 1.5rem 0 0.75rem; }
+                .report-html-content p { color: #475569; margin-bottom: 1.25rem; }
+                .report-html-content ul { padding-left: 0; list-style: none; }
+                .report-html-content li { position: relative; padding-left: 1.7rem; margin-bottom: 0.85rem; color: #475569; }
+                .report-html-content li::before { content: '✧'; position: absolute; left: 0; color: #d4af37; font-size: 1.1rem; top: 0; line-height: 1.6; }
+                .report-html-content strong { color: #0f172a; font-weight: 700; }
+                
+                /* Summary Section (Glassmorphism & Gradients) */
+                .report-html-content .section-summary { background: linear-gradient(145deg, #ffffff, #f8fafc); padding: 2.5rem; border-radius: 24px; box-shadow: 0 10px 40px -10px rgba(30, 58, 138, 0.08), inset 0 1px 0 rgba(255,255,255,1); border: 1px solid #e2e8f0; margin-bottom: 4rem; position: relative; overflow: hidden; }
+                .report-html-content .section-summary::before { content: 'SUMMARY'; position: absolute; top: -15px; right: -15px; font-size: 8rem; font-weight: 900; color: rgba(59, 130, 246, 0.03); z-index: 0; pointer-events: none; letter-spacing: -0.05em; }
+                .report-html-content .section-summary p { font-size: 1.15rem; color: #334155; font-weight: 500; position: relative; z-index: 1; line-height: 2; margin-bottom: 0; }
+
+                /* Card items (Hover micro-animations) */
+                .report-html-content .section-highlights > div, .report-html-content .section-trends > div, .report-html-content .section-risks > div, .report-html-content .section-outlook > div,
+                .report-html-content .section-highlights > ul > li, .report-html-content .section-trends > ul > li, .report-html-content .section-risks > ul > li, .report-html-content .section-outlook > ul > li,
+                .report-html-content .highlight-item, .report-html-content .trend-item {
+                  background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                .report-html-content .section-highlights > ul > li::before, .report-html-content .section-trends > ul > li::before, .report-html-content .section-risks > ul > li::before, .report-html-content .section-outlook > ul > li::before { display: none; }
+                .report-html-content .section-highlights > ul > li, .report-html-content .section-trends > ul > li, .report-html-content .section-risks > ul > li, .report-html-content .section-outlook > ul > li { padding-left: 2rem; }
+                
+                .report-html-content .section-highlights > div:hover, .report-html-content .section-trends > div:hover, .report-html-content .section-highlights > ul > li:hover, .report-html-content .section-trends > ul > li:hover, .report-html-content .highlight-item:hover, .report-html-content .trend-item:hover {
+                  transform: translateY(-5px) scale(1.01); box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.08); border-color: #cbd5e1;
+                }
+
+                .report-html-content .section-highlights > div, .report-html-content .section-highlights > ul > li, .report-html-content .highlight-item { border-left: 6px solid #3b82f6; }
+                .report-html-content .section-trends > div, .report-html-content .section-trends > ul > li, .report-html-content .trend-item { border-left: 6px solid #8b5cf6; }
+                .report-html-content .section-risks > div, .report-html-content .section-risks > ul > li, .report-html-content .risk-item { border-left: 6px solid #ef4444; background: #fef2f2; }
+                .report-html-content .section-outlook > div, .report-html-content .section-outlook > ul > li, .report-html-content .outlook-item { border-left: 6px solid #10b981; }
+
+                /* References */
+                .report-html-content .section-references .reference-item, .report-html-content .section-references > div { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.75rem; margin-bottom: 1.25rem; font-size: 0.95rem; transition: all 0.3s; }
+                .report-html-content .section-references .reference-item:hover, .report-html-content .section-references > div:hover { background: #f1f5f9; box-shadow: 0 10px 20px -5px rgba(0,0,0,0.03); }
+
+                /* Footnotes (Sleek pill badges) */
+                .report-html-content a.footnote-ref, .report-html-content sup a {
+                  display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1e3a8a, #2563eb); color: white !important; font-size: 0.75rem; font-weight: 700; padding: 0.2rem 0.65rem; border-radius: 999px; margin-left: 0.5rem; text-decoration: none; cursor: pointer; vertical-align: super; box-shadow: 0 4px 10px rgba(37, 99, 235, 0.3); transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); border: 1px solid rgba(255,255,255,0.1);
+                }
+                .report-html-content a.footnote-ref:hover, .report-html-content sup a:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 6px 15px rgba(37, 99, 235, 0.5); background: linear-gradient(135deg, #2563eb, #3b82f6); }
+
+                /* Dark Mode Overrides for Premium Aesthetic */
+                .dark .report-html-content { color: #e2e8f0; }
+                .dark .report-html-content h1 { background: linear-gradient(135deg, #93c5fd, #bfdbfe); -webkit-background-clip: text; border-bottom-color: #1e293b; }
+                .dark .report-html-content h2 { color: #f8fafc; border-bottom-color: #334155; }
+                .dark .report-html-content h3, .dark .report-html-content strong { color: #f1f5f9; }
+                .dark .report-html-content p, .dark .report-html-content li { color: #94a3b8; }
+                .dark .report-html-content .section-summary { background: linear-gradient(145deg, #0f172a, #1e293b); border-color: #334155; box-shadow: 0 15px 35px -10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05); }
+                .dark .report-html-content .section-summary p { color: #e2e8f0; }
+                
+                .dark .report-html-content .section-highlights > div, .dark .report-html-content .section-trends > div, .dark .report-html-content .section-risks > div, .dark .report-html-content .section-outlook > div,
+                .dark .report-html-content .section-highlights > ul > li, .dark .report-html-content .section-trends > ul > li, .dark .report-html-content .section-risks > ul > li, .dark .report-html-content .section-outlook > ul > li,
+                .dark .report-html-content .highlight-item, .dark .report-html-content .trend-item {
+                  background: #1e293b; border-color: #334155; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2);
+                }
+                .dark .report-html-content .section-risks > div, .dark .report-html-content .section-risks > ul > li, .dark .report-html-content .risk-item { background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.2); }
+                .dark .report-html-content .section-references .reference-item, .dark .report-html-content .section-references > div { background: #1e293b; border-color: #334155; }
+                .dark .report-html-content .section-references .reference-item:hover, .dark .report-html-content .section-references > div:hover { background: #334155; }
+                .dark .report-html-content .section-highlights > div:hover, .dark .report-html-content .section-trends > div:hover, .dark .report-html-content .section-highlights > ul > li:hover, .dark .report-html-content .section-trends > ul > li:hover, .dark .report-html-content .highlight-item:hover, .dark .report-html-content .trend-item:hover { border-color: #60a5fa; box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4); }
+                .dark .report-html-content a.footnote-ref, .dark .report-html-content sup a { background: linear-gradient(135deg, #3b82f6, #60a5fa); box-shadow: 0 4px 10px rgba(96, 165, 250, 0.2); }
               `}</style>
               <HtmlReportRenderer
                 htmlContent={output.htmlContent || output.rawOutput || ''}
@@ -684,6 +761,8 @@ export default function Briefing() {
             ))}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

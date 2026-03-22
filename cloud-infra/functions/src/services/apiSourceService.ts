@@ -77,7 +77,9 @@ export async function processApiSources(options?: {
     try {
       let collected = 0;
 
-      if (source.apiEndpoint?.includes('newsapi.org')) {
+      if (source.apiType === 'naver') {
+        collected = await collectFromNaverNews(source, sourceId, options, startDate, endDate);
+      } else if (source.apiEndpoint?.includes('newsapi.org')) {
         collected = await collectFromNewsApi(source, sourceId, options, startDate, endDate);
       } else {
         console.log(`processApiSources: unsupported API source '${source.name}', skipping.`);
@@ -209,5 +211,108 @@ async function collectFromNewsApi(
   }
 
   console.log(`NewsAPI: saved ${collected} / ${rawArticles.length} articles (query: "${searchTerms}")`);
+  return collected;
+}
+
+// ─────────────────────────────────────────
+// 네이버 뉴스 검색 API collector
+// 자격증명은 Firestore systemSettings/naverConfig 에 저장
+// ─────────────────────────────────────────
+
+function cleanNaverHtml(text: string): string {
+  return (text || '')
+    .replace(/<\/?b>/gi, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+    .trim();
+}
+
+async function collectFromNaverNews(
+  source: any,
+  sourceId: string,
+  options: { companyId?: string; pipelineRunId?: string; filters?: RuntimeFilters; aiConfig?: RuntimeAiConfig } | undefined,
+  startDate: Date | null,
+  endDate: Date | null,
+): Promise<number> {
+  const db = admin.firestore();
+
+  // Read credentials from systemSettings/naverConfig
+  const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
+  const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+  const clientId = cfg.clientId;
+  const clientSecret = cfg.clientSecret;
+  if (!clientId || !clientSecret) {
+    throw new Error('네이버 API 자격증명 미설정 — 슈퍼어드민 > AI 설정 > 네이버 뉴스 탭에서 저장하세요.');
+  }
+
+  const keywords: string[] = [
+    ...(source.defaultKeywords || []),
+    ...(options?.filters?.keywords || []),
+  ];
+  if (keywords.length === 0) keywords.push('M&A', '인수합병', '스타트업 투자');
+
+  // Collect articles per keyword (Naver doesn't support OR logic well)
+  const seenUrls = new Set<string>();
+  const candidates: Array<{ title: string; url: string; content: string; publishedAt: Date }> = [];
+
+  for (const kw of keywords.slice(0, 8)) {
+    try {
+      const resp = await axios.get('https://openapi.naver.com/v1/search/news.json', {
+        headers: { 'X-Naver-Client-Id': clientId, 'X-Naver-Client-Secret': clientSecret },
+        params: { query: kw, display: 100, start: 1, sort: 'date' },
+        timeout: 10000,
+      });
+      for (const item of resp.data.items || []) {
+        if (!item.title || !item.originallink) continue;
+        const url = item.originallink;
+        if (seenUrls.has(url)) continue;
+        seenUrls.add(url);
+        const publishedAt = item.pubDate ? new Date(item.pubDate) : new Date();
+        if (startDate && publishedAt < startDate) continue;
+        if (endDate && publishedAt > endDate) continue;
+        candidates.push({
+          title: cleanNaverHtml(item.title),
+          url,
+          content: cleanNaverHtml(item.description),
+          publishedAt,
+        });
+      }
+    } catch (err: any) {
+      console.warn(`Naver search failed for keyword "${kw}": ${err.message}`);
+    }
+  }
+
+  let collected = 0;
+  for (const article of candidates) {
+    if (!matchesRuntimeFilters(article.title, article.content, {
+      anyKeywords: keywords,
+      includeKeywords: options?.filters?.includeKeywords,
+      mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
+      excludeKeywords: options?.filters?.excludeKeywords,
+      sectors: options?.filters?.sectors,
+    })) continue;
+
+    // URL-level dedup (skip AI content dedup — Naver articles overlap by design)
+    const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId });
+    if (dupCheck.isDuplicate) continue;
+
+    const articleRef = db.collection('articles').doc();
+    await articleRef.set({
+      id: articleRef.id,
+      ...article,
+      companyId: options?.companyId || null,
+      pipelineRunId: options?.pipelineRunId || null,
+      source: source.name || '네이버 뉴스',
+      sourceId,
+      globalSourceId: sourceId,
+      sourceCategory: source.category || 'domestic',
+      collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'pending',
+      urlHash: hashUrl(article.url),
+    });
+    collected++;
+  }
+
+  console.log(`Naver News: saved ${collected} / ${candidates.length} articles`);
   return collected;
 }

@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Globe, FileSearch, Building2,
-  Database, LogOut, Menu, X, Moon, Sun, ChevronRight
+  Database, LogOut, Menu, X, Moon, Sun, ChevronRight, Key
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -22,7 +22,7 @@ const adminNav = [
     label: '관리',
     items: [
       { name: '회사 & 사용자', href: '/admin/companies', icon: Building2, desc: '고객사 및 계정 관리' },
-      { name: '스크래핑 규칙', href: '/admin/scraping', icon: Database, desc: '로컬PC 수집 키워드/카테고리' },
+      { name: 'AI 설정', href: '/admin/settings', icon: Key, desc: '글로벌 AI 프로바이더 API 키 관리' },
     ]
   },
 ];

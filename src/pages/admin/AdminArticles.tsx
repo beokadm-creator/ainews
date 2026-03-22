@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Filter, ChevronDown, ChevronUp, ExternalLink,
-  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw
+  CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Activity, Trash2, Zap
 } from 'lucide-react';
-import { db } from '@/lib/firebase';
+import { db, functions } from '@/lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { useAuthStore } from '@/store/useAuthStore';
 import {
   collection, query, where, orderBy, limit, getDocs,
   startAfter, QueryDocumentSnapshot, DocumentData, getCountFromServer
@@ -18,6 +20,7 @@ interface Article {
   sourceId: string;
   url: string;
   status: string;
+  content?: string;
   relevanceScore?: number;
   filterReason?: string;
   category?: string;
@@ -62,10 +65,11 @@ function ScoreBar({ score }: { score: number }) {
 }
 
 // ─── Article row ─────────────────────────────────────────
-function ArticleRow({ article, expanded, onToggle }: {
+function ArticleRow({ article, expanded, onToggle, onAnalyze }: {
   article: Article;
   expanded: boolean;
   onToggle: () => void;
+  onAnalyze?: (article: Article) => Promise<void>;
 }) {
   const status = STATUS_CONFIG[article.status] || STATUS_CONFIG.pending;
   const StatusIcon = status.icon;
@@ -133,8 +137,8 @@ function ArticleRow({ article, expanded, onToggle }: {
                   </div>
                 )}
               </div>
-              {/* Right: tags + links */}
-              <div className="space-y-2">
+              {/* Right: tags + links + actions */}
+              <div className="space-y-3">
                 {article.tags && article.tags.length > 0 && (
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-white/25 mb-1">태그</p>
@@ -145,18 +149,29 @@ function ArticleRow({ article, expanded, onToggle }: {
                     </div>
                   </div>
                 )}
-                {article.url && (
-                  <a
-                    href={article.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    className="inline-flex items-center gap-1 text-xs text-[#d4af37]/70 hover:text-[#d4af37] transition-colors"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    원문 보기
-                  </a>
-                )}
+                <div className="flex items-center gap-2">
+                  {article.url && (
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 text-xs text-[#d4af37]/70 hover:text-[#d4af37] transition-colors"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      원문 보기
+                    </a>
+                  )}
+                  {onAnalyze && article.status !== 'analyzed' && (
+                    <button
+                      onClick={e => { e.stopPropagation(); onAnalyze(article); }}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors font-medium"
+                    >
+                      <Zap className="w-3 h-3" />
+                      AI 분석
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </td>
@@ -166,14 +181,63 @@ function ArticleRow({ article, expanded, onToggle }: {
   );
 }
 
+// ─── Source status panel ───────────────────────────────────
+interface SourceHealth {
+  sourceId: string;
+  name: string;
+  type: string;
+  lastCollectedAt: any;
+  todayCount: number;
+  status: 'ok' | 'idle' | 'error';
+}
+
+const SOURCE_HEALTH_IDS = [
+  { id: 'thebell', name: '더벨', type: 'local-scraper' },
+  { id: 'marketinsight', name: '마켓인사이트', type: 'local-scraper' },
+  { id: 'hankyung_ma', name: '한경 M&A', type: 'rss' },
+];
+
+function SourceHealthPanel({ items }: { items: SourceHealth[] }) {
+  const fmt = (ts: any) => {
+    if (!ts) return '없음';
+    try {
+      const d = ts?.toDate ? ts.toDate() : new Date(ts._seconds * 1000);
+      return format(d, 'MM/dd HH:mm');
+    } catch { return '?'; }
+  };
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      {items.map(src => (
+        <div key={src.sourceId} className="bg-gray-800/60 border border-white/5 rounded-xl p-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-semibold text-white/70">{src.name}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
+              src.status === 'ok' ? 'bg-green-500/10 border-green-500/20 text-green-400' :
+              src.status === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' :
+              'bg-white/5 border-white/10 text-white/30'
+            }`}>
+              {src.status === 'ok' ? '수집중' : src.status === 'error' ? '오류' : '대기'}
+            </span>
+          </div>
+          <p className="text-[10px] text-white/30">오늘 <span className="text-blue-400 font-bold">{src.todayCount}</span>건</p>
+          <p className="text-[10px] text-white/25">마지막: {fmt(src.lastCollectedAt)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────
 export default function AdminArticles() {
+  const { user } = useAuthStore();
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sourceHealth, setSourceHealth] = useState<SourceHealth[]>([]);
+  const [deleting, setDeleting] = useState(false);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -183,6 +247,10 @@ export default function AdminArticles() {
 
   // Stats
   const [stats, setStats] = useState({ total: 0, pending: 0, analyzed: 0, rejected: 0 });
+
+  // Analyzing state
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // ─── Load articles ───────────────────────────────────────
   const loadArticles = useCallback(async (reset = true) => {
@@ -260,6 +328,45 @@ export default function AdminArticles() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSource, selectedStatus, dateRange, search]);
 
+  const loadSourceHealth = useCallback(async () => {
+    const today = new Date(Date.now() - 86400000);
+    const results = await Promise.all(SOURCE_HEALTH_IDS.map(async src => {
+      try {
+        const [recentSnap, todaySnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'articles'),
+            where('sourceId', '==', src.id),
+            orderBy('collectedAt', 'desc'),
+            limit(1)
+          )),
+          getCountFromServer(query(
+            collection(db, 'articles'),
+            where('sourceId', '==', src.id),
+            where('collectedAt', '>=', today)
+          )),
+        ]);
+        const last = recentSnap.docs[0]?.data()?.collectedAt ?? null;
+        const lastDate = last?.toDate ? last.toDate() : (last?._seconds ? new Date(last._seconds * 1000) : null);
+        const isRecent = lastDate && (Date.now() - lastDate.getTime()) < 6 * 3600000;
+        return {
+          sourceId: src.id,
+          name: src.name,
+          type: src.type,
+          lastCollectedAt: last,
+          todayCount: todaySnap.data().count,
+          status: (isRecent ? 'ok' : 'idle') as 'ok' | 'idle' | 'error',
+        };
+      } catch {
+        return { sourceId: src.id, name: src.name, type: src.type, lastCollectedAt: null, todayCount: 0, status: 'idle' as const };
+      }
+    }));
+    setSourceHealth(results);
+  }, []);
+
+  useEffect(() => {
+    loadSourceHealth();
+  }, [loadSourceHealth]);
+
   useEffect(() => {
     loadArticles(true);
   }, [selectedSource, selectedStatus, dateRange]);
@@ -269,6 +376,106 @@ export default function AdminArticles() {
     return () => clearTimeout(t);
   }, [search]);
 
+  // ─── Delete functions ────────────────────────────────────────
+  const handleDeleteAll = async () => {
+    if (!window.confirm('⚠️  모든 기사를 삭제하겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
+
+    setDeleting(true);
+    try {
+      const response = await fetch(
+        'https://deleteallarticleshttp-mp66iufeia-uc.a.run.app',
+        { method: 'POST', headers: { 'x-uid': (user as any)?.uid } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        alert(`✅ ${data.deletedCount}건의 기사가 삭제되었습니다.`);
+        loadArticles(true);
+      } else {
+        alert(`❌ 오류: ${data.error}`);
+      }
+    } catch (err: any) {
+      alert(`❌ 삭제 실패: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteExcluded = async () => {
+    if (!window.confirm('⚠️  제외된 기사를 모두 삭제하겠습니까?')) return;
+
+    setDeleting(true);
+    try {
+      const response = await fetch(
+        'https://deleteexcludedarticleshttp-mp66iufeia-uc.a.run.app',
+        { method: 'POST', headers: { 'x-uid': (user as any)?.uid } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        alert(`✅ ${data.deletedCount}건의 제외된 기사가 삭제되었습니다.`);
+        loadArticles(true);
+      } else {
+        alert(`❌ 오류: ${data.error}`);
+      }
+    } catch (err: any) {
+      alert(`❌ 삭제 실패: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteAllOutputs = async () => {
+    if (!window.confirm('⚠️  모든 분석 보고서를 삭제하겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
+
+    setDeleting(true);
+    try {
+      const response = await fetch(
+        'https://deletealloutputshttp-mp66iufeia-uc.a.run.app',
+        { method: 'POST', headers: { 'x-uid': (user as any)?.uid } }
+      );
+      const data = await response.json();
+      if (data.success) {
+        alert(`✅ ${data.deletedCount}건의 보고서가 삭제되었습니다.`);
+      } else {
+        alert(`❌ 오류: ${data.error}`);
+      }
+    } catch (err: any) {
+      alert(`❌ 삭제 실패: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleAnalyze = async (article: Article) => {
+    setAnalyzing(true);
+    setAnalyzeResult(null);
+    try {
+      const fn = httpsCallable(functions, 'analyzeManualArticle');
+      const content = article.content || article.summary?.join(' ') || article.title;
+      const result = await fn({
+        title: article.title,
+        content,
+        source: article.source,
+        url: article.url,
+        publishedAt: article.publishedAt,
+      }) as any;
+
+      if (result.data.success) {
+        setAnalyzeResult({
+          success: true,
+          message: `✅ 기사가 분석되었습니다. (관련도: ${(result.data.confidence * 100).toFixed(0)}%)`
+        });
+        // 분석 완료 후 목록 새로고침
+        setTimeout(() => loadArticles(true), 1500);
+      } else {
+        setAnalyzeResult({ success: false, message: `❌ 분석 실패: ${result.data.error}` });
+      }
+    } catch (err: any) {
+      setAnalyzeResult({ success: false, message: `❌ 오류: ${err.message}` });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Page header */}
@@ -277,14 +484,67 @@ export default function AdminArticles() {
           <h1 className="text-xl font-bold text-white">수집 기사 검증</h1>
           <p className="text-sm text-white/40 mt-0.5">전체 수집 기사 조회 & AI 검증 현황</p>
         </div>
-        <button
-          onClick={() => loadArticles(true)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white transition-colors"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          새로고침
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { loadArticles(true); loadSourceHealth(); }}
+            disabled={deleting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${deleting ? 'animate-spin' : ''}`} />
+            새로고침
+          </button>
+          <button
+            onClick={handleDeleteExcluded}
+            disabled={deleting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 rounded-lg text-xs text-orange-400 transition-colors disabled:opacity-50"
+            title="status='rejected' 기사만 삭제"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            제외된 기사 삭제
+          </button>
+          <button
+            onClick={handleDeleteAll}
+            disabled={deleting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg text-xs text-red-400 transition-colors disabled:opacity-50"
+            title="모든 기사 삭제"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            전체 삭제
+          </button>
+          <button
+            onClick={handleDeleteAllOutputs}
+            disabled={deleting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded-lg text-xs text-purple-400 transition-colors disabled:opacity-50"
+            title="모든 보고서 삭제"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            보고서 삭제
+          </button>
+        </div>
       </div>
+
+      {/* 분석 결과 메시지 */}
+      {analyzeResult && (
+        <div className={`px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-2 ${
+          analyzeResult.success
+            ? 'bg-green-500/10 border border-green-500/30 text-green-400'
+            : 'bg-red-500/10 border border-red-500/30 text-red-400'
+        }`}>
+          {analyzeResult.success ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+          {analyzeResult.message}
+        </div>
+      )}
+
+      {/* 매체별 수집 현황 */}
+      {sourceHealth.length > 0 && (
+        <div>
+          <p className="text-xs text-white/30 mb-2 flex items-center gap-1">
+            <Activity className="w-3.5 h-3.5" />
+            매체별 수집 현황 (6시간 이내 수집 시 수집중 표시)
+          </p>
+          <SourceHealthPanel items={sourceHealth} />
+        </div>
+      )}
 
       {/* Stats row */}
       <div className="grid grid-cols-4 gap-3">
@@ -395,6 +655,7 @@ export default function AdminArticles() {
                       article={article}
                       expanded={expandedId === article.id}
                       onToggle={() => setExpandedId(expandedId === article.id ? null : article.id)}
+                      onAnalyze={handleAnalyze}
                     />
                   ))}
                 </tbody>
