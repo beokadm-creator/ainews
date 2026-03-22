@@ -57,6 +57,7 @@ const PROVIDERS: Record<AiProvider, ProviderInfo> = {
 
 interface ProviderState {
   hasKey: boolean;
+  isActive: boolean;
   testing: boolean;
   testResult: { success: boolean; message: string; latencyMs?: number } | null;
   saving: boolean;
@@ -68,7 +69,7 @@ interface ProviderState {
 }
 
 function initState(modelDefault: string): ProviderState {
-  return { hasKey: false, testing: false, testResult: null, saving: false, showKey: false, expanded: false, apiKeyInput: '', baseUrlInput: '', selectedModel: modelDefault };
+  return { hasKey: false, isActive: false, testing: false, testResult: null, saving: false, showKey: false, expanded: false, apiKeyInput: '', baseUrlInput: '', selectedModel: modelDefault };
 }
 
 // ─── Main Component ─────────────────────────────────────────────
@@ -112,11 +113,18 @@ export default function AdminSettings() {
         const storedKeys = compData.apiKeys || sysData.apiKeys || {};
         const storedModels = { ...sysData['aiModels'], ...compData.aiModels };
         const storedBaseUrls = { ...sysData['aiBaseUrls'], ...compData.aiBaseUrls };
+        const activeProvider = compData.ai?.provider || sysData.ai?.provider || 'glm';
 
         setProviderState(prev => {
           const updated = { ...prev };
           (Object.keys(PROVIDERS) as AiProvider[]).forEach(p => {
-            updated[p] = { ...updated[p], hasKey: !!storedKeys[p], selectedModel: storedModels[p] || PROVIDERS[p].modelDefault, baseUrlInput: storedBaseUrls[p] || '' };
+            updated[p] = {
+              ...updated[p],
+              hasKey: !!storedKeys[p],
+              isActive: p === activeProvider,
+              selectedModel: storedModels[p] || PROVIDERS[p].modelDefault,
+              baseUrlInput: storedBaseUrls[p] || ''
+            };
           });
           return updated;
         });
@@ -146,11 +154,23 @@ export default function AdminSettings() {
         apiKey: state.apiKeyInput.trim() || null,
         baseUrl: state.baseUrlInput.trim() || null,
         model: state.selectedModel,
+        setAsActive: state.isActive, // 사용 중이면 활성 프로바이더로 설정
       });
       update(provider, { saving: false, hasKey: true, apiKeyInput: '', showKey: false });
     } catch (err: any) {
       update(provider, { saving: false, testResult: { success: false, message: err.message } });
     }
+  };
+
+  // ─── Toggle active provider ─────────────────────────────────
+  const handleToggleActive = (provider: AiProvider) => {
+    setProviderState(prev => {
+      const updated = { ...prev };
+      (Object.keys(PROVIDERS) as AiProvider[]).forEach(p => {
+        updated[p] = { ...updated[p], isActive: p === provider };
+      });
+      return updated;
+    });
   };
 
   // ─── Test connection ───────────────────────────────────────
@@ -273,16 +293,31 @@ export default function AdminSettings() {
                   ? <span className="flex items-center text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full"><CheckCircle2 className="w-3 h-3 mr-1" />키 저장됨</span>
                   : <span className="text-xs text-white/30 bg-white/5 px-2 py-0.5 rounded-full">미설정</span>
                 }
+                {state.isActive && state.hasKey && (
+                  <span className="flex items-center text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full font-medium">● 사용 중</span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {state.hasKey && (
-                  <button
-                    onClick={e => { e.stopPropagation(); handleTest(provider); }}
-                    disabled={state.testing}
-                    className="flex items-center px-3 py-1.5 text-xs font-medium bg-white/8 text-white/70 rounded-lg hover:bg-white/12 transition-colors disabled:opacity-50"
-                  >
-                    {state.testing ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />테스트 중...</> : <><RefreshCw className="w-3 h-3 mr-1" />테스트</>}
-                  </button>
+                  <>
+                    <button
+                      onClick={e => { e.stopPropagation(); handleToggleActive(provider); }}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        state.isActive
+                          ? 'bg-blue-600 text-white hover:bg-blue-500'
+                          : 'bg-white/8 text-white/70 hover:bg-white/12'
+                      }`}
+                    >
+                      {state.isActive ? '사용 중' : '사용'}
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); handleTest(provider); }}
+                      disabled={state.testing}
+                      className="flex items-center px-3 py-1.5 text-xs font-medium bg-white/8 text-white/70 rounded-lg hover:bg-white/12 transition-colors disabled:opacity-50"
+                    >
+                      {state.testing ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />테스트 중...</> : <><RefreshCw className="w-3 h-3 mr-1" />테스트</>}
+                    </button>
+                  </>
                 )}
                 {state.expanded ? <ChevronUp className="w-4 h-4 text-white/30" /> : <ChevronDown className="w-4 h-4 text-white/30" />}
               </div>

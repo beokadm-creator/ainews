@@ -341,7 +341,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
   }
-  const { companyId: rawCompanyId, provider, apiKey, baseUrl, model } = request.data || {};
+  const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, setAsActive } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
   const access = await assertCompanyAccess(request.auth.uid, companyId);
   if (access.role !== 'superadmin' && access.role !== 'company_admin') {
@@ -366,15 +366,20 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
   if (model !== undefined) {
     updates[`aiModels.${provider}`] = model;
   }
-  // 기본 활성 프로바이더/모델도 업데이트
-  updates['ai.provider'] = provider;
-  if (model) updates['ai.model'] = model;
-  if (baseUrl) updates['ai.baseUrl'] = baseUrl;
+  // setAsActive이면 활성 프로바이더로 설정
+  if (setAsActive) {
+    updates['ai.provider'] = provider;
+    if (model) updates['ai.model'] = model;
+    if (baseUrl) updates['ai.baseUrl'] = baseUrl;
+  }
   await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
   // Superadmin: also save to global systemSettings as fallback for all companies
   const userDoc = await db.collection('users').doc(request.auth.uid).get();
   if (userDoc.data()?.role === 'superadmin') {
-    await db.collection('systemSettings').doc('aiConfig').set(updates, { merge: true });
+    const sysUpdates = { ...updates };
+    // 시스템 레벨에서는 항상 활성화 (또는 선택적)
+    if (!sysUpdates['ai.provider']) sysUpdates['ai.provider'] = provider;
+    await db.collection('systemSettings').doc('aiConfig').set(sysUpdates, { merge: true });
     if (apiKey) {
       await saveApiKeyForCompany('__system__', provider as AiProvider, apiKey.trim());
     }
