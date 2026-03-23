@@ -47,18 +47,12 @@ export interface Article {
   status: ArticleStatus;
   relevanceScore?: number; // 1단계 필터링 점수 (옵션)
   
-  // 회사/파이프라인 참조
-  companyId?: string | null;
-  pipelineRunId?: string | null;
-  globalSourceId?: string | null;
-  
   // 북마크 및 관리 데이터
-  isBookmarked?: boolean;
-  publishedInBriefingId?: string; // 레거시
-  publishedInOutputId?: string | null; // 현재 사용
+  isBookmarked?: boolean; // 북마크 여부
+  publishedInBriefingId?: string; // 포함된 브리핑 ID
   
   // 관리자 수정 로그
-  editedBy?: string;
+  editedBy?: string; // Admin User ID
   editedAt?: Date;
 }
 
@@ -105,16 +99,8 @@ export interface NewsSource {
   active: boolean;
   
   // 스크래핑 설정
-  selector?: string; // Cheerio CSS 선택자 (레거시, 개별 선택자 권장)
+  selector?: string; // Cheerio CSS 선택자
   authType?: 'none' | 'session' | 'cookie' | 'puppeteer';
-  keywords?: string[]; // 키워드 필터링 (빈 배열이면 모든 기사 수집)
-  
-  // 개별 CSS 선택자 (동적 스크래핑용)
-  listSelector?: string;    // 리스트 컨테이너 CSS 선택자
-  titleSelector?: string;   // 제목 CSS 선택자
-  linkSelector?: string;    // 링크 CSS 선택자 (선택사항, 없으면 titleSelector의 href 사용)
-  contentSelector?: string; // 본문/요약 CSS 선택자
-  dateSelector?: string;    // 날짜 CSS 선택자
   
   lastScrapedAt?: Date;
   lastStatus?: 'success' | 'error';
@@ -161,10 +147,7 @@ export interface User {
   uid: string;
   email: string;
   displayName?: string;
-  role: 'superadmin' | 'company_admin' | 'company_editor' | 'viewer';
-  companyId?: string;
-  companyIds?: string[];
-  managedCompanyIds?: string[];
+  role: 'admin' | 'editor' | 'viewer';
   createdAt: Date;
   lastLoginAt?: Date;
 }

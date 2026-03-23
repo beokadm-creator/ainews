@@ -225,7 +225,7 @@ export default function Dashboard() {
           if (!snap.exists()) return;
           const data = snap.data();
           setPipelineRun(data);
-          if (data.status === 'completed' || data.status === 'failed') {
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'aborted') {
             setRunning(false);
             if (data.status === 'completed') fetchDashboardData();
             setTimeout(() => { unsub(); unsubRef.current = null; }, 10000);
@@ -413,9 +413,10 @@ export default function Dashboard() {
               <span className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${
                 pipelineStatus === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
                 pipelineStatus === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
+                pipelineStatus === 'aborted' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' :
                 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
               }`}>
-                {pipelineStatus || '시작 중...'}
+                {pipelineStatus === 'aborted' ? '종료됨' : pipelineStatus || '시작 중...'}
               </span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -429,21 +430,25 @@ export default function Dashboard() {
                 const done = s?.status === 'completed';
                 const active = s?.status === 'running';
                 const failed = s?.status === 'failed';
+                const aborted = s?.status === 'aborted';
                 return (
                   <div key={step.id} className={`flex flex-col items-center p-3 rounded-lg border text-center transition-all ${
                     done ? 'bg-green-50 border-green-200 dark:bg-green-900/10 dark:border-green-800' :
                     active ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/10 dark:border-blue-700 ring-2 ring-blue-400/20' :
                     failed ? 'bg-red-50 border-red-200 dark:bg-red-900/10 dark:border-red-800' :
+                    aborted ? 'bg-orange-50 border-orange-200 dark:bg-orange-900/10 dark:border-orange-800' :
                     'bg-gray-50 border-gray-100 dark:bg-gray-700/30 dark:border-gray-600'
                   }`}>
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center mb-1.5 ${
                       done ? 'bg-green-500 text-white' :
                       active ? 'bg-blue-500 text-white animate-pulse' :
                       failed ? 'bg-red-400 text-white' :
+                      aborted ? 'bg-orange-400 text-white' :
                       'bg-gray-200 dark:bg-gray-600 text-gray-400'
                     }`}>
                       {done ? <CheckCircle className="w-4 h-4" /> :
                        failed ? <XCircle className="w-4 h-4" /> :
+                       aborted ? <AlertTriangle className="w-4 h-4" /> :
                        active ? <RefreshCw className="w-4 h-4 animate-spin" /> :
                        <step.icon className="w-4 h-4" />}
                     </div>

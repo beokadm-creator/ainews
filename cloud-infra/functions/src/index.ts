@@ -109,21 +109,42 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
     throw new HttpsError('permission-denied', 'Superadmin required');
   }
   const { id, ...data } = request.data || {};
+  
+  // ★ 로깅 추가
+  console.log('[upsertGlobalSource] 시작', { uid: request.auth.uid, id, dataName: data.name });
+  
   if (!data.name || !data.url || !data.type) {
+    console.error('[upsertGlobalSource] 필수 필드 누락', { hasName: !!data.name, hasUrl: !!data.url, hasType: !!data.type });
     throw new HttpsError('invalid-argument', 'name, url, type are required');
   }
+  
   const db = admin.firestore();
   const docRef = id ? db.collection('globalSources').doc(id) : db.collection('globalSources').doc();
-  await docRef.set({
-    ...data,
-    id: docRef.id,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    ...(id ? {} : {
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdBy: request.auth.uid,
-    }),
-  }, { merge: !!id });
-  return { success: true, id: docRef.id };
+  
+  console.log('[upsertGlobalSource] 경로', { 
+    mode: id ? 'update' : 'create', 
+    targetId: id || '(새 ID)', 
+    docRefId: docRef.id 
+  });
+  
+  try {
+    await docRef.set({
+      ...data,
+      id: docRef.id,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(id ? {} : {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdBy: request.auth.uid,
+      }),
+    }, { merge: !!id });
+    
+    console.log('[upsertGlobalSource] 저장 성공', { docId: docRef.id, mode: id ? 'update' : 'create' });
+    
+    return { success: true, id: docRef.id };
+  } catch (error: any) {
+    console.error('[upsertGlobalSource] 저장 실패', { docId: docRef.id, error: error.message, stack: error.stack });
+    throw new HttpsError('internal', `저장 실패: ${error.message}`);
+  }
 });
 /** 글로벌 소스 삭제 (Superadmin만) */
 export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
@@ -665,10 +686,11 @@ export const runBulkAiAnalysisHttp = onRequest(
       await updateControl({ currentStep: '1/3 수집 중...' });
       let totalCollected = 0;
 
-      // 구독된 소스가 있으면 구독 기반, 없으면 모든 active 소스 사용
-      const sourceFilter = (runtimeFilters.sourceIds && runtimeFilters.sourceIds.length > 0)
-        ? { filters: runtimeFilters, aiConfig }
-        : { filters: { sourceIds: (await db.collection('globalSources').where('status', '==', 'active').get()).docs.map(d => d.id) }, aiConfig };
+      // 슈퍼어드민 파이프라인: 모든 active 소스 수집 (회사 구독 무관)
+      // 비즈니스 로직: 수집 → 필터링 → 분석은 슈퍼어드민이 수행, 고객은 결과만 조회
+      const allActiveSourceIds = (await db.collection('globalSources').where('status', '==', 'active').get()).docs.map(d => d.id);
+      console.log(`[Pipeline] Collecting from ${allActiveSourceIds.length} active sources (superadmin mode)`);
+      const sourceFilter = { filters: { ...runtimeFilters, sourceIds: allActiveSourceIds }, aiConfig };
 
       const [rssResult, scrapingResult, apiResult] = await Promise.allSettled([
         processRssSources(sourceFilter),
@@ -762,6 +784,20 @@ export const setPipelineControl = onCall({ region: 'us-central1', cors: true, in
       currentStep: null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+
+    // ★ 실행 중인 pipelineRun도 aborted 처리
+    const runningPipelines = await db.collection('pipelineRuns')
+      .where('status', 'in', ['pending', 'running'])
+      .get();
+    for (const doc of runningPipelines.docs) {
+      await doc.ref.update({
+        status: 'aborted',
+        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+    }
+    console.log(`[Pipeline] Force stopped ${runningPipelines.size} running pipelines`);
+
     return { success: true, enabled: false };
   } else if (type === 'pipeline') {
     await controlRef.set({ pipelineEnabled: enabled, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
@@ -1126,7 +1162,7 @@ export const executePipelineHttp = onRequest(
 
     const updateStep = async (
       step: string,
-      status: 'running' | 'completed' | 'failed' | 'skipped',
+      status: 'running' | 'completed' | 'failed' | 'skipped' | 'aborted',
       result?: any,
     ) => {
       await pipelineRef.update({
@@ -1138,8 +1174,26 @@ export const executePipelineHttp = onRequest(
       });
     };
 
+    // ★ Abort 체크 함수
+    const abortChecker = async () => {
+      const controlSnap = await db.collection('systemSettings').doc('pipelineControl').get();
+      return controlSnap.data()?.pipelineEnabled === false;
+    };
+
+    // ★ Abort 처리 함수
+    const handleAbort = async (currentStep: string) => {
+      console.log(`[Pipeline] Abort requested at ${currentStep}`);
+      await updateStep(currentStep, 'aborted');
+      await pipelineRef.update({
+        status: 'aborted',
+        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    };
+
     await pipelineRef.update({ status: 'running' });
     try {
+      // Step 1: Collection
       await updateStep('collection', 'running');
       const collectionStart = Date.now();
       const [rssResult, scrapingResult, apiResult] = await Promise.all([
@@ -1156,6 +1210,13 @@ export const executePipelineHttp = onRequest(
         rss: rssResult, scraping: scrapingResult, api: apiResult, totalCollected,
       });
 
+      // ★ Abort 체크: Collection 후
+      if (await abortChecker()) {
+        await handleAbort('filtering');
+        return;
+      }
+
+      // Step 2: Filtering
       await updateStep('filtering', 'running');
       const filteringStart = Date.now();
       const filteringResult = await processRelevanceFiltering({
@@ -1163,11 +1224,25 @@ export const executePipelineHttp = onRequest(
       });
       await updateStep('filtering', 'completed', { duration: Date.now() - filteringStart, ...filteringResult });
 
+      // ★ Abort 체크: Filtering 후
+      if (await abortChecker()) {
+        await handleAbort('analysis');
+        return;
+      }
+
+      // Step 3: Analysis
       await updateStep('analysis', 'running');
       const analysisStart = Date.now();
       const analysisResult = await processDeepAnalysis({ companyId, pipelineRunId: pipelineId, aiConfig: runtime.ai });
       await updateStep('analysis', 'completed', { duration: Date.now() - analysisStart, ...analysisResult });
 
+      // ★ Abort 체크: Analysis 후
+      if (await abortChecker()) {
+        await handleAbort('output');
+        return;
+      }
+
+      // Step 4: Output
       await updateStep('output', 'running');
       const outputStart = Date.now();
       const outputResult = await createDailyBriefing({

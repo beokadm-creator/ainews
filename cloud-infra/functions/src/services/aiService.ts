@@ -513,12 +513,21 @@ export async function processRelevanceFiltering(options?: {
   aiConfig: RuntimeAiConfig;
   filters?: any; // RuntimeFilters
   abortChecker?: () => Promise<boolean>;
+  includeGlobalArticles?: boolean; // PC 스크래퍼 글로벌 기사 포함
 }) {
   const db = admin.firestore();
   const baseBatchSize = 500;
 
+  // ── 쿼리: pipelineRunId 기사 + 글로벌 기사(companyId=null) 포함
   let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'pending');
-  if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
+
+  if (options?.pipelineRunId) {
+    // 일반: pipelineRunId 기사만
+    queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
+  } else if (options?.includeGlobalArticles && options?.companyId) {
+    // 글로벌 기사도 포함: companyId=null (PC 스크래퍼) 또는 companyId 일치
+    // Note: Firestore는 OR 쿼리를 직접 지원하지 않으므로, 먼저 글로벌 기사를 별도로 조회 후 합침
+  }
 
   const filters = options?.filters;
 

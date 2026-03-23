@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useMemo } from 'react';
 import {
   Globe, Plus, Edit2, Trash2, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
   Loader2, Rss, Code2, Cpu, Mail, Star, Search, Activity,
@@ -143,6 +144,11 @@ function SourceModal({
 }) {
   const [form, setForm] = useState<Partial<GlobalSource>>(source);
   const set = (k: keyof GlobalSource, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  // ★ 수정: source prop이 변경될 때마다 form 초기화
+  useEffect(() => {
+    setForm(source);
+  }, [source]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">

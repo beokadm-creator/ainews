@@ -190,73 +190,102 @@ export async function processRssSources(options?: {
 
   let totalCollected = 0;
 
-  // ── 병렬 수집: 모든 소스를 동시에 처리 (순차 for → 병렬 Promise.allSettled) ──
-  const perSourceResults = await Promise.allSettled(
-    allSourcesToProcess.map(async ({ id: sourceId, data: source }) => {
-      const docRef = db.collection('globalSources').doc(sourceId);
+  // ── 순차 수집: 각 소스를 순차적으로 처리 (안정성 우선) ──
+  // 병렬 처리 시 하나의 소스가 멈추면 전체 파이프라인이 멈추는 문제 방지
+  for (const { id: sourceId, data: source } of allSourcesToProcess) {
+    const docRef = db.collection('globalSources').doc(sourceId);
 
-      try {
-        const articles = await fetchRssFeed(source.url || source.rssUrl);
-        let sourceCollected = 0;
+    try {
+      // 타임아웃과 함께 RSS 피드 가져오기
+      const articles = await Promise.race([
+        fetchRssFeed(source.url || source.rssUrl),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('RSS fetch timeout after 30s')), 30000)
+        )
+      ]);
 
-        for (const article of articles) {
-          if (startDate && article.publishedAt < startDate) continue;
-          if (endDate && article.publishedAt > endDate) continue;
+      // ★ 배치 처리: 순차 처리를 병렬 + 배치 커밋으로 최적화
+      // 1단계: 필터링된 기사 수집
+      const validArticles = articles.filter(article => {
+        if (startDate && article.publishedAt < startDate) return false;
+        if (endDate && article.publishedAt > endDate) return false;
 
-          // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음
-          // → AI가 관련성 분류 단계에서 판단. 수집은 pipeline-level 강제 필터만 적용.
-          if (!matchesRuntimeFilters(article.title, article.content, {
-            anyKeywords: options?.filters?.keywords || [],
-            includeKeywords: options?.filters?.includeKeywords,
-            mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
-            excludeKeywords: options?.filters?.excludeKeywords,
-            sectors: options?.filters?.sectors
-          })) {
-            continue;
-          }
+        // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음
+        // → AI가 관련성 분류 단계에서 판단. 수집은 pipeline-level 강제 필터만 적용.
+        return matchesRuntimeFilters(article.title, article.content, {
+          anyKeywords: options?.filters?.keywords || [],
+          includeKeywords: options?.filters?.includeKeywords,
+          mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
+          excludeKeywords: options?.filters?.excludeKeywords,
+          sectors: options?.filters?.sectors
+        });
+      });
 
-          // ★ 수집 중 AI 중복 체크 비활성화 (API 쿼터 보존) → URL 해시 매칭만
-          const dupCheck = await isDuplicateArticle(article, {
-            companyId: source.companyId || options?.companyId,
-          });
-          if (dupCheck.isDuplicate) continue;
-
-          const articleRef = db.collection('articles').doc();
-          await articleRef.set({
-            id: articleRef.id,
-            ...article,
-            companyId: source.companyId || options?.companyId || null,
-            pipelineRunId: options?.pipelineRunId || null,
-            source: source.name,
-            sourceId,
-            globalSourceId: sourceId,  // 항상 globalSources에서 조회
-            sourceCategory: source.category || null,
-            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-            status: 'pending',
-            urlHash: hashUrl(article.url)
-          });
-
-          sourceCollected++;
-        }
-
+      if (validArticles.length === 0) {
+        console.log(`[RSS] ${source.name}: 필터링 후 수집할 기사 없음`);
         await docRef.update({
           lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
           lastStatus: 'success',
           errorMessage: null
         });
-
-        console.log(`[RSS] ${source.name}: +${sourceCollected}건`);
-        return sourceCollected;
-      } catch (error: any) {
-        await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
-        console.error(`[RSS] ${source.name} 오류: ${error.message}`);
-        return 0;
+        continue;
       }
-    })
-  );
 
-  for (const r of perSourceResults) {
-    if (r.status === 'fulfilled') totalCollected += r.value;
+      // 2단계: 병렬 중복 체크 (Firestore batch 최대 500개 제한 고려)
+      const BATCH_SIZE = 500;
+      let sourceCollected = 0;
+
+      for (let i = 0; i < validArticles.length; i += BATCH_SIZE) {
+        const chunk = validArticles.slice(i, Math.min(i + BATCH_SIZE, validArticles.length));
+
+        // 병렬로 중복 체크
+        const dupChecks = await Promise.all(
+          chunk.map(article => isDuplicateArticle(article, {
+            companyId: source.companyId || options?.companyId,
+          }))
+        );
+
+        // 배치 생성
+        const batch = db.batch();
+
+        dupChecks.forEach((check, idx) => {
+          if (!check.isDuplicate) {
+            const article = chunk[idx];
+            const articleRef = db.collection('articles').doc();
+            batch.set(articleRef, {
+              id: articleRef.id,
+              ...article,
+              companyId: source.companyId || options?.companyId || null,
+              pipelineRunId: options?.pipelineRunId || null,
+              source: source.name,
+              sourceId,
+              globalSourceId: sourceId,  // 항상 globalSources에서 조회
+              sourceCategory: source.category || null,
+              collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+              status: 'pending',
+              urlHash: hashUrl(article.url)
+            });
+            sourceCollected++;
+          }
+        });
+
+        // 배치 커밋 (한 번에 DB 쓰기)
+        await batch.commit();
+      }
+
+      await docRef.update({
+        lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastStatus: 'success',
+        errorMessage: null
+      });
+
+      console.log(`[RSS] ${source.name}: +${sourceCollected}건 (배치 처리)`);
+      totalCollected += sourceCollected;
+    } catch (error: any) {
+      await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
+      console.error(`[RSS] ${source.name} 오류: ${error.message}`);
+      // 오류가 나도 다음 소스 계속 처리
+    }
   }
 
   return { success: true, totalCollected };
