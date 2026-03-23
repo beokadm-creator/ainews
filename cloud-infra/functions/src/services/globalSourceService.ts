@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 
-export type GlobalSourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
+export type GlobalSourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
 export type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
 export type ContentLanguage = 'ko' | 'en' | 'ja' | 'zh';
 
@@ -301,23 +301,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     pricingTier: 'free',
     notes: '사이트 구조 분석 후 셀렉터 업데이트 필요',
   },
-  {
-    name: 'Nikkei Asia',
-    description: '아시아 크로스보더 M&A 전문. 일본/중국/동남아 딜. 유료 구독 필요.',
-    url: 'https://asia.nikkei.com',
-    type: 'puppeteer',
-    language: 'en',
-    relevanceScore: 5,
-    category: 'asian',
-    listSelector: 'article, .article-list__item',
-    titleSelector: 'h3 a, .article-title a',
-    defaultKeywords: BASE_EN_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'paid',
-    loginRequired: true,
-    authType: 'session',
-    notes: '유료 구독 + 세션 쿠키 로그인 필요. puppeteer로만 수집 가능.',
-  },
   // === API ===
   {
     name: 'NewsAPI',
@@ -500,24 +483,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     pricingTier: 'requires_subscription',
     notes: '유료 구독 필요.',
   },
-  // === PUPPETEER — 스타트업/PE·VC (동적 렌더링) ===
-  {
-    name: 'TheVC (더VC)',
-    description: '한국 스타트업 투자 데이터베이스. M&A/투자 뉴스.',
-    url: 'https://thevc.kr',
-    type: 'puppeteer',
-    language: 'ko',
-    relevanceScore: 4,
-    category: 'startup',
-    listSelector: '[class*="article"], [class*="post"], [class*="item"], .news-item',
-    titleSelector: 'h1, h2, h3, .title, [class*="title"]',
-    linkSelector: 'a[href]',
-    contentSelector: 'p, .summary, .description, [class*="content"]',
-    defaultKeywords: [...BASE_KO_KEYWORDS, 'VC', '벤처', '투자', '스타트업'],
-    status: 'active',
-    pricingTier: 'free',
-    notes: 'Vue.js SPA. Puppeteer 필수. 동적 로딩 콘텐츠.',
-  },
 ];
 
 // ─────────────────────────────────────────
@@ -577,12 +542,6 @@ export async function testGlobalSource(sourceId: string): Promise<{
       return await testScrapingSource(source, startMs);
     } else if (source.type === 'api') {
       return await testApiSource(source, startMs);
-    } else if (source.type === 'puppeteer') {
-      return {
-        success: true,
-        message: 'Puppeteer sources require a full pipeline run. Manual test not supported in quick-test mode.',
-        latencyMs: Date.now() - startMs,
-      };
     } else {
       return { success: false, message: `Unsupported source type: ${source.type}` };
     }
