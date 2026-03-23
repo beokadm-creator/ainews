@@ -243,6 +243,7 @@ export default function AdminDashboard() {
     try {
       const fn = httpsCallable(functions, 'setPipelineControl');
       await fn({ type: 'stopall', enabled: false });
+      await loadRecentRuns();
     } catch (err: any) {
       alert('강제 종료 실패: ' + err.message);
     } finally {
@@ -337,14 +338,14 @@ export default function AdminDashboard() {
             {/* 파이프라인 ON/OFF */}
             <div className="lg:col-span-2 bg-gray-900 border border-white/5 rounded-xl p-5">
               <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-white/30" />수집 + AI 분석 파이프라인
+                <Activity className="w-4 h-4 text-white/30" />수집 파이프라인
               </h2>
               <div className="space-y-4">
                 {/* 토글 스위치 */}
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-white/80">자동 반복 실행</p>
-                    <p className="text-[11px] text-white/35 mt-0.5">ON 시 수집→분류→분석 무한 반복</p>
+                    <p className="text-sm font-medium text-white/80">수집 자동 반복 실행</p>
+                    <p className="text-[11px] text-white/35 mt-0.5">ON 시 수집 무한 반복</p>
                   </div>
                   <button
                     onClick={handleTogglePipeline}
@@ -375,7 +376,7 @@ export default function AdminDashboard() {
                     <p className="text-xs text-green-400 font-medium">ON — 다음 사이클 대기 중</p></>
                   ) : (
                     <><Power className="w-3.5 h-3.5 text-white/25 flex-shrink-0" />
-                    <p className="text-xs text-white/35">OFF — 수동으로 켜면 자동 반복 시작</p></>
+                    <p className="text-xs text-white/35">OFF — 수동으로 켜면 수집 자동 반복 시작</p></>
                   )}
                 </div>
 
@@ -564,7 +565,7 @@ export default function AdminDashboard() {
               ) : recentRuns.map(run => {
                 const isExpanded = expandedRun === run.id;
                 const dur = runDuration(run);
-                const isRunning = pipelineControl.pipelineRunning && run.status === 'running';
+                const isRunning = run.status === 'running';
                 return (
                   <div key={run.id}>
                     <div
@@ -576,6 +577,7 @@ export default function AdminDashboard() {
                         {isRunning ? <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
                           : run.status === 'completed' ? <CheckCircle className="w-4 h-4 text-green-400" />
                           : run.status === 'failed' ? <XCircle className="w-4 h-4 text-red-400" />
+                          : run.status === 'aborted' ? <XCircle className="w-4 h-4 text-orange-400" />
                           : <Clock className="w-4 h-4 text-white/30" />}
                       </div>
                       {/* 정보 */}
@@ -588,8 +590,9 @@ export default function AdminDashboard() {
                             run.status === 'completed' ? 'bg-green-500/10 text-green-400' :
                             run.status === 'failed' ? 'bg-red-500/10 text-red-400' :
                             run.status === 'running' ? 'bg-blue-500/10 text-blue-400' :
+                            run.status === 'aborted' ? 'bg-orange-500/10 text-orange-400' :
                             'bg-white/5 text-white/30'
-                          }`}>{run.status}</span>
+                          }`}>{run.status === 'aborted' ? '종료됨' : run.status}</span>
                           {dur && <span className="text-[10px] text-white/25">{dur}</span>}
                         </div>
                         <p className="text-[10px] text-white/30 mt-0.5">
