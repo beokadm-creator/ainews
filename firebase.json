@@ -30,7 +30,7 @@
       "predeploy": [
         "npm --prefix \"$RESOURCE_DIR\" run build"
       ],
-      "memory": "128MB"
+      "memory": "64MB"
     }
   ],
   "firestore": {
