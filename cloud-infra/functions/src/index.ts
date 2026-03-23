@@ -4,8 +4,8 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 
 setGlobalOptions({
   region: 'us-central1',
-  maxInstances: 1,
-  concurrency: 10,
+  maxInstances: 0,
+  concurrency: 5,
   invoker: 'public',
 });
 import * as admin from 'firebase-admin';
