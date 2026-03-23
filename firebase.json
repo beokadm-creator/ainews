@@ -29,7 +29,9 @@
       "runtime": "nodejs22",
       "predeploy": [
         "npm --prefix \"$RESOURCE_DIR\" run build"
-      ]
+      ],
+      "memory": "256MB",
+      "timeoutSec": 60
     }
   ],
   "firestore": {

@@ -4,9 +4,11 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 
 setGlobalOptions({
   region: 'us-central1',
-  maxInstances: 5,
-  concurrency: 50,
+  maxInstances: 1,
+  concurrency: 10,
   invoker: 'public',
+  memory: '256MB',
+  timeoutSeconds: 60,
 });
 import * as admin from 'firebase-admin';
 import axios from 'axios';
