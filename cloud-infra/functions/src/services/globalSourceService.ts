@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 
-export type GlobalSourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
+export type GlobalSourceType = 'rss' | 'api' | 'newsletter';
 export type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
 export type ContentLanguage = 'ko' | 'en' | 'ja' | 'zh';
 
@@ -21,12 +21,7 @@ export interface GlobalSource {
   apiKeyRequired?: boolean;
   apiKeyEnvName?: string;
 
-  // Scraping config
-  listSelector?: string;
-  titleSelector?: string;
-  linkSelector?: string;
-  contentSelector?: string;
-  dateSelector?: string;
+  // Scraping config (deprecated)
   loginRequired?: boolean;
   authType?: 'none' | 'session' | 'cookie';
 
@@ -61,38 +56,6 @@ const STARTUP_KEYWORDS = ['M&A', 'acquisition', 'merger', 'private equity', 'PE'
 export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'updatedAt' | 'createdBy' | 'lastTestedAt' | 'lastTestResult'>[] = [
   // === RSS FREE — 국내 ===
   {
-    name: '한국경제신문',
-    description: '국내 주요 경제 매체. M&A 전담 기자 보유. RSS 미제공 - scraping 필요.',
-    url: 'https://www.hankyung.com',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 4,
-    category: 'domestic',
-    listSelector: '.article-item, .article-list li',
-    titleSelector: '.article-title, h2 a, h3 a',
-    linkSelector: 'a[href*="/article/"]',
-    dateSelector: '.article-date, .date, time',
-    defaultKeywords: EXTENDED_KO_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'free',
-    notes: 'RSS 미제공. 웹 스크래핑 필요 - 셀렉터 검증 필요',
-  },
-  {
-    name: '마켓인사이트',
-    description: '한국경제신문 M&A 섹션. 유료 구독 서비스.',
-    url: 'https://marketinsight.hankyung.com/mna',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 5,
-    category: 'domestic',
-    loginRequired: true,
-    authType: 'session',
-    defaultKeywords: EXTENDED_KO_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'paid',
-    notes: '유료 매체 - 크롤링으로 수집 필요',
-  },
-  {
     name: '매일경제',
     description: '경제 섹션별. M&A 관련 기사 다수.',
     url: 'https://www.mk.co.kr',
@@ -104,19 +67,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     defaultKeywords: EXTENDED_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
-  },
-  {
-    name: '파이낸셜뉴스',
-    description: '금융 중심. PE/VC 기사 다수. RSS 미제공.',
-    url: 'https://www.fnnews.com',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 3,
-    category: 'domestic',
-    defaultKeywords: EXTENDED_KO_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'free',
-    notes: 'RSS 미제공 - scraping 필요',
   },
   {
     name: '이데일리',
@@ -169,19 +119,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     defaultKeywords: BASE_KO_KEYWORDS,
     status: 'active',
     pricingTier: 'free',
-  },
-  {
-    name: '머니투데이',
-    description: '경제/금융 전문 매체. RSS 미제공.',
-    url: 'https://www.mt.co.kr',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 3,
-    category: 'domestic',
-    defaultKeywords: EXTENDED_KO_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'free',
-    notes: 'RSS 미제공 - scraping 필요',
   },
   {
     name: '연합뉴스(속보)',
@@ -264,42 +201,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     status: 'active',
     pricingTier: 'free',
     notes: 'Term Sheet 섹션 특히 유용',
-  },
-  // === SCRAPING (유료/RSS 미제공) ===
-  {
-    name: '더벨 (The Bell)',
-    description: '국내 M&A 전문 1위 매체. PE/VC 딜 상세, 심층 리포트. RSS 미제공.',
-    url: 'https://www.thebell.co.kr/free/content/MA',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 5,
-    category: 'domestic',
-    listSelector: '.article-list li, .news-list li',
-    titleSelector: '.title a, h3 a',
-    linkSelector: '.title a, h3 a',
-    contentSelector: '.lead, .summary',
-    dateSelector: '.date, time',
-    defaultKeywords: EXTENDED_KO_KEYWORDS,
-    status: 'active',
-    pricingTier: 'requires_subscription',
-    authType: 'session',
-    loginRequired: true,
-    notes: '국내 M&A 필수 1위 소스. 유료 구독 필요. 세션 쿠키 로그인 필요.',
-  },
-  {
-    name: '오투저널 (OtoJournal)',
-    description: '벤처캐피털 전문. 스타트업 M&A. RSS 미제공.',
-    url: 'https://www.otojournal.com',
-    type: 'scraping',
-    language: 'ko',
-    relevanceScore: 4,
-    category: 'domestic',
-    listSelector: '.news-list li, .post-list li',
-    titleSelector: 'h2 a, h3 a, .title a',
-    defaultKeywords: [...BASE_KO_KEYWORDS, 'VC', '벤처', '투자'],
-    status: 'inactive',
-    pricingTier: 'free',
-    notes: '사이트 구조 분석 후 셀렉터 업데이트 필요',
   },
   // === API ===
   {
@@ -426,63 +327,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
     status: 'active',
     pricingTier: 'free',
   },
-  // === SCRAPING — 스타트업/PE·VC ===
-  {
-    name: 'Fortune Term Sheet',
-    description: 'Fortune의 Term Sheet 컬럼. 딜 뉴스 1위.',
-    url: 'https://fortune.com/section/term-sheet/',
-    type: 'scraping',
-    language: 'en',
-    relevanceScore: 5,
-    category: 'startup',
-    listSelector: '.article-list article, .content-list article, .river-item',
-    titleSelector: 'h3 a, h2 a, .article-title a',
-    defaultKeywords: STARTUP_KEYWORDS,
-    status: 'active',
-    pricingTier: 'free',
-    notes: '웹 스크래핑 필요. CSS 셀렉터 검증 후 사용 권장.',
-  },
-  {
-    name: 'Axios Pro Rata',
-    description: '딜 뉴스 전문. PE/VC/SPAC 커버.',
-    url: 'https://www.axios.com/pro-rata',
-    type: 'scraping',
-    language: 'en',
-    relevanceScore: 5,
-    category: 'startup',
-    listSelector: '.story, .story-content, article',
-    titleSelector: 'h2 a, h3 a, .headline a',
-    defaultKeywords: STARTUP_KEYWORDS,
-    status: 'active',
-    pricingTier: 'free',
-    notes: '웹 스크래핑. 일부 기사 직접 접근 가능.',
-  },
-  {
-    name: 'Private Equity International',
-    description: '글로벌 PE 뉴스 1위. PE 딜 데이터. 펀드레이징 트래킹.',
-    url: 'https://www.privateequityinternational.com',
-    type: 'scraping',
-    language: 'en',
-    relevanceScore: 5,
-    category: 'startup',
-    defaultKeywords: STARTUP_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'requires_subscription',
-    notes: '유료 구독 필요.',
-  },
-  {
-    name: 'Buyouts News',
-    description: 'LBO/Buyout 전문. 중소형 PE 딜.',
-    url: 'https://www.buyoutsnews.com',
-    type: 'scraping',
-    language: 'en',
-    relevanceScore: 5,
-    category: 'startup',
-    defaultKeywords: STARTUP_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'requires_subscription',
-    notes: '유료 구독 필요.',
-  },
 ];
 
 // ─────────────────────────────────────────
@@ -538,8 +382,6 @@ export async function testGlobalSource(sourceId: string): Promise<{
         return { success: false, message: 'RSS source is missing feed URL' };
       }
       return await testRssSource(source, startMs);
-    } else if (source.type === 'scraping') {
-      return await testScrapingSource(source, startMs);
     } else if (source.type === 'api') {
       return await testApiSource(source, startMs);
     } else {
@@ -615,44 +457,6 @@ async function testRssSource(source: GlobalSource, startMs: number) {
     articlesFound: items.length,
     latencyMs,
     sampleTitles,
-  };
-}
-
-async function testScrapingSource(source: GlobalSource, startMs: number) {
-  const cheerio = require('cheerio');
-
-  const response = await axios.get(source.url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; EUM-Bot/1.0)',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
-    },
-    timeout: 15000,
-  });
-
-  const latencyMs = Date.now() - startMs;
-  const $ = cheerio.load(response.data);
-
-  const listSelector = source.listSelector || 'article, .article, .post, li';
-  const titleSelector = source.titleSelector || 'h1, h2, h3, .title';
-
-  const items: string[] = [];
-  $(listSelector).each((_: any, el: any) => {
-    const titleEl = $(el).find(titleSelector).first();
-    const title = titleEl.text().trim();
-    if (title && title.length > 5) items.push(title);
-  });
-
-  const uniqueItems = [...new Set(items)].slice(0, 20);
-
-  return {
-    success: uniqueItems.length > 0,
-    message: uniqueItems.length > 0
-      ? `OK — ${uniqueItems.length} items found with selector "${listSelector}"`
-      : `No items found with selector "${listSelector}". Check selectors.`,
-    articlesFound: uniqueItems.length,
-    latencyMs,
-    sampleTitles: uniqueItems.slice(0, 3),
   };
 }
 
