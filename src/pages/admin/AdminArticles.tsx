@@ -9,7 +9,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 import {
   collection, query, where, orderBy, limit, getDocs,
   startAfter, QueryDocumentSnapshot, DocumentData, getCountFromServer,
-  doc, onSnapshot
+  doc, onSnapshot, setDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore';
 import { format } from 'date-fns';
 
@@ -457,8 +457,19 @@ export default function AdminArticles() {
     setTogglingAi(true);
     setAnalyzeResult(null);
     try {
-      const fn = httpsCallable(functions, 'setPipelineControl');
-      await fn({ type: 'aionly', enabled: newEnabled });
+      // 1. Cloud Function 호출 시도
+      try {
+        const fn = httpsCallable(functions, 'setPipelineControl');
+        await fn({ type: 'aionly', enabled: newEnabled });
+      } catch {
+        // 함수 호출 실패 시 Firestore 직접 업데이트
+        await setDoc(doc(db, 'systemSettings', 'pipelineControl'), {
+          aiOnlyEnabled: newEnabled,
+          ...(newEnabled && { aiOnlyRunning: true }),
+          ...(!newEnabled && { aiOnlyRunning: false }),
+        }, { merge: true });
+      }
+      setAnalyzeResult({ success: true, message: `✓ AI 분석이 ${newEnabled ? '활성화' : '비활성화'}되었습니다.` });
     } catch (err: any) {
       setAnalyzeResult({ success: false, message: `❌ 오류: ${err.message}` });
     } finally {
@@ -506,31 +517,32 @@ export default function AdminArticles() {
           <p className="text-sm text-white/40 mt-0.5">전체 수집 기사 조회 & AI 검증 현황</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* AI 분석 ON/OFF 토글 */}
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors ${
-            aiControl.aiOnlyRunning
-              ? 'bg-blue-500/10 border-blue-500/30'
-              : aiControl.aiOnlyEnabled
-              ? 'bg-green-500/10 border-green-500/30'
-              : 'bg-white/5 border-white/10'
-          }`}>
-            {aiControl.aiOnlyRunning
-              ? <Zap className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
-              : <Power className={`w-3.5 h-3.5 ${aiControl.aiOnlyEnabled ? 'text-green-400' : 'text-white/30'}`} />
-            }
-            <span className={`text-xs font-medium ${aiControl.aiOnlyRunning ? 'text-blue-400' : aiControl.aiOnlyEnabled ? 'text-green-400' : 'text-white/40'}`}>
+          {/* AI 분석 ON/OFF */}
+          <div className="flex items-center gap-1.5">
+            <span className={`text-xs font-medium mr-1 ${aiControl.aiOnlyRunning ? 'text-blue-400' : 'text-white/40'}`}>
               {aiControl.aiOnlyRunning ? 'AI 분석 중...' : 'AI 분석'}
             </span>
             <button
-              onClick={handleToggleAiOnly}
-              disabled={togglingAi}
-              className={`relative w-10 h-5 rounded-full transition-colors duration-300 disabled:opacity-50 ml-1 overflow-hidden ${
-                aiControl.aiOnlyEnabled ? 'bg-green-500' : 'bg-white/15'
+              onClick={() => !aiControl.aiOnlyEnabled && handleToggleAiOnly()}
+              disabled={togglingAi || aiControl.aiOnlyEnabled}
+              className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                aiControl.aiOnlyEnabled
+                  ? 'bg-green-500 border-green-400 text-white cursor-default'
+                  : 'bg-white/5 border-white/15 text-white/40 hover:bg-green-500/20 hover:border-green-500/40 hover:text-green-400 disabled:opacity-40'
               }`}
             >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-300 ${
-                aiControl.aiOnlyEnabled ? 'translate-x-[22px]' : 'translate-x-0.5'
-              }`} />
+              <Power className="w-3 h-3" />ON
+            </button>
+            <button
+              onClick={() => aiControl.aiOnlyEnabled && handleToggleAiOnly()}
+              disabled={togglingAi || !aiControl.aiOnlyEnabled}
+              className={`flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                !aiControl.aiOnlyEnabled
+                  ? 'bg-red-500/80 border-red-400/80 text-white cursor-default'
+                  : 'bg-white/5 border-white/15 text-white/40 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-400 disabled:opacity-40'
+              }`}
+            >
+              <Power className="w-3 h-3" />OFF
             </button>
           </div>
           <button

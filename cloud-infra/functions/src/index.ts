@@ -4,7 +4,7 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 
 setGlobalOptions({
   region: 'us-central1',
-  maxInstances: 0,
+  maxInstances: 1,
   concurrency: 5,
   invoker: 'public',
 });
@@ -15,7 +15,6 @@ import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyze
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
-import { processScrapingSources } from './services/scrapingService';
 import { processApiSources } from './services/apiSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
@@ -692,16 +691,13 @@ export const runBulkAiAnalysisHttp = onRequest(
       console.log(`[Pipeline] Collecting from ${allActiveSourceIds.length} active sources (superadmin mode)`);
       const sourceFilter = { filters: { ...runtimeFilters, sourceIds: allActiveSourceIds }, aiConfig };
 
-      const [rssResult, scrapingResult, apiResult] = await Promise.allSettled([
+      const [rssResult, apiResult] = await Promise.allSettled([
         processRssSources(sourceFilter),
-        processScrapingSources(sourceFilter),
         processApiSources(sourceFilter),
       ]);
       if (rssResult.status === 'fulfilled') totalCollected += (rssResult.value as any)?.totalCollected || 0;
-      if (scrapingResult.status === 'fulfilled') totalCollected += (scrapingResult.value as any)?.totalCollected || 0;
       if (apiResult.status === 'fulfilled') totalCollected += (apiResult.value as any)?.totalCollected || 0;
       if (rssResult.status === 'rejected') console.error('[Pipeline] RSS error:', (rssResult as any).reason?.message);
-      if (scrapingResult.status === 'rejected') console.error('[Pipeline] Scraping error:', (scrapingResult as any).reason?.message);
       if (apiResult.status === 'rejected') console.error('[Pipeline] API error:', (apiResult as any).reason?.message);
       console.log(`[Pipeline] Step 1 done: collected=${totalCollected}`);
 
@@ -785,7 +781,7 @@ export const setPipelineControl = onCall({ region: 'us-central1', cors: true, in
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    // ★ 실행 중인 pipelineRun도 aborted 처리
+    // ★ 실행 중인 pipelineRuns aborted 처리
     const runningPipelines = await db.collection('pipelineRuns')
       .where('status', 'in', ['pending', 'running'])
       .get();
@@ -796,7 +792,19 @@ export const setPipelineControl = onCall({ region: 'us-central1', cors: true, in
         completedAt: admin.firestore.FieldValue.serverTimestamp(),
       }).catch(() => {});
     }
-    console.log(`[Pipeline] Force stopped ${runningPipelines.size} running pipelines`);
+
+    // ★ 실행 중인 bulkAiJobs도 aborted 처리
+    const runningJobs = await db.collection('bulkAiJobs')
+      .where('status', 'in', ['pending', 'running'])
+      .get();
+    for (const doc of runningJobs.docs) {
+      await doc.ref.update({
+        status: 'aborted',
+        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
+    }
+    console.log(`[Pipeline] Force stopped ${runningPipelines.size} pipelineRuns, ${runningJobs.size} bulkAiJobs`);
 
     return { success: true, enabled: false };
   } else if (type === 'pipeline') {
@@ -1196,18 +1204,16 @@ export const executePipelineHttp = onRequest(
       // Step 1: Collection
       await updateStep('collection', 'running');
       const collectionStart = Date.now();
-      const [rssResult, scrapingResult, apiResult] = await Promise.all([
+      const [rssResult, apiResult] = await Promise.all([
         processRssSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
-        processScrapingSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
         processApiSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
       ]);
       const totalCollected =
         (rssResult.totalCollected || 0) +
-        (scrapingResult.totalCollected || 0) +
         (apiResult.totalCollected || 0);
       await updateStep('collection', 'completed', {
         duration: Date.now() - collectionStart,
-        rss: rssResult, scraping: scrapingResult, api: apiResult, totalCollected,
+        rss: rssResult, api: apiResult, totalCollected,
       });
 
       // ★ Abort 체크: Collection 후
@@ -1267,206 +1273,6 @@ export const executePipelineHttp = onRequest(
     }
   },
 );
-
-// ─────────────────────────────────────────
-// [NEW] Scraping Rules Management (로컬 PC)
-// ─────────────────────────────────────────
-/**
- * 스크래핑 규칙 조회 (Superadmin만)
- * Firestore의 scrapingRules 컬렉션에서 모든 규칙 조회
- */
-export const getScrapingRules = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  try {
-    const db = admin.firestore();
-    const snap = await db.collection('scrapingRules').get();
-    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    return { data };
-  } catch (err: any) {
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-/**
- * 스크래핑 규칙 저장 (Superadmin만)
- * sourceId: 'thebell' | 'marketinsight'
- * keywords: string[]
- * categories: string[]
- */
-export const saveScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  const { sourceId, keywords, categories } = request.data || {};
-  if (!sourceId || !keywords || !categories) {
-    throw new HttpsError('invalid-argument', 'sourceId, keywords, categories required');
-  }
-
-  try {
-    const db = admin.firestore();
-
-    // 같은 sourceId의 기존 규칙 찾기
-    const existingSnap = await db.collection('scrapingRules')
-      .where('sourceId', '==', sourceId)
-      .get();
-
-    const sourceName = sourceId === 'thebell' ? '더벨 (The Bell)' : '마켓인사이트 (M&A)';
-    const ruleData = {
-      sourceId,
-      sourceName,
-      keywords,
-      categories,
-      enabled: true,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    };
-
-    let ruleId: string;
-    if (existingSnap.empty) {
-      // 새로운 규칙 생성
-      const newRef = db.collection('scrapingRules').doc();
-      await newRef.set({
-        ...ruleData,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      ruleId = newRef.id;
-    } else {
-      // 기존 규칙 업데이트
-      const docId = existingSnap.docs[0].id;
-      await db.collection('scrapingRules').doc(docId).update(ruleData);
-      ruleId = docId;
-    }
-
-    return { success: true, ruleId };
-  } catch (err: any) {
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-/**
- * 스크래핑 규칙 삭제 (Superadmin만)
- */
-export const deleteScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  const { ruleId } = request.data || {};
-  if (!ruleId) throw new HttpsError('invalid-argument', 'ruleId required');
-
-  try {
-    await admin.firestore().collection('scrapingRules').doc(ruleId).delete();
-    return { success: true };
-  } catch (err: any) {
-    throw new HttpsError('internal', err.message);
-  }
-});
-
-/**
- * 스크래핑 규칙 실행 (Superadmin만)
- * 로컬 Windows PC의 Puppeteer 서버를 호출
- * 환경변수: LOCAL_PC_SCRAPER_URL (예: http://192.168.1.100:3001)
- */
-export const executeScrapingRule = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  const { sourceId } = request.data || {};
-  if (!sourceId) throw new HttpsError('invalid-argument', 'sourceId required');
-
-  try {
-    const db = admin.firestore();
-
-    // 규칙 조회
-    const ruleSnap = await db.collection('scrapingRules')
-      .where('sourceId', '==', sourceId)
-      .get();
-
-    if (ruleSnap.empty) {
-      throw new Error(`No scraping rule found for sourceId: ${sourceId}`);
-    }
-
-    const rule = ruleSnap.docs[0].data();
-    const scraperUrl = process.env.LOCAL_PC_SCRAPER_URL;
-
-    if (!scraperUrl) {
-      throw new Error('LOCAL_PC_SCRAPER_URL environment variable not set');
-    }
-
-    // 로컬 PC 서버 호출
-    const endpoint = sourceId === 'thebell'
-      ? `${scraperUrl}/api/thebell/scrape`
-      : `${scraperUrl}/api/marketinsight/scrape`;
-
-    const response = await axios.get(endpoint, {
-      params: {
-        keywords: rule.keywords.join(','),
-        categories: rule.categories.join(','),
-      },
-      timeout: 60000,
-    });
-
-    if (!response.data.success) {
-      throw new Error(response.data.message || 'Scraping failed');
-    }
-
-    // 수집된 기사를 Firestore에 저장
-    const articles = response.data.data || [];
-    const batchSize = 500;
-
-    for (let i = 0; i < articles.length; i += batchSize) {
-      const batch = db.batch();
-      const chunk = articles.slice(i, i + batchSize);
-
-      for (const article of chunk) {
-        const articleRef = db.collection('articles').doc();
-        batch.set(articleRef, {
-          ...article,
-          source: sourceId === 'thebell' ? '더벨' : '마켓인사이트',
-          sourceId,
-          collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'pending',  // 'new' → 'pending' (다른 수집 경로와 일치)
-        });
-      }
-
-      await batch.commit();
-    }
-
-    return {
-      data: {
-        sourceId,
-        success: true,
-        articlesFound: articles.length,
-        message: `${articles.length}개 기사 수집 완료`,
-        executedAt: new Date().toISOString(),
-      },
-    };
-  } catch (err: any) {
-    return {
-      data: {
-        sourceId,
-        success: false,
-        message: err.message || 'Execution failed',
-      },
-    };
-  }
-});
 
 // ─────────────────────────────────────────
 // [NEW] generateReport: 사용자 선택 기사 + 프롬프트 → HTML 분석 보고서

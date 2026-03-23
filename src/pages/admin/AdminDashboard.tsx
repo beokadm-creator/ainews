@@ -8,7 +8,7 @@ import { db, functions } from '@/lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import {
   collection, query, where, orderBy, limit,
-  getDocs, onSnapshot, doc, getCountFromServer, getDoc, setDoc
+  getDocs, onSnapshot, doc, getCountFromServer, getDoc, setDoc, updateDoc, serverTimestamp
 } from 'firebase/firestore';
 import { Monitor, Wifi, WifiOff } from 'lucide-react';
 import { format, subDays, startOfDay } from 'date-fns';
@@ -104,6 +104,7 @@ export default function AdminDashboard() {
   const [pipelineControl, setPipelineControl] = useState<any>({});
   const [togglingPipeline, setTogglingPipeline] = useState(false);
   const unsubRef = useRef<(() => void) | null>(null);
+  const unsubRunsRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     loadAll();
@@ -112,7 +113,13 @@ export default function AdminDashboard() {
       setPipelineControl(snap.exists() ? snap.data() : {});
     });
     unsubRef.current = unsub;
-    return () => unsub();
+    // 파이프라인 이력 실시간 구독
+    const unsubRuns = onSnapshot(
+      query(collection(db, 'bulkAiJobs'), orderBy('startedAt', 'desc'), limit(10)),
+      (snap) => setRecentRuns(snap.docs.map(d => ({ id: d.id, ...d.data() as any })))
+    );
+    unsubRunsRef.current = unsubRuns;
+    return () => { unsub(); unsubRuns(); };
   }, []);
 
   const loadAll = async () => {
@@ -241,9 +248,29 @@ export default function AdminDashboard() {
   const handleStopAll = async () => {
     setTogglingPipeline(true);
     try {
-      const fn = httpsCallable(functions, 'setPipelineControl');
-      await fn({ type: 'stopall', enabled: false });
-      await loadRecentRuns();
+      // 1. Cloud Function으로 pipelineControl 상태 업데이트 시도
+      try {
+        const fn = httpsCallable(functions, 'setPipelineControl');
+        await fn({ type: 'stopall', enabled: false });
+      } catch {
+        // 함수 호출 실패 시 Firestore 직접 업데이트
+        await setDoc(doc(db, 'systemSettings', 'pipelineControl'), {
+          pipelineEnabled: false, pipelineRunning: false,
+          aiOnlyEnabled: false, aiOnlyRunning: false,
+          currentStep: null,
+        }, { merge: true });
+      }
+      // 2. bulkAiJobs 중 pending/running 상태 직접 aborted 처리
+      const stuckJobs = await getDocs(
+        query(collection(db, 'bulkAiJobs'), where('status', 'in', ['pending', 'running']))
+      );
+      await Promise.all(stuckJobs.docs.map(d =>
+        updateDoc(d.ref, {
+          status: 'aborted',
+          abortedAt: serverTimestamp(),
+          completedAt: serverTimestamp(),
+        })
+      ));
     } catch (err: any) {
       alert('강제 종료 실패: ' + err.message);
     } finally {
@@ -340,44 +367,53 @@ export default function AdminDashboard() {
               <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
                 <Activity className="w-4 h-4 text-white/30" />수집 파이프라인
               </h2>
-              <div className="space-y-4">
-                {/* 토글 스위치 */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white/80">수집 자동 반복 실행</p>
-                    <p className="text-[11px] text-white/35 mt-0.5">ON 시 수집 무한 반복</p>
-                  </div>
-                  <button
-                    onClick={handleTogglePipeline}
-                    disabled={togglingPipeline}
-                    className={`relative w-14 h-7 rounded-full transition-colors duration-300 disabled:opacity-50 overflow-hidden ${
-                      pipelineControl.pipelineEnabled ? 'bg-green-500' : 'bg-white/15'
-                    }`}
-                  >
-                    <span className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-transform duration-300 ${
-                      pipelineControl.pipelineEnabled ? 'translate-x-[33px]' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </div>
-
-                {/* 현재 상태 */}
-                <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
+              <div className="space-y-3">
+                {/* 현재 상태 표시 */}
+                <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border ${
                   pipelineControl.pipelineRunning
-                    ? 'bg-blue-500/10 border-blue-500/20'
+                    ? 'bg-blue-500/10 border-blue-500/30'
                     : pipelineControl.pipelineEnabled
-                    ? 'bg-green-500/10 border-green-500/20'
+                    ? 'bg-green-500/10 border-green-500/30'
                     : 'bg-white/5 border-white/10'
                 }`}>
                   {pipelineControl.pipelineRunning ? (
                     <><Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 flex-shrink-0" />
-                    <p className="text-xs text-blue-400 font-medium">{pipelineControl.currentStep || '실행 중...'}</p></>
+                    <p className="text-xs text-blue-400 font-medium">{pipelineControl.currentStep || '수집 실행 중...'}</p></>
                   ) : pipelineControl.pipelineEnabled ? (
                     <><Power className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
-                    <p className="text-xs text-green-400 font-medium">ON — 다음 사이클 대기 중</p></>
+                    <p className="text-xs text-green-400 font-medium">ON — 다음 수집 대기 중</p></>
                   ) : (
-                    <><Power className="w-3.5 h-3.5 text-white/25 flex-shrink-0" />
-                    <p className="text-xs text-white/35">OFF — 수동으로 켜면 수집 자동 반복 시작</p></>
+                    <><Power className="w-3.5 h-3.5 text-white/30 flex-shrink-0" />
+                    <p className="text-xs text-white/40">OFF — 수집 자동 반복 중지됨</p></>
                   )}
+                </div>
+
+                {/* ON / OFF 버튼 */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => !pipelineControl.pipelineEnabled && handleTogglePipeline()}
+                    disabled={togglingPipeline || pipelineControl.pipelineEnabled}
+                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border transition-all ${
+                      pipelineControl.pipelineEnabled
+                        ? 'bg-green-500 border-green-400 text-white cursor-default'
+                        : 'bg-white/5 border-white/15 text-white/40 hover:bg-green-500/20 hover:border-green-500/40 hover:text-green-400 disabled:opacity-40'
+                    }`}
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    ON
+                  </button>
+                  <button
+                    onClick={() => pipelineControl.pipelineEnabled && handleTogglePipeline()}
+                    disabled={togglingPipeline || !pipelineControl.pipelineEnabled}
+                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border transition-all ${
+                      !pipelineControl.pipelineEnabled
+                        ? 'bg-red-500/80 border-red-400/80 text-white cursor-default'
+                        : 'bg-white/5 border-white/15 text-white/40 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-400 disabled:opacity-40'
+                    }`}
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    OFF
+                  </button>
                 </div>
 
                 {/* 강제 종료 버튼 (실행 중일 때만 표시) */}
@@ -388,7 +424,7 @@ export default function AdminDashboard() {
                     className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
                   >
                     <XCircle className="w-3.5 h-3.5" />
-                    모든 파이프라인 강제 종료
+                    강제 종료
                   </button>
                 )}
               </div>
