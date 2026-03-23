@@ -7,7 +7,6 @@ setGlobalOptions({
   maxInstances: 1,
   concurrency: 10,
   invoker: 'public',
-  timeoutSec: 60,
 });
 import * as admin from 'firebase-admin';
 import axios from 'axios';

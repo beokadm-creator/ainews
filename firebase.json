@@ -30,8 +30,7 @@
       "predeploy": [
         "npm --prefix \"$RESOURCE_DIR\" run build"
       ],
-      "memory": "256MB",
-      "timeoutSec": 60
+      "memory": "256MB"
     }
   ],
   "firestore": {
