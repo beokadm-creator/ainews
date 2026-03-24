@@ -38,6 +38,40 @@ function getDefaultDateRange() {
   };
 }
 
+function toSafeDate(value: any): Date | null {
+  if (!value) return null;
+
+  try {
+    if (typeof value?.toDate === 'function') {
+      const converted = value.toDate();
+      return Number.isNaN(converted?.getTime?.()) ? null : converted;
+    }
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'string' || typeof value === 'number') {
+      const converted = new Date(value);
+      return Number.isNaN(converted.getTime()) ? null : converted;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function formatPublishedAt(value: any) {
+  const safeDate = toSafeDate(value);
+  if (!safeDate) return '';
+  try {
+    return format(safeDate, 'yyyy.MM.dd HH:mm');
+  } catch {
+    return '';
+  }
+}
+
 function TagInput({
   tags,
   onChange,
@@ -382,7 +416,7 @@ export default function Articles() {
                         {article.relevanceScore > 0 && (
                           <span className="text-green-600 dark:text-green-400">관련도 {Math.round(article.relevanceScore * 100)}%</span>
                         )}
-                        <span className="ml-auto">{article.publishedAt ? format(article.publishedAt.toDate ? article.publishedAt.toDate() : new Date(article.publishedAt), 'yyyy.MM.dd HH:mm') : ''}</span>
+                        <span className="ml-auto">{formatPublishedAt(article.publishedAt)}</span>
                       </div>
                       <h3 className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{article.title}</h3>
                       <div className="mt-2 space-y-1">
@@ -440,7 +474,7 @@ export default function Articles() {
               <div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                   <span>{previewArticle.source}</span>
-                  <span>{previewArticle.publishedAt ? format(previewArticle.publishedAt.toDate ? previewArticle.publishedAt.toDate() : new Date(previewArticle.publishedAt), 'yyyy.MM.dd HH:mm') : ''}</span>
+                  <span>{formatPublishedAt(previewArticle.publishedAt)}</span>
                 </div>
                 <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
