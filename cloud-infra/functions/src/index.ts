@@ -83,6 +83,22 @@ interface CompanyReportPromptSettings {
   publisherName: string | null;
 }
 
+interface ManagedReportSourceDefinition {
+  id: string;
+  name: string;
+  pool: Set<string>;
+}
+
+interface ManagedReportArticleLoadResult {
+  articles: any[];
+  matchedSourceNames: string[];
+  sourceCoverage: Array<{
+    sourceId: string;
+    sourceName: string;
+    articleCount: number;
+  }>;
+}
+
 function getPresetWindowHours(datePreset?: ManagedReportFilters['datePreset']) {
   switch (datePreset) {
     case '3d': return 72;
@@ -177,7 +193,7 @@ function buildSourceIdentityPool(source: any) {
 
 function buildArticleIdentityPool(article: any) {
   const pool = new Set<string>();
-  [article?.globalSourceId, article?.sourceId, article?.source].forEach((value) => {
+  [article?.globalSourceId, article?.sourceId, article?.source, article?.publisher, article?.pressName, article?.sourceName].forEach((value) => {
     getSourceIdentityAliases(value).forEach((alias) => pool.add(alias));
   });
   return pool;
@@ -189,6 +205,19 @@ function articleMatchesSourcePool(article: any, allowedPool: Set<string>) {
     if (allowedPool.has(key)) return true;
   }
   return false;
+}
+
+function matchArticleToSources(article: any, sources: ManagedReportSourceDefinition[]) {
+  if (sources.length === 0) return [];
+  const articlePool = buildArticleIdentityPool(article);
+  return sources
+    .filter((source) => {
+      for (const alias of articlePool) {
+        if (source.pool.has(alias)) return true;
+      }
+      return false;
+    })
+    .map((source) => source.id);
 }
 
 async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: string) {
@@ -221,7 +250,7 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
 async function loadAccessibleArticlesForManagedReport(
   companyId: string,
   filters?: ManagedReportFilters,
-): Promise<any[]> {
+): Promise<ManagedReportArticleLoadResult> {
   const db = admin.firestore();
   const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
   const subscribedSourceIds: string[] = subDoc.exists
@@ -229,7 +258,7 @@ async function loadAccessibleArticlesForManagedReport(
     : [];
 
   if (subscribedSourceIds.length === 0) {
-    return [];
+    return { articles: [], matchedSourceNames: [], sourceCoverage: [] };
   }
 
   const requestedSourceIds = Array.isArray(filters?.sourceIds) && filters?.sourceIds.length > 0
@@ -237,7 +266,7 @@ async function loadAccessibleArticlesForManagedReport(
     : subscribedSourceIds;
 
   if (requestedSourceIds.length === 0) {
-    return [];
+    return { articles: [], matchedSourceNames: [], sourceCoverage: [] };
   }
 
   const sourceIdBatches: string[][] = [];
@@ -255,37 +284,99 @@ async function loadAccessibleArticlesForManagedReport(
     )
   ).flatMap((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })));
 
+  const requestedSourceDefinitions: ManagedReportSourceDefinition[] = requestedSources.map((source) => ({
+    id: source.id,
+    name: source.name || source.id,
+    pool: buildSourceIdentityPool(source),
+  }));
   const requestedSourcePool = new Set<string>();
-  requestedSources.forEach((source) => {
-    buildSourceIdentityPool(source).forEach((key) => requestedSourcePool.add(key));
+  requestedSourceDefinitions.forEach((source) => {
+    source.pool.forEach((key) => requestedSourcePool.add(key));
   });
 
   const { startDate, endDate } = getManagedReportWindow(filters);
-  const snap = await db.collection('articles')
-    .where('publishedAt', '>=', startDate)
-    .where('publishedAt', '<=', endDate)
-    .orderBy('publishedAt', 'desc')
-    .limit(Math.min(filters?.limit || 120, 200))
-    .get();
-
   const keywordPool = (filters?.keywords || [])
     .map((keyword) => `${keyword || ''}`.trim().toLowerCase())
     .filter(Boolean);
+  const targetLimit = Math.min(filters?.limit || 120, 200);
+  const pageSize = 200;
+  const maxScanCount = 2000;
+  const matchedArticles: any[] = [];
+  const seenArticleIds = new Set<string>();
+  const sourceCoverage = new Map<string, number>();
+  let scannedCount = 0;
+  let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
 
-  return snap.docs
-    .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter((article: any) => ['analyzed', 'published'].includes(article.status))
-    .filter((article: any) => articleMatchesSourcePool(article, requestedSourcePool))
-    .filter((article: any) => {
-      if (keywordPool.length === 0) return true;
-      const haystack = [
-        article.title || '',
-        article.content || '',
-        ...(article.summary || []),
-        ...(article.tags || []),
-      ].join(' ').toLowerCase();
-      return keywordPool.some((keyword) => haystack.includes(keyword));
-    });
+  while (scannedCount < maxScanCount) {
+    let articleQuery = db.collection('articles')
+      .where('publishedAt', '>=', startDate)
+      .where('publishedAt', '<=', endDate)
+      .orderBy('publishedAt', 'desc')
+      .limit(pageSize);
+
+    if (lastDoc) {
+      articleQuery = articleQuery.startAfter(lastDoc) as any;
+    }
+
+    const snap = await articleQuery.get();
+    if (snap.empty) break;
+
+    scannedCount += snap.size;
+    lastDoc = snap.docs[snap.docs.length - 1];
+
+    for (const doc of snap.docs) {
+      const article: any = { id: doc.id, ...(doc.data() as any) };
+      if (seenArticleIds.has(article.id)) continue;
+      if (!['analyzed', 'published'].includes(article.status)) continue;
+      if (!articleMatchesSourcePool(article, requestedSourcePool)) continue;
+
+      if (keywordPool.length > 0) {
+        const haystack = [
+          article.title || '',
+          article.content || '',
+          ...(article.summary || []),
+          ...(article.tags || []),
+        ].join(' ').toLowerCase();
+        if (!keywordPool.some((keyword) => haystack.includes(keyword))) {
+          continue;
+        }
+      }
+
+      const matchedSourceIds = matchArticleToSources(article, requestedSourceDefinitions);
+      if (matchedSourceIds.length === 0) continue;
+
+      seenArticleIds.add(article.id);
+      matchedArticles.push(article);
+      matchedSourceIds.forEach((sourceId) => {
+        sourceCoverage.set(sourceId, (sourceCoverage.get(sourceId) || 0) + 1);
+      });
+    }
+
+    const coveredSourceCount = requestedSourceDefinitions.filter((source) => (sourceCoverage.get(source.id) || 0) > 0).length;
+    if (matchedArticles.length >= targetLimit && coveredSourceCount === requestedSourceDefinitions.length) {
+      break;
+    }
+
+    if (snap.size < pageSize) break;
+  }
+
+  matchedArticles.sort((left, right) => {
+    const leftTime = left.publishedAt?.toDate ? left.publishedAt.toDate().getTime() : new Date(left.publishedAt || 0).getTime();
+    const rightTime = right.publishedAt?.toDate ? right.publishedAt.toDate().getTime() : new Date(right.publishedAt || 0).getTime();
+    return rightTime - leftTime;
+  });
+
+  return {
+    articles: matchedArticles.slice(0, targetLimit),
+    matchedSourceNames: requestedSourceDefinitions
+      .filter((source) => (sourceCoverage.get(source.id) || 0) > 0)
+      .map((source) => source.name),
+    sourceCoverage: requestedSourceDefinitions.map((source) => ({
+      sourceId: source.id,
+      sourceName: source.name,
+      articleCount: sourceCoverage.get(source.id) || 0,
+    })),
+  };
 }
 
 function buildManagedReportPrompt(
@@ -415,13 +506,18 @@ async function executeManagedReport({
   }, { merge: true });
 
   let reportArticles: any[] = [];
+  let matchedSourceNames: string[] = [];
+  let sourceCoverage: ManagedReportArticleLoadResult['sourceCoverage'] = [];
   if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
     const articleDocs = await Promise.all(
       output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
     );
     reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
   } else {
-    reportArticles = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+    const reportLoad = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+    reportArticles = reportLoad.articles;
+    matchedSourceNames = reportLoad.matchedSourceNames;
+    sourceCoverage = reportLoad.sourceCoverage;
   }
 
   if (reportArticles.length === 0) {
@@ -443,32 +539,31 @@ async function executeManagedReport({
     reportTitle,
     requestedBy: requestedBy || output.requestedBy || '__system__',
     aiConfig: runtime.ai,
+    outputId,
+    outputMetadata: {
+      type: 'managed_report',
+      serviceMode: output.serviceMode || 'internal',
+      distributionGroupId: output.distributionGroupId || null,
+      distributionGroupName: output.distributionGroupName || null,
+      scheduledAt: output.scheduledAt || null,
+      selectedSourceNames: sourceNames,
+      matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+      sourceCoverage,
+    },
   });
-
-  const generatedOutputRef = db.collection('outputs').doc(result.outputId);
-  const generatedOutputDoc = await generatedOutputRef.get();
-  const generatedOutput = generatedOutputDoc.data() as any;
 
   await outputRef.set({
     status: 'completed',
     completedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    generatedOutputId: result.outputId,
-    articleIds: generatedOutput?.articleIds || reportArticles.map((article) => article.id),
-    articleCount: generatedOutput?.articleCount || reportArticles.length,
-    htmlContent: generatedOutput?.htmlContent || null,
-    rawOutput: generatedOutput?.rawOutput || null,
+    generatedOutputId: null,
+    parentRequestId: null,
+    articleIds: reportArticles.map((article) => article.id),
+    articleCount: reportArticles.length,
+    selectedSourceNames: sourceNames,
+    matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+    sourceCoverage,
   }, { merge: true });
-
-  if (generatedOutputDoc.exists) {
-    await generatedOutputRef.set({
-      serviceMode: output.serviceMode || 'internal',
-      distributionGroupId: output.distributionGroupId || null,
-      distributionGroupName: output.distributionGroupName || null,
-      parentRequestId: outputId,
-      scheduledAt: output.scheduledAt || null,
-    }, { merge: true });
-  }
 
   const resolvedRecipients = Array.isArray(recipients) && recipients.length > 0
     ? recipients
@@ -495,8 +590,8 @@ async function executeManagedReport({
 
   return {
     outputId,
-    generatedOutputId: result.outputId,
-    articleCount: generatedOutput?.articleCount || reportArticles.length,
+    generatedOutputId: null,
+    articleCount: reportArticles.length,
   };
 }
 
@@ -539,32 +634,22 @@ async function executeStandaloneCustomReport({
     reportTitle,
     requestedBy,
     aiConfig: runtime.ai,
+    outputId,
   });
-
-  const generatedOutputRef = db.collection('outputs').doc(result.outputId);
-  const generatedOutputDoc = await generatedOutputRef.get();
-  const generatedOutput = generatedOutputDoc.data() as any;
 
   await outputRef.set({
     status: 'completed',
     completedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    generatedOutputId: result.outputId,
-    articleIds: generatedOutput?.articleIds || articleIds,
-    articleCount: generatedOutput?.articleCount || articleIds.length,
-    htmlContent: generatedOutput?.htmlContent || null,
-    rawOutput: generatedOutput?.rawOutput || null,
+    generatedOutputId: null,
+    parentRequestId: null,
+    articleIds,
+    articleCount: articleIds.length,
   }, { merge: true });
-
-  if (generatedOutputDoc.exists) {
-    await generatedOutputRef.set({
-      parentRequestId: outputId,
-    }, { merge: true });
-  }
 
   return {
     outputId,
-    generatedOutputId: result.outputId,
+    generatedOutputId: null,
   };
 }
 
@@ -2078,6 +2163,7 @@ export const retryManagedReport = onCall(
       status: 'pending',
       errorMessage: null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      generatedOutputId: null,
     }, { merge: true });
 
     triggerManagedReportProcessing({
@@ -2565,6 +2651,7 @@ export const generateReportContentHttp = onRequest(
             reportTitle,
             requestedBy,
             aiConfig: runtime.ai,
+            outputId,
           });
 
           // Status 업데이트: completed
@@ -2622,13 +2709,18 @@ export const processManagedReportHttp = onRequest(
         }, { merge: true });
 
         let reportArticles: any[] = [];
+        let matchedSourceNames: string[] = [];
+        let sourceCoverage: ManagedReportArticleLoadResult['sourceCoverage'] = [];
         if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
           const articleDocs = await Promise.all(
             output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
           );
           reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
         } else {
-          reportArticles = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+          const reportLoad = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+          reportArticles = reportLoad.articles;
+          matchedSourceNames = reportLoad.matchedSourceNames;
+          sourceCoverage = reportLoad.sourceCoverage;
         }
 
         if (reportArticles.length === 0) {
@@ -2650,32 +2742,31 @@ export const processManagedReportHttp = onRequest(
           reportTitle,
           requestedBy: requestedBy || output.requestedBy || '__system__',
           aiConfig: runtime.ai,
+          outputId,
+          outputMetadata: {
+            type: 'managed_report',
+            serviceMode: output.serviceMode || 'internal',
+            distributionGroupId: output.distributionGroupId || null,
+            distributionGroupName: output.distributionGroupName || null,
+            scheduledAt: output.scheduledAt || null,
+            selectedSourceNames: sourceNames,
+            matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+            sourceCoverage,
+          },
         });
-
-        const generatedOutputRef = db.collection('outputs').doc(result.outputId);
-        const generatedOutputDoc = await generatedOutputRef.get();
-        const generatedOutput = generatedOutputDoc.data() as any;
 
         await outputRef.set({
           status: 'completed',
           completedAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          generatedOutputId: result.outputId,
-          articleIds: generatedOutput?.articleIds || reportArticles.map((article) => article.id),
-          articleCount: generatedOutput?.articleCount || reportArticles.length,
-          htmlContent: generatedOutput?.htmlContent || null,
-          rawOutput: generatedOutput?.rawOutput || null,
+          generatedOutputId: null,
+          parentRequestId: null,
+          articleIds: reportArticles.map((article) => article.id),
+          articleCount: reportArticles.length,
+          selectedSourceNames: sourceNames,
+          matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+          sourceCoverage,
         }, { merge: true });
-
-        if (generatedOutputDoc.exists) {
-          await generatedOutputRef.set({
-            serviceMode: output.serviceMode || 'internal',
-            distributionGroupId: output.distributionGroupId || null,
-            distributionGroupName: output.distributionGroupName || null,
-            parentRequestId: outputId,
-            scheduledAt: output.scheduledAt || null,
-          }, { merge: true });
-        }
 
         const resolvedRecipients = Array.isArray(recipients) && recipients.length > 0
           ? recipients

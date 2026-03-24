@@ -310,6 +310,8 @@ export interface CustomReportOptions {
   reportTitle?: string;
   requestedBy: string;
   aiConfig: RuntimeAiConfig;
+  outputId?: string;
+  outputMetadata?: Record<string, any>;
 }
 
 export async function generateCustomReport(options: CustomReportOptions) {
@@ -392,7 +394,9 @@ ${articleDigest}`;
   const htmlContent = stripMarkdownCodeFence(response.content);
 
   // 4. outputs 컬렉션에 저장
-  const outputRef = db.collection('outputs').doc();
+  const outputRef = options.outputId
+    ? db.collection('outputs').doc(options.outputId)
+    : db.collection('outputs').doc();
   await outputRef.set({
     id: outputRef.id,
     companyId: options.companyId,
@@ -406,8 +410,14 @@ ${articleDigest}`;
     rawOutput: htmlContent,
     structuredOutput: null,
     requestedBy: options.requestedBy,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+    status: 'completed',
+    generatedOutputId: null,
+    parentRequestId: null,
+    completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(options.outputMetadata || {}),
+    ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+  }, { merge: true });
 
   await logPromptExecution(
     'custom-output',

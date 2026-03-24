@@ -1,4 +1,4 @@
-import * as admin from 'firebase-admin';
+﻿import * as admin from 'firebase-admin';
 import { load } from 'cheerio';
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
@@ -45,6 +45,15 @@ function sanitizeFileName(value: string) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 100) || 'report';
+}
+
+function escapeHtml(value: string) {
+  return `${value || ''}`
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function resolveOutputDate(output: any): string {
@@ -216,6 +225,22 @@ function buildBrandedShell({
   const logoHtml = branding.logoDataUrl
     ? `<img src="${branding.logoDataUrl}" alt="${branding.publisherName}" class="brand-logo" />`
     : `<div class="brand-badge">${branding.publisherName.slice(0, 1)}</div>`;
+  const selectedSourceNames = Array.isArray(output.selectedSourceNames) ? output.selectedSourceNames : [];
+  const matchedSourceNames = Array.isArray(output.matchedSourceNames) ? output.matchedSourceNames : [];
+  const keywords = Array.isArray(output.keywords) ? output.keywords : [];
+  const sourceCoverage = Array.isArray(output.sourceCoverage) ? output.sourceCoverage : [];
+  const serviceLabel = output.serviceMode === 'external' ? 'EXTERNAL DISTRIBUTION' : 'INTERNAL INTELLIGENCE';
+  const renderChips = (items: string[], tone: 'gold' | 'slate' = 'slate') => items.length > 0
+    ? `<div class="chip-row">${items.map((item) => `<span class="meta-chip meta-chip-${tone}">${escapeHtml(item)}</span>`).join('')}</div>`
+    : '<div class="meta-empty">설정되지 않음</div>';
+  const coverageHtml = sourceCoverage.length > 0
+    ? `<div class="coverage-grid">${sourceCoverage.map((item: any) => `
+        <div class="coverage-card">
+          <div class="coverage-name">${escapeHtml(item.sourceName || item.sourceId || '')}</div>
+          <div class="coverage-count">${Number(item.articleCount || 0)}건 반영</div>
+        </div>
+      `).join('')}</div>`
+    : '';
 
   return `<!DOCTYPE html>
   <html lang="ko">
@@ -297,6 +322,25 @@ function buildBrandedShell({
         font-size: 12px;
         color: rgba(255,255,255,0.72);
       }
+      .hero-kicker {
+        display: inline-flex;
+        align-items: center;
+        margin-top: 18px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.14);
+        color: rgba(255,255,255,0.86);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+      }
+      .hero-summary {
+        margin-top: 14px;
+        max-width: 560px;
+        font-size: 14px;
+        line-height: 1.75;
+        color: rgba(255,255,255,0.8);
+      }
       .report-meta {
         text-align: right;
         padding: 12px 14px;
@@ -315,6 +359,77 @@ function buildBrandedShell({
         margin-top: 4px;
         font-size: 12px;
         color: rgba(255,255,255,0.72);
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        gap: 18px;
+        margin-bottom: 22px;
+      }
+      .overview-card {
+        padding: 18px 20px;
+        border-radius: 22px;
+        background: linear-gradient(180deg, #fbfdff 0%, #f4f8fb 100%);
+        border: 1px solid #e3ebf4;
+        box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
+      }
+      .overview-title {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #64748b;
+      }
+      .overview-value {
+        margin-top: 10px;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+      }
+      .meta-chip {
+        display: inline-flex;
+        align-items: center;
+        margin: 0 8px 8px 0;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .meta-chip-gold {
+        background: rgba(212, 175, 55, 0.16);
+        color: #8a6110;
+        border: 1px solid rgba(212, 175, 55, 0.26);
+      }
+      .meta-chip-slate {
+        background: #eef4f9;
+        color: #16324f;
+        border: 1px solid #dbe5ef;
+      }
+      .meta-empty {
+        color: #64748b;
+        font-size: 13px;
+      }
+      .coverage-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .coverage-card {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: #ffffff;
+        border: 1px solid #e5ebf2;
+      }
+      .coverage-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: #16324f;
+      }
+      .coverage-count {
+        margin-top: 6px;
+        font-size: 13px;
+        color: #64748b;
       }
       .report-body {
         padding: 30px 38px 0;
@@ -431,6 +546,9 @@ function buildBrandedShell({
           margin-top: 14px;
           text-align: left;
         }
+        .overview-grid {
+          grid-template-columns: 1fr;
+        }
         .report-body {
           padding: 18px 18px 0;
         }
@@ -488,6 +606,8 @@ function buildBrandedShell({
           <div>
             <div class="brand-name">${branding.publisherName}</div>
             <div class="brand-note">이 문서는 ${branding.publisherName}가 발행한 분석 리포트입니다.</div>
+            <div class="hero-kicker">${serviceLabel}</div>
+            <div class="hero-summary">선택된 매체와 키워드를 기준으로 수집한 기사를 구조화해, 공유 URL에서도 가독성 좋게 확인할 수 있도록 정리했습니다.</div>
           </div>
         </div>
         <div class="report-meta">
@@ -496,6 +616,19 @@ function buildBrandedShell({
         </div>
       </header>
       <main class="report-body">
+        <section class="overview-grid">
+          <div class="overview-card">
+            <div class="overview-title">선택 매체</div>
+            <div class="overview-value">${renderChips(selectedSourceNames, 'gold')}</div>
+            <div class="overview-title" style="margin-top:16px;">실제 반영 매체</div>
+            <div class="overview-value">${renderChips(matchedSourceNames)}</div>
+          </div>
+          <div class="overview-card">
+            <div class="overview-title">키워드</div>
+            <div class="overview-value">${renderChips(keywords)}</div>
+            ${coverageHtml}
+          </div>
+        </section>
         ${bodyHtml}
       </main>
       <footer class="brand-footer">
@@ -588,3 +721,4 @@ export async function buildOutputAssetBundle(outputId: string) {
     pdfFilename: `${fileStem}.pdf`,
   };
 }
+
