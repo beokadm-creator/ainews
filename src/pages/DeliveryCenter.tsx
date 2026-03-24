@@ -102,6 +102,11 @@ export default function DeliveryCenter() {
   const [previewRequestId, setPreviewRequestId] = useState<string | null>(null);
   const [previewOutput, setPreviewOutput] = useState<any | null>(null);
   const [previewArticles, setPreviewArticles] = useState<any[]>([]);
+  const parsedKeywords = useMemo(() => parseLines(keywordsText), [keywordsText]);
+  const selectedSourceNames = useMemo(
+    () => sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name),
+    [sourceIds, sources],
+  );
 
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedId) || null,
@@ -131,7 +136,7 @@ export default function DeliveryCenter() {
 
       const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
         getDocs(collection(db, 'globalSources')),
-        getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId), orderBy('updatedAt', 'desc'))),
+        getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId))),
         getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'))),
       ]);
 
@@ -141,7 +146,15 @@ export default function DeliveryCenter() {
         .map((item) => ({ id: item.id, name: item.name }));
 
       setSources(availableSources);
-      setGroups(groupSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) } as DeliveryGroup)));
+      setGroups(
+        groupSnap.docs
+          .map((item) => ({ id: item.id, ...(item.data() as any) } as DeliveryGroup))
+          .sort((left, right) => {
+            const leftTime = left.updatedAt?.toDate ? left.updatedAt.toDate().getTime() : 0;
+            const rightTime = right.updatedAt?.toDate ? right.updatedAt.toDate().getTime() : 0;
+            return rightTime - leftTime;
+          }),
+      );
       setRecentRuns(
         outputSnap.docs
           .map((item) => ({ id: item.id, ...(item.data() as any) }))
@@ -235,7 +248,6 @@ export default function DeliveryCenter() {
       const targetRef = selectedId !== 'new'
         ? doc(db, 'distributionGroups', selectedId)
         : doc(collection(db, 'distributionGroups'));
-      const selectedSourceNames = sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name);
       const payload: any = {
         companyId,
         name: name.trim(),
@@ -270,7 +282,6 @@ export default function DeliveryCenter() {
     setMessage('');
     try {
       const fn = httpsCallable(functions, 'requestManagedReport');
-      const selectedSourceNames = sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name);
       await fn({
         companyId,
         mode: 'external',
@@ -303,7 +314,6 @@ export default function DeliveryCenter() {
     setMessage('');
     try {
       const fn = httpsCallable(functions, 'requestManagedReport');
-      const selectedSourceNames = sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name);
       const result = await fn({
         companyId,
         mode: 'external',
@@ -491,21 +501,48 @@ export default function DeliveryCenter() {
                   자동발송 활성화
                 </label>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {sources.map((source) => (
-                  <button
-                    key={source.id}
-                    type="button"
-                    onClick={() => toggleSource(source.id)}
-                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
-                      sourceIds.includes(source.id)
-                        ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
-                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300'
-                    }`}
-                  >
-                    {source.name}
-                  </button>
-                ))}
+              <div className="mt-3 rounded-2xl border border-gray-200 bg-gray-50/80 p-4 dark:border-gray-700 dark:bg-gray-900/30">
+                {sources.length === 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      아직 구독된 매체가 없어 외부 메일링용 매체 선택이 비어 있습니다.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => navigate('/media')}
+                      className="inline-flex items-center rounded-xl border border-[#1e3a5f] px-3 py-2 text-sm font-medium text-[#1e3a5f] hover:bg-[#1e3a5f]/5 dark:border-blue-400 dark:text-blue-300"
+                    >
+                      매체 구독으로 이동
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-200">
+                      선택된 매체 {selectedSourceNames.length}개
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {sources.map((source) => (
+                        <button
+                          key={source.id}
+                          type="button"
+                          onClick={() => toggleSource(source.id)}
+                          className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                            sourceIds.includes(source.id)
+                              ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                              : 'border-gray-200 bg-white text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300'
+                          }`}
+                        >
+                          {source.name}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                      {selectedSourceNames.length > 0
+                        ? `현재 선택: ${selectedSourceNames.join(', ')}`
+                        : '매체를 하나 이상 선택하면 해당 매체 기사만 기준으로 외부 리포트를 생성합니다.'}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -557,6 +594,9 @@ export default function DeliveryCenter() {
 
             <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
               `즉시발송`은 현재 키워드와 매체 조건으로 외부 리포트를 생성한 뒤 바로 메일까지 발송합니다. 먼저 `미리보기 생성`으로 내용을 확인한 뒤 발송하는 흐름을 권장합니다.
+            </div>
+            <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              현재 조건: 매체 {selectedSourceNames.length > 0 ? selectedSourceNames.join(', ') : '전체 구독 매체'} / 키워드 {parsedKeywords.length > 0 ? parsedKeywords.join(', ') : '없음'}
             </div>
           </div>
 
