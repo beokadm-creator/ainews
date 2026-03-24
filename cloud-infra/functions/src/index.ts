@@ -193,6 +193,189 @@ function getFunctionsBaseUrl() {
   return 'https://us-central1-eumnews-9a99c.cloudfunctions.net';
 }
 
+interface ManagedReportExecutionOptions {
+  outputId: string;
+  companyId: string;
+  requestedBy?: string;
+  recipients?: string[];
+}
+
+async function executeManagedReport({
+  outputId,
+  companyId,
+  requestedBy,
+  recipients = [],
+}: ManagedReportExecutionOptions) {
+  const db = admin.firestore();
+  const outputRef = db.collection('outputs').doc(outputId);
+  const outputDoc = await outputRef.get();
+
+  if (!outputDoc.exists) {
+    throw new Error('Managed report document not found');
+  }
+
+  const output = outputDoc.data() as any;
+  await outputRef.set({
+    status: 'processing',
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    errorMessage: null,
+    failedAt: null,
+    attempts: admin.firestore.FieldValue.increment(1),
+  }, { merge: true });
+
+  let reportArticles: any[] = [];
+  if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
+    const articleDocs = await Promise.all(
+      output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
+    );
+    reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
+  } else {
+    reportArticles = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+  }
+
+  if (reportArticles.length === 0) {
+    throw new Error('No analyzed articles found for the selected window and sources');
+  }
+
+  const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
+  const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, output.analysisPrompt || '');
+  const runtime = await getCompanyRuntimeConfig(companyId);
+  const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
+
+  const result = await generateCustomReport({
+    companyId,
+    articleIds: reportArticles.map((article) => article.id),
+    keywords: output.filters?.keywords || [],
+    analysisPrompt: prompt,
+    reportTitle,
+    requestedBy: requestedBy || output.requestedBy || '__system__',
+    aiConfig: runtime.ai,
+  });
+
+  const generatedOutputRef = db.collection('outputs').doc(result.outputId);
+  const generatedOutputDoc = await generatedOutputRef.get();
+  const generatedOutput = generatedOutputDoc.data() as any;
+
+  await outputRef.set({
+    status: 'completed',
+    completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    generatedOutputId: result.outputId,
+    articleIds: generatedOutput?.articleIds || reportArticles.map((article) => article.id),
+    articleCount: generatedOutput?.articleCount || reportArticles.length,
+    htmlContent: generatedOutput?.htmlContent || null,
+    rawOutput: generatedOutput?.rawOutput || null,
+  }, { merge: true });
+
+  if (generatedOutputDoc.exists) {
+    await generatedOutputRef.set({
+      serviceMode: output.serviceMode || 'internal',
+      distributionGroupId: output.distributionGroupId || null,
+      distributionGroupName: output.distributionGroupName || null,
+      parentRequestId: outputId,
+      scheduledAt: output.scheduledAt || null,
+    }, { merge: true });
+  }
+
+  const resolvedRecipients = Array.isArray(recipients) && recipients.length > 0
+    ? recipients
+    : (output.recipientsPreview || []);
+
+  if (output.serviceMode === 'external' && (output.sendNow || resolvedRecipients.length > 0)) {
+    const sendResult = await sendOutputEmails(
+      result.outputId,
+      resolvedRecipients,
+      {
+        subjectPrefix: '[EUM PE 외부리포트]',
+        markAsField: 'externalSentAt',
+        metadata: {
+          externalSendCount: resolvedRecipients.length,
+        },
+      }
+    );
+
+    await outputRef.set({
+      externalSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      externalSendCount: sendResult.sentCount || resolvedRecipients.length,
+    }, { merge: true });
+  }
+
+  return {
+    outputId,
+    generatedOutputId: result.outputId,
+    articleCount: generatedOutput?.articleCount || reportArticles.length,
+  };
+}
+
+interface StandaloneCustomReportExecutionOptions {
+  outputId: string;
+  companyId: string;
+  articleIds: string[];
+  keywords?: string[];
+  analysisPrompt?: string;
+  reportTitle: string;
+  requestedBy: string;
+}
+
+async function executeStandaloneCustomReport({
+  outputId,
+  companyId,
+  articleIds,
+  keywords = [],
+  analysisPrompt = '',
+  reportTitle,
+  requestedBy,
+}: StandaloneCustomReportExecutionOptions) {
+  const db = admin.firestore();
+  const outputRef = db.collection('outputs').doc(outputId);
+
+  await outputRef.set({
+    status: 'processing',
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    errorMessage: null,
+    failedAt: null,
+  }, { merge: true });
+
+  const runtime = await getCompanyRuntimeConfig(companyId);
+  const result = await generateCustomReport({
+    companyId,
+    articleIds,
+    keywords,
+    analysisPrompt,
+    reportTitle,
+    requestedBy,
+    aiConfig: runtime.ai,
+  });
+
+  const generatedOutputRef = db.collection('outputs').doc(result.outputId);
+  const generatedOutputDoc = await generatedOutputRef.get();
+  const generatedOutput = generatedOutputDoc.data() as any;
+
+  await outputRef.set({
+    status: 'completed',
+    completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    generatedOutputId: result.outputId,
+    articleIds: generatedOutput?.articleIds || articleIds,
+    articleCount: generatedOutput?.articleCount || articleIds.length,
+    htmlContent: generatedOutput?.htmlContent || null,
+    rawOutput: generatedOutput?.rawOutput || null,
+  }, { merge: true });
+
+  if (generatedOutputDoc.exists) {
+    await generatedOutputRef.set({
+      parentRequestId: outputId,
+    }, { merge: true });
+  }
+
+  return {
+    outputId,
+    generatedOutputId: result.outputId,
+  };
+}
+
 // superadmin용: systemSettings/aiConfig + systemSettings/promptConfig에서 AI 설정 로드
 async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; companyId: string }> {
   const db = admin.firestore();
@@ -1186,7 +1369,7 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
 });
 
 export const requestManagedReport = onCall(
-  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -1243,24 +1426,31 @@ export const requestManagedReport = onCall(
     });
 
     if (!scheduledAt) {
-      fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      try {
+        await executeManagedReport({
           outputId: outputRef.id,
           companyId,
           requestedBy: request.auth.uid,
           recipients,
-        }),
-      }).catch((error) => console.error('Failed to trigger processManagedReportHttp:', error));
+        });
+      } catch (error: any) {
+        console.error('requestManagedReport execution failed:', error);
+        await outputRef.set({
+          status: 'failed',
+          errorMessage: error.message || 'Unknown error',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          failedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        throw new HttpsError('internal', error.message || 'Managed report generation failed');
+      }
     }
 
-    return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'pending' };
+    return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'completed' };
   }
 );
 
 export const retryManagedReport = onCall(
-  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
     const { outputId } = request.data || {};
@@ -1281,16 +1471,23 @@ export const retryManagedReport = onCall(
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      await executeManagedReport({
         outputId,
         companyId,
         requestedBy: request.auth.uid,
         recipients: output.recipientsPreview || [],
-      }),
-    }).catch((error) => console.error('Failed to retry managed report:', error));
+      });
+    } catch (error: any) {
+      console.error('retryManagedReport failed:', error);
+      await outputRef.set({
+        status: 'failed',
+        errorMessage: error.message || 'Unknown error',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        failedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      throw new HttpsError('internal', error.message || 'Managed report retry failed');
+    }
 
     return { success: true, outputId };
   }
@@ -1425,16 +1622,12 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          outputId: requestRef.id,
-          companyId: group.companyId,
-          requestedBy: '__scheduler__',
-          recipients: group.emails || [],
-        }),
-      }).catch((error) => console.error('Failed to trigger scheduled distribution:', error));
+      await executeManagedReport({
+        outputId: requestRef.id,
+        companyId: group.companyId,
+        requestedBy: '__scheduler__',
+        recipients: group.emails || [],
+      });
 
       await db.collection('distributionGroups').doc(group.id).set({
         lastAutoSentOnKst: shouldRunAuto ? todayKst : (group.lastAutoSentOnKst || null),
@@ -1664,7 +1857,7 @@ export const executePipelineHttp = onRequest(
 // [FAST] generateReportV2: 보고서 문서 생성 후 즉시 ID 반환
 // 실제 생성은 generateReportContentHttp에서 백그라운드로 수행
 export const generateReportV2 = onCall(
-  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -1705,28 +1898,21 @@ export const generateReportV2 = onCall(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // 2. 백그라운드 실행: generateReportContentHttp 호출 (await 하지 않음)
-      const functionsUrl = `https://us-central1-eumnews-9a99c.cloudfunctions.net/generateReportContentHttp`;
-      fetch(functionsUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          outputId: outputRef.id,
-          companyId,
-          articleIds,
-          keywords,
-          analysisPrompt,
-          reportTitle: reportTitleResolved,
-          requestedBy: request.auth.uid,
-        }),
-      }).catch(err => console.error('Failed to trigger generateReportContentHttp:', err));
+      await executeStandaloneCustomReport({
+        outputId: outputRef.id,
+        companyId,
+        articleIds,
+        keywords,
+        analysisPrompt,
+        reportTitle: reportTitleResolved,
+        requestedBy: request.auth.uid,
+      });
 
-      // 3. 즉시 ID 반환
       return {
         success: true,
         outputId: outputRef.id,
-        status: 'pending',
-        message: 'Report generation started. Check status with outputId.',
+        status: 'completed',
+        message: 'Report generation completed.',
       };
     } catch (err: any) {
       const errorMsg = err.message || (typeof err === 'string' ? err : 'Unknown error');
