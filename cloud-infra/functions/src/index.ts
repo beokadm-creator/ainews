@@ -17,6 +17,7 @@ import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
+import { buildOutputAssetBundle } from './services/reportAssetService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
@@ -1777,6 +1778,42 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
+export const downloadReportAsset = onCall(
+  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const outputId = request.data?.id;
+    const format = request.data?.format;
+    if (!outputId || !['pdf', 'html'].includes(format)) {
+      throw new HttpsError('invalid-argument', 'Output ID and valid format are required');
+    }
+
+    const outputDoc = await admin.firestore().collection('outputs').doc(outputId).get();
+    if (!outputDoc.exists) {
+      throw new HttpsError('not-found', 'Output not found');
+    }
+
+    const output = outputDoc.data() as any;
+    const companyId = output.companyId || request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const assetBundle = await buildOutputAssetBundle(outputId);
+    if (format === 'html') {
+      return {
+        filename: assetBundle.htmlFilename,
+        mimeType: 'text/html;charset=utf-8',
+        base64: Buffer.from(assetBundle.html, 'utf8').toString('base64'),
+      };
+    }
+
+    return {
+      filename: assetBundle.pdfFilename,
+      mimeType: 'application/pdf',
+      base64: assetBundle.pdfBuffer.toString('base64'),
+    };
+  },
+);
 
 export const requestManagedReport = onCall(
   { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
@@ -1796,6 +1833,7 @@ export const requestManagedReport = onCall(
       sendNow = false,
       scheduledAt = null,
       sourceNames = [],
+      previewOnly = false,
     } = request.data || {};
 
     const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -1827,6 +1865,7 @@ export const requestManagedReport = onCall(
       recipientCount: Array.isArray(recipients) ? recipients.length : 0,
       recipientsPreview: Array.isArray(recipients) ? recipients.slice(0, 20) : [],
       sendNow: Boolean(sendNow),
+      previewOnly: Boolean(previewOnly),
       scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
       requestedBy: request.auth.uid,
       attempts: 0,
@@ -2469,7 +2508,7 @@ export const processManagedReportHttp = onRequest(
           ? recipients
           : (output.recipientsPreview || []);
 
-        if (output.serviceMode === 'external' && (output.sendNow || resolvedRecipients.length > 0)) {
+        if (output.serviceMode === 'external' && !output.previewOnly && (output.sendNow || resolvedRecipients.length > 0)) {
           const sendResult = await sendOutputEmails(
             result.outputId,
             resolvedRecipients,

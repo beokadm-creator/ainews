@@ -76,6 +76,12 @@ service cloud.firestore {
       allow create: if isSuperadmin() || isCompanyAdmin(companyId);
     }
 
+    match /distributionGroups/{groupId} {
+      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
+      allow create: if canOperateCompany(request.resource.data.companyId);
+      allow update, delete: if canOperateCompany(resource.data.companyId);
+    }
+
     match /articles/{articleId} {
       // 전역 기사(companyId==null)는 모든 로그인 사용자가 읽기 가능
       allow read: if signedIn() && (

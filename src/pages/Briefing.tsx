@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Clock3,
+  Download,
   ExternalLink,
   Loader2,
   Mail,
@@ -62,6 +63,7 @@ export default function Briefing() {
   const [previewArticle, setPreviewArticle] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'html' | null>(null);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -173,6 +175,36 @@ export default function Briefing() {
     }
   };
 
+  const downloadAsset = async (format: 'pdf' | 'html') => {
+    if (!selectedOutput) return;
+
+    setDownloadingFormat(format);
+    try {
+      const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
+      const fn = httpsCallable(functions, 'downloadReportAsset');
+      const result = await fn({ id: targetId, companyId, format }) as any;
+      const { base64, filename, mimeType } = result.data || {};
+      if (!base64 || !filename || !mimeType) {
+        throw new Error('다운로드 파일을 준비하지 못했습니다.');
+      }
+
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingFormat(null);
+    }
+  };
+
   const renderHtml = sanitizeReportHtml(
     selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
   );
@@ -259,6 +291,22 @@ export default function Briefing() {
                   <span>참고 기사 {articles.length}건</span>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => downloadAsset('pdf')}
+                    disabled={downloadingFormat !== null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                  >
+                    {downloadingFormat === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    PDF 다운로드
+                  </button>
+                  <button
+                    onClick={() => downloadAsset('html')}
+                    disabled={downloadingFormat !== null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                  >
+                    {downloadingFormat === 'html' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    HTML 내려받기
+                  </button>
                   {selectedOutput.status === 'failed' && (
                     <button
                       onClick={retryOutput}
