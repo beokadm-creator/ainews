@@ -1,0 +1,502 @@
+import { useEffect, useMemo, useState } from 'react';
+import { collection, doc, getDoc, getDocs, orderBy, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { CalendarClock, Loader2, Mail, RefreshCw, Send, Sparkles, Save, Clock3, AlertCircle } from 'lucide-react';
+import { db, functions } from '@/lib/firebase';
+import { useAuthStore } from '@/store/useAuthStore';
+import { format } from 'date-fns';
+
+type DatePreset = '24h' | '3d' | '7d' | '15d' | '30d';
+
+interface SourceItem {
+  id: string;
+  name: string;
+}
+
+interface DeliveryGroup {
+  id: string;
+  name: string;
+  emails: string[];
+  sourceIds: string[];
+  sourceNames?: string[];
+  keywords: string[];
+  datePreset: DatePreset;
+  prompt?: string;
+  reportTitle?: string;
+  autoEnabled?: boolean;
+  autoTimeKst?: string;
+  nextReservedSendAt?: any;
+  active?: boolean;
+  updatedAt?: any;
+}
+
+const DATE_OPTIONS: { value: DatePreset; label: string }[] = [
+  { value: '24h', label: '최근 24시간' },
+  { value: '3d', label: '최근 3일' },
+  { value: '7d', label: '최근 7일' },
+  { value: '15d', label: '최근 15일' },
+  { value: '30d', label: '최근 1개월' },
+];
+
+function parseLines(value: string) {
+  return value
+    .split(/[\n,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export default function DeliveryCenter() {
+  const { user } = useAuthStore();
+  const companyId = (user as any)?.primaryCompanyId || null;
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sources, setSources] = useState<SourceItem[]>([]);
+  const [groups, setGroups] = useState<DeliveryGroup[]>([]);
+  const [recentRuns, setRecentRuns] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<string>('new');
+
+  const [name, setName] = useState('');
+  const [emailsText, setEmailsText] = useState('');
+  const [keywordsText, setKeywordsText] = useState('');
+  const [reportTitle, setReportTitle] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [datePreset, setDatePreset] = useState<DatePreset>('24h');
+  const [sourceIds, setSourceIds] = useState<string[]>([]);
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [autoTimeKst, setAutoTimeKst] = useState('08:00');
+  const [reservedAt, setReservedAt] = useState('');
+  const [message, setMessage] = useState('');
+
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedId) || null,
+    [groups, selectedId],
+  );
+
+  const loadAll = async () => {
+    if (!companyId) return;
+    setLoading(true);
+    try {
+      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
+      const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
+
+      const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
+        getDocs(collection(db, 'globalSources')),
+        getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId), orderBy('updatedAt', 'desc'))),
+        getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'))),
+      ]);
+
+      const availableSources = sourceSnap.docs
+        .map((item) => ({ id: item.id, ...(item.data() as any) }))
+        .filter((item) => subscribedIds.includes(item.id))
+        .map((item) => ({ id: item.id, name: item.name }));
+
+      setSources(availableSources);
+      setGroups(groupSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) } as DeliveryGroup)));
+      setRecentRuns(
+        outputSnap.docs
+          .map((item) => ({ id: item.id, ...(item.data() as any) }))
+          .filter((item) => item.serviceMode === 'external' || item.distributionGroupId)
+          .slice(0, 10),
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAll();
+  }, [companyId]);
+
+  useEffect(() => {
+    if (!selectedGroup) {
+      setName('');
+      setEmailsText('');
+      setKeywordsText('');
+      setReportTitle('');
+      setPrompt('');
+      setDatePreset('24h');
+      setSourceIds([]);
+      setAutoEnabled(true);
+      setAutoTimeKst('08:00');
+      setReservedAt('');
+      return;
+    }
+
+    setName(selectedGroup.name || '');
+    setEmailsText((selectedGroup.emails || []).join('\n'));
+    setKeywordsText((selectedGroup.keywords || []).join(', '));
+    setReportTitle(selectedGroup.reportTitle || '');
+    setPrompt(selectedGroup.prompt || '');
+    setDatePreset(selectedGroup.datePreset || '24h');
+    setSourceIds(selectedGroup.sourceIds || []);
+    setAutoEnabled(Boolean(selectedGroup.autoEnabled));
+    setAutoTimeKst(selectedGroup.autoTimeKst || '08:00');
+    const nextReserved = selectedGroup.nextReservedSendAt?.toDate
+      ? selectedGroup.nextReservedSendAt.toDate()
+      : (selectedGroup.nextReservedSendAt ? new Date(selectedGroup.nextReservedSendAt) : null);
+    setReservedAt(nextReserved ? format(nextReserved, "yyyy-MM-dd'T'HH:mm") : '');
+  }, [selectedGroup]);
+
+  const toggleSource = (sourceId: string) => {
+    setSourceIds((prev) => prev.includes(sourceId) ? prev.filter((item) => item !== sourceId) : [...prev, sourceId]);
+  };
+
+  const saveGroup = async () => {
+    if (!companyId) return;
+    if (!name.trim()) {
+      setMessage('그룹 이름을 입력해주세요.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+    try {
+      const targetRef = selectedId !== 'new'
+        ? doc(db, 'distributionGroups', selectedId)
+        : doc(collection(db, 'distributionGroups'));
+      const selectedSourceNames = sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name);
+      const payload: any = {
+        companyId,
+        name: name.trim(),
+        emails: parseLines(emailsText),
+        sourceIds,
+        sourceNames: selectedSourceNames,
+        keywords: parseLines(keywordsText),
+        datePreset,
+        prompt: prompt.trim(),
+        reportTitle: reportTitle.trim(),
+        autoEnabled,
+        autoTimeKst,
+        nextReservedSendAt: reservedAt ? new Date(reservedAt) : null,
+        active: true,
+        updatedAt: serverTimestamp(),
+      };
+      if (selectedId === 'new') payload.createdAt = serverTimestamp();
+
+      await setDoc(targetRef, payload, { merge: true });
+
+      setSelectedId(targetRef.id);
+      setMessage('메일링 그룹 설정을 저장했습니다.');
+      await loadAll();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const requestReport = async (scheduledAt?: string | null) => {
+    if (!companyId) return;
+    setSending(true);
+    setMessage('');
+    try {
+      const fn = httpsCallable(functions, 'requestManagedReport');
+      const selectedSourceNames = sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name);
+      await fn({
+        companyId,
+        mode: 'external',
+        reportTitle: reportTitle.trim() || name.trim(),
+        prompt: prompt.trim(),
+        filters: {
+          sourceIds,
+          keywords: parseLines(keywordsText),
+          datePreset,
+        },
+        distributionGroupId: selectedGroup?.id || null,
+        distributionGroupName: name.trim(),
+        recipients: parseLines(emailsText),
+        sendNow: !scheduledAt,
+        scheduledAt: scheduledAt || null,
+        sourceNames: selectedSourceNames,
+      });
+      setMessage(scheduledAt ? '예약 발송을 등록했습니다.' : '외부 리포트 생성과 발송을 시작했습니다.');
+      await loadAll();
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const retryRun = async (outputId: string) => {
+    const fn = httpsCallable(functions, 'retryManagedReport');
+    await fn({ outputId });
+    setMessage('실패한 외부 리포트를 다시 실행했습니다.');
+    await loadAll();
+  };
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[360px] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-[#1e3a5f]" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">외부 메일링 센터</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            회사별 메일링 그룹을 만들고, 선택한 매체 기준으로 AI 외부 리포트를 자동 또는 수동 발송합니다.
+          </p>
+        </div>
+        <button
+          onClick={loadAll}
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+        >
+          <RefreshCw className="h-4 w-4" />
+          새로고침
+        </button>
+      </div>
+
+      {message && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
+          {message}
+        </div>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-900 dark:text-white">메일링 그룹</h2>
+            <button
+              onClick={() => setSelectedId('new')}
+              className="text-sm font-medium text-[#1e3a5f] dark:text-blue-300"
+            >
+              새 그룹
+            </button>
+          </div>
+          <div className="space-y-2">
+            {groups.map((group) => (
+              <button
+                key={group.id}
+                onClick={() => setSelectedId(group.id)}
+                className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                  selectedId === group.id
+                    ? 'border-[#1e3a5f] bg-[#1e3a5f]/5 dark:border-blue-400 dark:bg-blue-400/10'
+                    : 'border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <div className="font-medium text-gray-900 dark:text-white">{group.name}</div>
+                <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {group.emails?.length || 0}명 · {group.sourceIds?.length || 0}개 매체
+                </div>
+              </button>
+            ))}
+            {groups.length === 0 && (
+              <div className="rounded-xl border border-dashed border-gray-300 px-3 py-6 text-center text-sm text-gray-400 dark:border-gray-700">
+                저장된 메일링 그룹이 없습니다.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+            <div className="grid gap-5 md:grid-cols-2">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">그룹 이름</label>
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                  placeholder="예: 이음PE 외부 데일리"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">리포트 제목</label>
+                <input
+                  value={reportTitle}
+                  onChange={(event) => setReportTitle(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                  placeholder="미입력 시 그룹 이름 사용"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 md:grid-cols-2">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">수신 이메일</label>
+                <textarea
+                  value={emailsText}
+                  onChange={(event) => setEmailsText(event.target.value)}
+                  className="mt-2 min-h-[140px] w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                  placeholder={'ceo@company.com\nir@company.com'}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">AI 분석 지시</label>
+                <textarea
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  className="mt-2 min-h-[140px] w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                  placeholder="사실 위주로 업계 흐름과 체크포인트만 정리합니다."
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 md:grid-cols-3">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">키워드</label>
+                <input
+                  value={keywordsText}
+                  onChange={(event) => setKeywordsText(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                  placeholder="PE, 인수금융, 구조조정"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">기사 기간</label>
+                <select
+                  value={datePreset}
+                  onChange={(event) => setDatePreset(event.target.value as DatePreset)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                >
+                  {DATE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">자동발송 시간 (KST)</label>
+                <input
+                  type="time"
+                  value={autoTimeKst}
+                  onChange={(event) => setAutoTimeKst(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">대상 매체</label>
+                <label className="inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <input type="checkbox" checked={autoEnabled} onChange={(event) => setAutoEnabled(event.target.checked)} />
+                  자동발송 활성화
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {sources.map((source) => (
+                  <button
+                    key={source.id}
+                    type="button"
+                    onClick={() => toggleSource(source.id)}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                      sourceIds.includes(source.id)
+                        ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300'
+                    }`}
+                  >
+                    {source.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 md:grid-cols-[1fr_auto] md:items-end">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">예약 발송 시각 (KST)</label>
+                <input
+                  type="datetime-local"
+                  value={reservedAt}
+                  onChange={(event) => setReservedAt(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/40 dark:text-white"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={saveGroup}
+                  disabled={saving}
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#24456f] disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  저장
+                </button>
+                <button
+                  onClick={() => requestReport(null)}
+                  disabled={sending}
+                  className="inline-flex items-center gap-2 rounded-xl border border-[#d4af37] bg-[#d4af37] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#c49e2c] disabled:opacity-50"
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  즉시 발송
+                </button>
+                <button
+                  onClick={() => requestReport(reservedAt || null)}
+                  disabled={sending || !reservedAt}
+                  className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-200"
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  예약 발송
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
+                <Mail className="h-4 w-4 text-[#1e3a5f]" />
+                수신 미리보기
+              </div>
+              <div className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{parseLines(emailsText).length}</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">현재 설정된 이메일 수</div>
+            </div>
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
+                <Sparkles className="h-4 w-4 text-[#1e3a5f]" />
+                선택 매체
+              </div>
+              <div className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{sourceIds.length}</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">이 그룹이 묶어서 요약할 매체 수</div>
+            </div>
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
+                <Clock3 className="h-4 w-4 text-[#1e3a5f]" />
+                자동발송
+              </div>
+              <div className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{autoEnabled ? autoTimeKst : 'OFF'}</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">KST 기준 자동발송 시각</div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+            <div className="flex items-center gap-2 mb-4">
+              <AlertCircle className="h-4 w-4 text-[#1e3a5f]" />
+              <h2 className="font-semibold text-gray-900 dark:text-white">최근 외부 리포트 실행</h2>
+            </div>
+            <div className="space-y-3">
+              {recentRuns.map((run) => (
+                <div key={run.id} className="rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="font-medium text-gray-900 dark:text-white">{run.title || '외부 리포트'}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        {run.createdAt?.toDate ? format(run.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : '-'} · {run.status || 'pending'}
+                      </div>
+                    </div>
+                    {run.status === 'failed' && (
+                      <button
+                        onClick={() => retryRun(run.id)}
+                        className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200"
+                      >
+                        재시도
+                      </button>
+                    )}
+                  </div>
+                  {run.errorMessage && (
+                    <div className="mt-2 text-xs text-red-500">{run.errorMessage}</div>
+                  )}
+                </div>
+              ))}
+              {recentRuns.length === 0 && (
+                <div className="rounded-xl border border-dashed border-gray-300 px-3 py-8 text-center text-sm text-gray-400 dark:border-gray-700">
+                  아직 외부 리포트 실행 이력이 없습니다.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

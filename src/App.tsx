@@ -20,6 +20,7 @@ import ManualEntry from '@/pages/ManualEntry';
 import MediaSelector from '@/pages/MediaSelector';
 import Team from '@/pages/Team';
 import Settings from '@/pages/Settings';
+import DeliveryCenter from '@/pages/DeliveryCenter';
 
 // ─── Superadmin pages ──────────────────────────────────────
 import AdminDashboard from '@/pages/admin/AdminDashboard';
@@ -27,7 +28,6 @@ import AdminArticles from '@/pages/admin/AdminArticles';
 import AdminSettings from '@/pages/admin/AdminSettings';
 import AdminManagement from '@/pages/AdminManagement';
 import MediaAdmin from '@/pages/MediaAdmin';
-import ScrapingRuleAdmin from '@/pages/ScrapingRuleAdmin';
 
 // ─── Role-based root redirect ──────────────────────────────
 function RootRedirect() {
@@ -90,8 +90,13 @@ export default function App() {
           </ProtectedRoute>
         } />
         <Route path="/media" element={
-          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+          <ProtectedRoute requiredRole={['company_admin']}>
             <Layout><MediaSelector /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/delivery" element={
+          <ProtectedRoute requiredRole={['company_admin']}>
+            <Layout><DeliveryCenter /></Layout>
           </ProtectedRoute>
         } />
         <Route path="/team" element={
@@ -100,7 +105,7 @@ export default function App() {
           </ProtectedRoute>
         } />
         <Route path="/settings" element={
-          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
+          <ProtectedRoute requiredRole={['company_admin']}>
             <Layout><Settings /></Layout>
           </ProtectedRoute>
         } />
@@ -131,12 +136,6 @@ export default function App() {
             <AdminLayout><AdminSettings /></AdminLayout>
           </ProtectedRoute>
         } />
-        <Route path="/admin/scraping" element={
-          <ProtectedRoute requiredRole="superadmin">
-            <AdminLayout><ScrapingRuleAdmin /></AdminLayout>
-          </ProtectedRoute>
-        } />
-
         {/* Catch all */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

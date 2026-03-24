@@ -1,56 +1,81 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Search, Filter, Calendar, Newspaper, X, Plus,
-  CheckSquare, Square, FileText, ChevronDown, ChevronUp,
-  Loader2, RefreshCw, Tag, ArrowRight, Globe
+  ArrowRight,
+  Calendar,
+  CheckSquare,
+  FileText,
+  Filter,
+  Globe,
+  Loader2,
+  Newspaper,
+  Plus,
+  RefreshCw,
+  Search,
+  Square,
+  Tag,
+  X,
 } from 'lucide-react';
-import { functions, db } from '@/lib/firebase';
+import { format, subHours } from 'date-fns';
+import { doc, getDoc, getDocs, collection } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
-import { format, subDays, startOfDay } from 'date-fns';
-import { useAuthStore } from '@/store/useAuthStore';
 import { useNavigate } from 'react-router-dom';
+import { db, functions } from '@/lib/firebase';
+import { useAuthStore } from '@/store/useAuthStore';
 
 const DATE_PRESETS = [
-  { label: '오늘', days: 0 },
-  { label: '3일', days: 3 },
-  { label: '1주', days: 7 },
-  { label: '2주', days: 14 },
-  { label: '1개월', days: 30 },
+  { label: '최근 24시간', hours: 24 },
+  { label: '최근 3일', hours: 72 },
+  { label: '최근 7일', hours: 168 },
+  { label: '최근 15일', hours: 360 },
+  { label: '최근 1개월', hours: 720 },
 ];
 
-const STATUS_OPTIONS = [
-  { value: 'analyzed', label: 'AI 분석 완료' },
-  { value: 'published', label: '보고서 포함됨' },
-  { value: 'filtered', label: '필터링 대기' },
-  { value: 'pending', label: '수집됨' },
-];
+function getDefaultDateRange() {
+  const now = new Date();
+  return {
+    startDate: format(subHours(now, 24), "yyyy-MM-dd'T'HH:mm"),
+    endDate: format(now, "yyyy-MM-dd'T'HH:mm"),
+  };
+}
 
 function TagInput({
-  tags, onChange, placeholder
-}: { tags: string[]; onChange: (t: string[]) => void; placeholder: string }) {
+  tags,
+  onChange,
+  placeholder,
+}: {
+  tags: string[];
+  onChange: (value: string[]) => void;
+  placeholder: string;
+}) {
   const [input, setInput] = useState('');
-  const add = () => {
-    const v = input.trim();
-    if (v && !tags.includes(v)) onChange([...tags, v]);
+
+  const addTag = () => {
+    const value = input.trim();
+    if (value && !tags.includes(value)) onChange([...tags, value]);
     setInput('');
   };
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5 min-h-[36px] px-3 py-1.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg">
-      {tags.map(t => (
-        <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#1e3a5f]/10 dark:bg-[#1e3a5f]/30 text-[#1e3a5f] dark:text-blue-300 rounded text-xs font-medium">
-          {t}
-          <button type="button" onClick={() => onChange(tags.filter(x => x !== t))}>
-            <X className="w-3 h-3" />
+    <div className="flex min-h-[42px] flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/30">
+      {tags.map((tag) => (
+        <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-[#1e3a5f]/10 px-2 py-1 text-xs font-medium text-[#1e3a5f] dark:text-blue-300">
+          {tag}
+          <button type="button" onClick={() => onChange(tags.filter((item) => item !== tag))}>
+            <X className="h-3 w-3" />
           </button>
         </span>
       ))}
       <input
         value={input}
-        onChange={e => setInput(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+        onChange={(event) => setInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            addTag();
+          }
+        }}
         placeholder={tags.length === 0 ? placeholder : ''}
-        className="flex-1 min-w-[120px] outline-none text-sm bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+        className="min-w-[160px] flex-1 bg-transparent text-sm outline-none dark:text-white"
       />
     </div>
   );
@@ -60,6 +85,7 @@ interface ArticleItem {
   id: string;
   title: string;
   source: string;
+  sourceId?: string;
   publishedAt: any;
   status: string;
   summary: string[];
@@ -70,51 +96,43 @@ interface ArticleItem {
   url: string;
 }
 
+interface SourceItem {
+  id: string;
+  name: string;
+  category?: string;
+}
+
 export default function Articles() {
   const { user } = useAuthStore();
-  const navigate = useNavigate();
   const companyId = (user as any)?.primaryCompanyId || (user as any)?.companyIds?.[0] || null;
+  const navigate = useNavigate();
+  const defaults = getDefaultDateRange();
 
-  // 검색 필터 상태
   const [keywords, setKeywords] = useState<string[]>([]);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['analyzed', 'published', 'pending', 'filtered']);
+  const [startDate, setStartDate] = useState(defaults.startDate);
+  const [endDate, setEndDate] = useState(defaults.endDate);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
-  const [filterRegion, setFilterRegion] = useState<'all' | 'domestic' | 'global'>('all');
-  const [showFilters, setShowFilters] = useState(true);
-
-  // 매체 목록
-  const [sources, setSources] = useState<{ id: string; name: string; category: string }[]>([]);
-
-  // 결과 상태
+  const [sources, setSources] = useState<SourceItem[]>([]);
   const [articles, setArticles] = useState<ArticleItem[]>([]);
-  const [total, setTotal] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
-
-  // 기사 선택 상태
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // 기사 원문 팝업
   const [previewArticle, setPreviewArticle] = useState<ArticleItem | null>(null);
 
   useEffect(() => {
-    if (companyId) loadSources();
-  }, [companyId]);
-
-  const loadSources = async () => {
-    try {
+    if (!companyId) return;
+    const loadSources = async () => {
       const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
-      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).subscribedSourceIds || [] : [];
-      if (subscribedIds.length === 0) return;
-      const snap = await getDocs(collection(db, 'globalSources'));
-      const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      setSources(all.filter(s => subscribedIds.includes(s.id)).map(s => ({ id: s.id, name: s.name, category: s.category })));
-    } catch (err) {
-      console.error('loadSources error:', err);
-    }
-  };
+      const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
+      const sourceSnap = await getDocs(collection(db, 'globalSources'));
+      const available = sourceSnap.docs
+        .map((item) => ({ id: item.id, ...(item.data() as any) }))
+        .filter((item) => subscribedIds.includes(item.id))
+        .map((item) => ({ id: item.id, name: item.name, category: item.category }));
+      setSources(available);
+    };
+    loadSources().catch(console.error);
+  }, [companyId]);
 
   const handleSearch = useCallback(async () => {
     if (!companyId) return;
@@ -125,385 +143,272 @@ export default function Articles() {
       const result = await fn({
         companyId,
         keywords,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
+        startDate,
+        endDate,
         sourceIds: selectedSourceIds.length > 0 ? selectedSourceIds : undefined,
-        statuses: selectedStatuses.length > 0 ? selectedStatuses : undefined,
+        statuses: ['analyzed', 'published'],
         limit: 100,
         offset: 0,
       }) as any;
-      setArticles(result.data.articles || []);
-      setTotal(result.data.total || 0);
-    } catch (err: any) {
-      console.error('searchArticles error:', err);
-      alert('검색 실패: ' + err.message);
+      setArticles(result.data?.articles || []);
+      setSelectedIds(new Set());
     } finally {
       setLoading(false);
     }
-  }, [companyId, keywords, startDate, endDate, selectedSourceIds, selectedStatuses]);
+  }, [companyId, endDate, keywords, selectedSourceIds, startDate]);
 
-  const filteredArticles = articles.filter(a => {
-    if (filterRegion === 'all') return true;
-    const sourceInfo = sources.find(s => s.id === (a as any).sourceId || s.name === a.source);
-    if (!sourceInfo) return true;
-    if (filterRegion === 'domestic') return sourceInfo.category === 'domestic' || sourceInfo.category === 'startup';
-    if (filterRegion === 'global') return sourceInfo.category === 'global' || sourceInfo.category === 'asian';
-    return true;
-  });
-
-  const applyDatePreset = (days: number) => {
+  const applyDatePreset = (hours: number) => {
     const now = new Date();
-    if (days === 0) {
-      setStartDate(format(startOfDay(now), "yyyy-MM-dd'T'HH:mm"));
-      setEndDate(format(now, "yyyy-MM-dd'T'HH:mm"));
-    } else {
-      setStartDate(format(startOfDay(subDays(now, days)), "yyyy-MM-dd'T'HH:mm"));
-      setEndDate(format(now, "yyyy-MM-dd'T'HH:mm"));
-    }
+    setStartDate(format(subHours(now, hours), "yyyy-MM-dd'T'HH:mm"));
+    setEndDate(format(now, "yyyy-MM-dd'T'HH:mm"));
   };
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
+  const toggleSource = (sourceId: string) => {
+    setSelectedSourceIds((prev) => prev.includes(sourceId) ? prev.filter((id) => id !== sourceId) : [...prev, sourceId]);
+  };
+
+  const toggleSelect = (articleId: string) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(articleId)) next.delete(articleId);
+      else next.add(articleId);
       return next;
     });
   };
 
-  const toggleAll = () => {
-    if (selectedIds.size === articles.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(articles.map(a => a.id)));
-    }
+  const createReportFromSelection = () => {
+    if (selectedIds.size === 0) return;
+    navigate(`/reports/new?articleIds=${Array.from(selectedIds).join(',')}`);
   };
 
-  const toggleStatus = (status: string) => {
-    setSelectedStatuses(prev =>
-      prev.includes(status) ? prev.filter(s => s !== status) : [...prev, status]
-    );
+  const createReportFromFilters = () => {
+    const params = new URLSearchParams();
+    if (keywords.length > 0) params.set('keywords', keywords.join(','));
+    if (selectedSourceIds.length > 0) params.set('sourceIds', selectedSourceIds.join(','));
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
+    navigate(`/reports/new?${params.toString()}`);
   };
 
-  const toggleSource = (id: string) => {
-    setSelectedSourceIds(prev =>
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
-  };
-
-  const handleCreateReport = () => {
-    if (selectedIds.size === 0) {
-      alert('보고서에 포함할 기사를 선택해주세요.');
-      return;
-    }
-    const ids = Array.from(selectedIds).join(',');
-    navigate(`/reports/new?articleIds=${ids}`);
-  };
-
-  const formatDate = (ts: any) => {
-    if (!ts) return '';
-    try {
-      const d = ts?.toDate ? ts.toDate() : new Date(ts);
-      return format(d, 'yyyy.MM.dd HH:mm');
-    } catch { return ''; }
-  };
-
-  const getStatusBadge = (status: string) => {
-    const map: Record<string, { label: string; cls: string }> = {
-      analyzed: { label: 'AI 분석', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-      published: { label: '보고서 포함', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
-      pending_filter: { label: '대기', cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
-      collected: { label: '수집', cls: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400' },
-      filtered_out: { label: '필터링됨', cls: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' },
-    };
-    const s = map[status] || { label: status, cls: 'bg-gray-100 text-gray-500' };
-    return <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${s.cls}`}>{s.label}</span>;
-  };
+  const allSelected = useMemo(
+    () => articles.length > 0 && selectedIds.size === articles.length,
+    [articles.length, selectedIds.size],
+  );
 
   return (
-    <div className="space-y-5 pb-12">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 pb-12">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">기사 검색</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">수집된 기사를 검색하고 선택하여 분석 보고서를 생성하세요.</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            최근 기간과 매체를 고른 뒤 기사 원문을 확인하고, 선택 기사 또는 검색 결과 전체로 내부 리포트를 생성합니다.
+          </p>
         </div>
-        {selectedIds.size > 0 && (
+        {selectedIds.size > 0 ? (
           <button
-            onClick={handleCreateReport}
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#d4af37] text-white rounded-lg font-semibold text-sm hover:bg-[#b8942d] transition-colors shadow-md"
+            onClick={createReportFromSelection}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#c59f2c]"
           >
-            <FileText className="w-4 h-4" />
-            선택 기사 {selectedIds.size}건 · 보고서 생성
-            <ArrowRight className="w-4 h-4" />
+            <FileText className="h-4 w-4" />
+            선택 기사 {selectedIds.size}건 리포트
+            <ArrowRight className="h-4 w-4" />
           </button>
-        )}
+        ) : searched && articles.length > 0 ? (
+          <button
+            onClick={createReportFromFilters}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f]"
+          >
+            <FileText className="h-4 w-4" />
+            검색 결과 전체 리포트
+          </button>
+        ) : null}
       </div>
 
-      {/* 검색 필터 */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <button
-          className="w-full px-5 py-4 flex items-center justify-between text-left"
-          onClick={() => setShowFilters(v => !v)}
-        >
-          <span className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white text-sm">
-            <Filter className="w-4 h-4 text-[#1e3a5f] dark:text-blue-400" />
-            검색 필터
-          </span>
-          {showFilters ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-        </button>
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Filter className="h-4 w-4 text-[#1e3a5f]" />
+          리포트용 검색 조건
+        </div>
 
-        {showFilters && (
-          <div className="px-5 pb-5 space-y-4 border-t border-gray-100 dark:border-gray-700 pt-4">
-            {/* 키워드 */}
+        <div className="mt-4 space-y-5">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">키워드</label>
+            <div className="mt-2">
+              <TagInput tags={keywords} onChange={setKeywords} placeholder="예: PE, 인수금융, 구조조정" />
+            </div>
+          </div>
+
+          <div className="grid gap-5 md:grid-cols-2">
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
-                <Search className="inline w-3.5 h-3.5 mr-1" />검색 키워드 (Enter로 추가)
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <Calendar className="mr-1 inline h-3.5 w-3.5" />
+                기사 기간
               </label>
-              <TagInput tags={keywords} onChange={setKeywords} placeholder="키워드 입력 후 Enter..." />
+              <div className="mt-2 flex flex-wrap gap-2">
+                {DATE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => applyDatePreset(preset.hours)}
+                    className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-[#1e3a5f] hover:text-white dark:bg-gray-700 dark:text-gray-200"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={startDate}
+                  onChange={(event) => setStartDate(event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+                />
+                <span className="text-gray-400">~</span>
+                <input
+                  type="datetime-local"
+                  value={endDate}
+                  onChange={(event) => setEndDate(event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+                />
+              </div>
             </div>
 
-            {/* 매체 구분 (국내/해외) */}
-            <div className="flex flex-col gap-2">
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">매체 구분</label>
-              <div className="flex gap-2">
-                {[
-                  { id: 'all', label: '전체 (All)', icon: Globe },
-                  { id: 'domestic', label: '국내 (Domestic)', icon: Newspaper },
-                  { id: 'global', label: '해외 (Global)', icon: Globe },
-                ].map(r => (
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <Newspaper className="mr-1 inline h-3.5 w-3.5" />
+                대상 매체
+              </label>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {sources.map((source) => (
                   <button
-                    key={r.id}
-                    onClick={() => setFilterRegion(r.id as any)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
-                      filterRegion === r.id
-                        ? 'bg-[#1e3a5f] text-white border-[#1e3a5f] shadow-sm'
-                        : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-[#1e3a5f]'
+                    key={source.id}
+                    type="button"
+                    onClick={() => toggleSource(source.id)}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                      selectedSourceIds.includes(source.id)
+                        ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
                     }`}
                   >
-                    <r.icon className="w-4 h-4" />
-                    {r.label}
+                    {source.name}
                   </button>
                 ))}
               </div>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* 날짜 범위 */}
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
-                  <Calendar className="inline w-3.5 h-3.5 mr-1" />기사 날짜 범위
-                </label>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {DATE_PRESETS.map(p => (
-                    <button
-                      key={p.label}
-                      type="button"
-                      onClick={() => applyDatePreset(p.days)}
-                      className="px-2.5 py-1 rounded text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-[#1e3a5f] hover:text-white transition-colors"
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-2 items-center">
-                  <input type="datetime-local" value={startDate} onChange={e => setStartDate(e.target.value)}
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
-                  <span className="text-gray-400 text-sm">~</span>
-                  <input type="datetime-local" value={endDate} onChange={e => setEndDate(e.target.value)}
-                    className="flex-1 px-3 py-1.5 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
-                </div>
-              </div>
-
-              {/* 기사 상태 */}
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
-                  기사 상태
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {STATUS_OPTIONS.map(s => (
-                    <button
-                      key={s.value}
-                      type="button"
-                      onClick={() => toggleStatus(s.value)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
-                        selectedStatuses.includes(s.value)
-                          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                          : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* 매체 선택 */}
-            {sources.length > 0 && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">
-                  <Newspaper className="inline w-3.5 h-3.5 mr-1" />매체 선택 (미선택 시 전체)
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {sources.map(src => (
-                    <button
-                      key={src.id}
-                      type="button"
-                      onClick={() => toggleSource(src.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
-                        selectedSourceIds.includes(src.id)
-                          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                          : 'bg-white dark:bg-gray-700 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-600'
-                      }`}
-                    >
-                      {src.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 검색 버튼 */}
-            <div className="flex items-center gap-3 pt-1">
-              <button
-                onClick={handleSearch}
-                disabled={loading}
-                className="flex items-center gap-2 px-5 py-2 bg-[#1e3a5f] text-white rounded-lg font-medium text-sm hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
-              >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                검색
-              </button>
-              <button
-                type="button"
-                onClick={() => { setKeywords([]); setStartDate(''); setEndDate(''); setSelectedStatuses(['analyzed', 'published']); setSelectedSourceIds([]); }}
-                className="flex items-center gap-1.5 px-3 py-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-sm"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />초기화
-              </button>
-            </div>
           </div>
-        )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleSearch}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#24456f] disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              검색
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = getDefaultDateRange();
+                setKeywords([]);
+                setSelectedSourceIds([]);
+                setStartDate(next.startDate);
+                setEndDate(next.endDate);
+                setArticles([]);
+                setSelectedIds(new Set());
+                setSearched(false);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700/40"
+            >
+              <RefreshCw className="h-4 w-4" />
+              초기화
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* 결과 */}
       {searched && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-          {/* 결과 헤더 */}
-          <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {articles.length > 0 && (
-                <button
-                  type="button"
-                  onClick={toggleAll}
-                  className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                >
-                  {selectedIds.size === articles.length
-                    ? <CheckSquare className="w-4 h-4 text-[#1e3a5f]" />
-                    : <Square className="w-4 h-4" />
-                  }
-                  전체 선택
-                </button>
-              )}
-              <span className="text-sm text-gray-500 dark:text-gray-400">
-                총 <strong className="text-gray-900 dark:text-white">{total}</strong>건
-                {selectedIds.size > 0 && (
-                  <span className="ml-2 text-[#1e3a5f] dark:text-blue-400 font-semibold">
-                    ({selectedIds.size}건 선택됨)
-                  </span>
-                )}
-              </span>
-            </div>
-            {selectedIds.size > 0 && (
+        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
+            <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-300">
               <button
-                onClick={handleCreateReport}
-                className="flex items-center gap-1.5 px-4 py-1.5 bg-[#d4af37] text-white rounded-lg font-semibold text-sm hover:bg-[#b8942d] transition-colors"
+                type="button"
+                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(articles.map((article) => article.id)))}
+                className="inline-flex items-center gap-1.5"
               >
-                <FileText className="w-3.5 h-3.5" />
-                보고서 생성
+                {allSelected ? <CheckSquare className="h-4 w-4 text-[#1e3a5f]" /> : <Square className="h-4 w-4" />}
+                전체 선택
+              </button>
+              <span>검색 결과 {articles.length}건</span>
+              {selectedIds.size > 0 && <span className="font-medium text-[#1e3a5f]">{selectedIds.size}건 선택됨</span>}
+            </div>
+            {articles.length > 0 && selectedIds.size === 0 && (
+              <button
+                onClick={createReportFromFilters}
+                className="rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-medium text-white hover:bg-[#24456f]"
+              >
+                결과 전체 리포트
               </button>
             )}
           </div>
 
           {loading ? (
             <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-7 h-7 animate-spin text-gray-300" />
+              <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
             </div>
-          ) : filteredArticles.length === 0 ? (
-            <div className="py-16 text-center text-gray-400">
-              <Search className="w-10 h-10 mx-auto mb-3 opacity-30" />
-              <p className="font-medium">해당 구분에 검색 결과가 없습니다.</p>
-              <p className="text-sm mt-1">구분 필터를 조정해보세요.</p>
-            </div>
+          ) : articles.length === 0 ? (
+            <div className="py-16 text-center text-sm text-gray-400">조건에 맞는 분석 완료 기사가 없습니다.</div>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {filteredArticles.map(article => {
+              {articles.map((article) => {
                 const selected = selectedIds.has(article.id);
                 return (
                   <div
                     key={article.id}
-                    className={`flex items-start gap-3 px-5 py-4 transition-colors cursor-pointer group ${
-                      selected
-                        ? 'bg-blue-50/50 dark:bg-blue-900/10'
-                        : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'
-                    }`}
                     onClick={() => toggleSelect(article.id)}
+                    className={`flex cursor-pointer items-start gap-3 px-5 py-4 transition ${
+                      selected ? 'bg-blue-50/60 dark:bg-blue-900/10' : 'hover:bg-gray-50 dark:hover:bg-gray-700/20'
+                    }`}
                   >
-                    {/* 체크박스 */}
-                    <div className="mt-0.5 flex-shrink-0">
-                      {selected
-                        ? <CheckSquare className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-                        : <Square className="w-5 h-5 text-gray-300 dark:text-gray-600 group-hover:text-gray-400" />
-                      }
+                    <div className="mt-1">
+                      {selected ? <CheckSquare className="h-5 w-5 text-[#1e3a5f]" /> : <Square className="h-5 w-5 text-gray-300" />}
                     </div>
-
-                    {/* 기사 내용 */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex flex-wrap items-center gap-2 mb-1">
-                        {getStatusBadge(article.status)}
-                        <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">{article.source}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                        <span>{article.source}</span>
                         {article.category && (
-                          <span className="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
-                            {article.category}
-                          </span>
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-700">{article.category}</span>
                         )}
                         {article.relevanceScore > 0 && (
-                          <span className="text-[10px] text-green-600 dark:text-green-400 font-semibold">
-                            관련도 {Math.round(article.relevanceScore * 100)}%
-                          </span>
+                          <span className="text-green-600 dark:text-green-400">관련도 {Math.round(article.relevanceScore * 100)}%</span>
                         )}
-                        <span className="text-xs text-gray-400 ml-auto">{formatDate(article.publishedAt)}</span>
+                        <span className="ml-auto">{article.publishedAt ? format(article.publishedAt.toDate ? article.publishedAt.toDate() : new Date(article.publishedAt), 'yyyy.MM.dd HH:mm') : ''}</span>
                       </div>
-
-                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white line-clamp-2 mb-1.5">
-                        {article.title}
-                      </h3>
-
-                      {article.summary.length > 0 && (
-                        <ul className="space-y-0.5 mb-1.5">
-                          {article.summary.slice(0, 2).map((s, i) => (
-                            <li key={i} className="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">· {s}</li>
-                          ))}
-                        </ul>
-                      )}
-
-                      {article.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {article.tags.slice(0, 5).map(tag => (
-                            <span key={tag} className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
-                              <Tag className="w-2.5 h-2.5" />{tag}
+                      <h3 className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{article.title}</h3>
+                      <div className="mt-2 space-y-1">
+                        {(article.summary || []).slice(0, 2).map((line, index) => (
+                          <p key={index} className="text-xs text-gray-600 dark:text-gray-300">- {line}</p>
+                        ))}
+                      </div>
+                      {article.tags?.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {article.tags.slice(0, 5).map((tagName) => (
+                            <span key={tagName} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                              <Tag className="h-2.5 w-2.5" />
+                              {tagName}
                             </span>
                           ))}
                         </div>
                       )}
                     </div>
-
-                    {/* 원문 보기 */}
                     <button
-                      onClick={e => { e.stopPropagation(); setPreviewArticle(article); }}
-                      className="flex-shrink-0 mt-0.5 px-2.5 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-[#1e3a5f] dark:hover:text-blue-400 border border-gray-200 dark:border-gray-600 rounded hover:border-[#1e3a5f] transition-colors"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPreviewArticle(article);
+                      }}
+                      className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 hover:border-[#1e3a5f] hover:text-[#1e3a5f] dark:border-gray-700 dark:text-gray-300"
                     >
-                      원문
+                      원문 보기
                     </button>
                   </div>
                 );
@@ -513,86 +418,72 @@ export default function Articles() {
         </div>
       )}
 
-      {/* 하단 고정 선택 버튼 */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
+        <div className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2">
           <button
-            onClick={handleCreateReport}
-            className="flex items-center gap-2.5 px-6 py-3 bg-[#d4af37] text-white rounded-full font-bold text-sm shadow-xl hover:bg-[#b8942d] transition-colors"
+            onClick={createReportFromSelection}
+            className="inline-flex items-center gap-2 rounded-full bg-[#d4af37] px-6 py-3 text-sm font-bold text-white shadow-xl hover:bg-[#c59f2c]"
           >
-            <FileText className="w-4 h-4" />
-            {selectedIds.size}건 선택 · 분석 보고서 생성하기
-            <ArrowRight className="w-4 h-4" />
+            <Plus className="h-4 w-4" />
+            선택 기사 {selectedIds.size}건으로 리포트 만들기
           </button>
         </div>
       )}
 
-      {/* 기사 원문 팝업 */}
       {previewArticle && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewArticle(null)}>
           <div
-            className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[80vh] overflow-hidden flex flex-col"
-            onClick={e => e.stopPropagation()}
+            className="mx-4 flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800"
+            onClick={(event) => event.stopPropagation()}
           >
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-start justify-between">
+            <div className="flex items-start justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
               <div>
-                <div className="flex items-center gap-2 mb-1">
-                  {getStatusBadge(previewArticle.status)}
-                  <span className="text-xs text-gray-500">{previewArticle.source}</span>
-                  <span className="text-xs text-gray-400">{formatDate(previewArticle.publishedAt)}</span>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <span>{previewArticle.source}</span>
+                  <span>{previewArticle.publishedAt ? format(previewArticle.publishedAt.toDate ? previewArticle.publishedAt.toDate() : new Date(previewArticle.publishedAt), 'yyyy.MM.dd HH:mm') : ''}</span>
                 </div>
-                <h3 className="font-bold text-gray-900 dark:text-white text-base leading-snug">{previewArticle.title}</h3>
+                <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
-              <button onClick={() => setPreviewArticle(null)} className="ml-3 flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                <X className="w-5 h-5" />
+              <button onClick={() => setPreviewArticle(null)}>
+                <X className="h-5 w-5 text-gray-400" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-5">
-              {previewArticle.summary.length > 0 && (
-                <div className="mb-4">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">AI 요약</p>
-                  <ul className="space-y-1.5">
-                    {previewArticle.summary.map((s, i) => (
-                      <li key={i} className="text-sm text-gray-700 dark:text-gray-300">· {s}</li>
+              {previewArticle.summary?.length > 0 && (
+                <div className="mb-6">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI 요약</p>
+                  <div className="mt-3 space-y-2">
+                    {previewArticle.summary.map((line, index) => (
+                      <p key={index} className="text-sm text-gray-700 dark:text-gray-300">- {line}</p>
                     ))}
-                  </ul>
+                  </div>
                 </div>
               )}
-              {previewArticle.content && (
-                <div>
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">기사 원문</p>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                    {previewArticle.content}
-                  </p>
-                </div>
-              )}
-              {!previewArticle.content && previewArticle.summary.length === 0 && (
-                <p className="text-sm text-gray-400">원문 내용이 없습니다.</p>
-              )}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-gray-300">
+                  {previewArticle.content || '원문 전문이 저장되지 않은 기사입니다.'}
+                </p>
+              </div>
             </div>
-            <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex items-center gap-3">
+            <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
               <button
-                onClick={() => { toggleSelect(previewArticle.id); setPreviewArticle(null); }}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  selectedIds.has(previewArticle.id)
-                    ? 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-                    : 'bg-[#1e3a5f] text-white hover:bg-[#2a4a73]'
-                }`}
+                onClick={() => {
+                  toggleSelect(previewArticle.id);
+                  setPreviewArticle(null);
+                }}
+                className="rounded-xl bg-[#1e3a5f] px-4 py-2 text-sm font-medium text-white hover:bg-[#24456f]"
               >
-                {selectedIds.has(previewArticle.id)
-                  ? <><CheckSquare className="w-4 h-4" />선택 해제</>
-                  : <><Plus className="w-4 h-4" />보고서에 추가</>
-                }
+                {selectedIds.has(previewArticle.id) ? '선택 해제' : '리포트에 추가'}
               </button>
               {previewArticle.url && (
                 <a
                   href={previewArticle.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 underline"
-                  onClick={e => e.stopPropagation()}
+                  className="inline-flex items-center gap-2 text-sm text-gray-500 underline dark:text-gray-300"
                 >
-                  원문 링크
+                  원문 링크 열기
                 </a>
               )}
             </div>

@@ -1,329 +1,189 @@
-import { useState, useEffect } from 'react';
-import { CheckCircle2, Loader2, Database, RefreshCw, Plus, Trash2, Mail, ExternalLink } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import { db, functions } from '@/lib/firebase';
+import { useEffect, useState } from 'react';
+import { BarChart3, CheckCircle2, Database, Loader2, RefreshCw, Save, Sparkles } from 'lucide-react';
+import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { collection, getDocs, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
+import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 
 export default function Settings() {
   const { user } = useAuthStore();
   const companyId = (user as any)?.primaryCompanyId || null;
-  const userRole = (user as any)?.role;
-  const canEdit = userRole === 'superadmin' || userRole === 'company_admin';
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [sources, setSources] = useState<{ id: string; name: string }[]>([]);
+  const [internalPrompt, setInternalPrompt] = useState(
+    '팩트 기반으로 요약하고, PE 업계에서 놓치면 안 되는 체크포인트를 정리합니다. 제언과 의견은 제외합니다.',
+  );
+  const [externalPrompt, setExternalPrompt] = useState(
+    '외부 메일링용으로 간결하게 요약하되 사실과 변화 포인트만 전달합니다. 의견이나 투자 판단은 제외합니다.',
+  );
+  const [usage, setUsage] = useState<any>(null);
 
-  // Sources state (subscribed only, read-only display)
-  const [subscribedSources, setSubscribedSources] = useState<{ id: string; name: string; type: string; pricingTier: string }[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(false);
-
-  // Notification state
-  const [subscriberEmails, setSubscriberEmails] = useState<string[]>([]);
-  const [newEmail, setNewEmail] = useState('');
-  const [telegramConfig, setTelegramConfig] = useState({ botToken: '', chatId: '' });
-  const [savingNotifications, setSavingNotifications] = useState(false);
-
-  // Relevance prompt state
-  const [relevancePrompt, setRelevancePrompt] = useState('');
-  const [savingPrompt, setSavingPrompt] = useState(false);
-
-  useEffect(() => {
-    if (companyId) {
-      loadCompanySettings();
-      loadSources();
-    } else {
-      setLoading(false);
-    }
-  }, [companyId]);
-
-  const loadCompanySettings = async () => {
+  const loadAll = async () => {
+    if (!companyId) return;
     setLoading(true);
     try {
-      const settingsDoc = await getDoc(doc(db, 'companySettings', companyId));
-      if (settingsDoc.exists()) {
-        const data = settingsDoc.data() as any;
-        setSubscriberEmails(data.subscriberEmails || []);
-        setTelegramConfig(data.notifications?.telegram || { botToken: '', chatId: '' });
-        setRelevancePrompt(data.ai?.relevancePrompt || '');
-      }
-    } catch (err) {
-      console.error('Failed to load company settings:', err);
+      const [settingsDoc, subDoc, sourceSnap, usageResult] = await Promise.all([
+        getDoc(doc(db, 'companySettings', companyId)),
+        getDoc(doc(db, 'companySourceSubscriptions', companyId)),
+        getDocs(collection(db, 'globalSources')),
+        httpsCallable(functions, 'getAiUsageSummary')({ companyId }),
+      ]);
+
+      const settings = settingsDoc.exists() ? (settingsDoc.data() as any) : {};
+      setInternalPrompt(settings.reportPrompts?.internal || internalPrompt);
+      setExternalPrompt(settings.reportPrompts?.external || externalPrompt);
+
+      const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
+      setSources(
+        sourceSnap.docs
+          .map((item) => ({ id: item.id, ...(item.data() as any) }))
+          .filter((item) => subscribedIds.includes(item.id))
+          .map((item) => ({ id: item.id, name: item.name })),
+      );
+
+      setUsage((usageResult as any).data);
     } finally {
       setLoading(false);
     }
   };
 
-  const loadSources = async () => {
-    if (!companyId) return;
-    setSourcesLoading(true);
-    try {
-      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
-      const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).subscribedSourceIds || [] : [];
-      if (subscribedIds.length === 0) {
-        setSubscribedSources([]);
-        return;
-      }
-      const snap = await getDocs(collection(db, 'globalSources'));
-      const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      setSubscribedSources(
-        all
-          .filter(s => subscribedIds.includes(s.id))
-          .map(s => ({ id: s.id, name: s.name, type: s.type, pricingTier: s.pricingTier || 'free' }))
-      );
-    } catch (err) {
-      console.error('Failed to load sources:', err);
-    } finally {
-      setSourcesLoading(false);
-    }
-  };
+  useEffect(() => {
+    loadAll().catch(console.error);
+  }, [companyId]);
 
-  const handleSaveNotifications = async () => {
+  const savePrompts = async () => {
     if (!companyId) return;
-    setSavingNotifications(true);
+    setSaving(true);
     try {
-      await httpsCallable(functions, 'updateNotificationSettings')({
-        companyId,
-        emails: subscriberEmails,
-        telegram: telegramConfig,
-      });
-      alert('알림 설정이 저장되었습니다.');
-    } catch (err: any) {
-      alert('저장 실패: ' + err.message);
+      await setDoc(doc(db, 'companySettings', companyId), {
+        reportPrompts: {
+          internal: internalPrompt.trim(),
+          external: externalPrompt.trim(),
+        },
+      }, { merge: true });
     } finally {
-      setSavingNotifications(false);
-    }
-  };
-
-  const handleSaveRelevancePrompt = async () => {
-    if (!companyId) return;
-    setSavingPrompt(true);
-    try {
-      const ref = doc(db, 'companySettings', companyId);
-      try {
-        await updateDoc(ref, { 'ai.relevancePrompt': relevancePrompt });
-      } catch (e: any) {
-        if (e.code === 'not-found') {
-          await setDoc(ref, { ai: { relevancePrompt } }, { merge: true });
-        } else {
-          throw e;
-        }
-      }
-      alert('판단 기준 프롬프트가 저장되었습니다.');
-    } catch (err: any) {
-      alert('저장 실패: ' + err.message);
-    } finally {
-      setSavingPrompt(false);
+      setSaving(false);
     }
   };
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
-      </div>
-    );
-  }
-
-  if (!companyId) {
-    return (
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-12 text-center text-gray-500">
-        <p>No company assigned. Contact your superadmin to be assigned to a company.</p>
+      <div className="flex min-h-[320px] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-[#1e3a5f]" />
       </div>
     );
   }
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">설정</h1>
-        <p className="text-gray-600 dark:text-gray-400 mt-1">AI 판단 기준, 매체 구독, 알림 수신자를 관리합니다.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">회사 설정</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            내부/외부 리포트 프롬프트와 회사의 AI 토큰 사용량을 관리합니다.
+          </p>
+        </div>
+        <button
+          onClick={loadAll}
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+        >
+          <RefreshCw className="h-4 w-4" />
+          새로고침
+        </button>
       </div>
 
-      {/* ─── AI 기사 적합성 판단 기준 ─── */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2">
-          <RefreshCw className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">AI 기사 적합성 판단 기준 (커스텀 프롬프트)</h2>
-        </div>
-        <div className="p-6 space-y-4">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            AI가 수집된 기사를 분석 리포트에 포함시킬지 결정하는 '판단 기준'을 직접 수정할 수 있습니다.
-            내용이 구체적일수록 원하는 기사만 정확하게 골라낼 수 있습니다.
-          </p>
-          <textarea
-            value={relevancePrompt}
-            onChange={e => setRelevancePrompt(e.target.value)}
-            placeholder="예: 당신은 전문 투자 분석가입니다. 기사가 'M&A', '스타트업 투자', 'IPO'와 직접 관련 있는지 판단하세요. 단순 인물 동정이나 광고성 기사는 제외하세요."
-            className="w-full h-32 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-900/50 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f] resize-none"
-          />
-          <div className="flex justify-end">
-            <button
-              onClick={handleSaveRelevancePrompt}
-              disabled={savingPrompt || !canEdit}
-              className="flex items-center px-6 py-2 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#2a4a73] transition-colors shadow-sm disabled:opacity-50 text-sm"
-            >
-              {savingPrompt ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-              판단 기준 저장
-            </button>
+      <div className="grid gap-4 md:grid-cols-3">
+        {[
+          { label: '최근 24시간', value: usage?.last24h?.totalTokens || 0, sub: `${usage?.last24h?.requests || 0}회 호출` },
+          { label: '최근 7일', value: usage?.last7d?.totalTokens || 0, sub: `$${(usage?.last7d?.totalCostUSD || 0).toFixed(2)}` },
+          { label: '최근 30일', value: usage?.last30d?.totalTokens || 0, sub: `$${(usage?.last30d?.totalCostUSD || 0).toFixed(2)}` },
+        ].map((item) => (
+          <div key={item.label} className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
+              <BarChart3 className="h-4 w-4 text-[#1e3a5f]" />
+              {item.label}
+            </div>
+            <div className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{Number(item.value).toLocaleString()}</div>
+            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{item.sub}</div>
           </div>
-        </div>
-      </section>
+        ))}
+      </div>
 
-      {/* ─── 구독 매체 ─── */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Database className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">구독 매체</h2>
-            {!sourcesLoading && (
-              <span className="text-xs bg-[#1e3a5f] text-white px-2.5 py-1 rounded-full">{subscribedSources.length}개</span>
-            )}
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Sparkles className="h-4 w-4 text-[#d4af37]" />
+          리포트 프롬프트 정책
+        </div>
+        <div className="mt-4 grid gap-5 md:grid-cols-2">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">내부 리포트 프롬프트</label>
+            <textarea
+              value={internalPrompt}
+              onChange={(event) => setInternalPrompt(event.target.value)}
+              rows={8}
+              className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+            />
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={loadSources} disabled={sourcesLoading} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-              <RefreshCw className={`w-4 h-4 ${sourcesLoading ? 'animate-spin' : ''}`} />
-            </button>
-            <Link
-              to="/media"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1e3a5f] hover:bg-[#2a4a73] text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              매체 구독 관리
-            </Link>
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">외부 리포트 프롬프트</label>
+            <textarea
+              value={externalPrompt}
+              onChange={(event) => setExternalPrompt(event.target.value)}
+              rows={8}
+              className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+            />
           </div>
         </div>
-        <div className="p-6">
-          {sourcesLoading ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-            </div>
-          ) : subscribedSources.length === 0 ? (
-            <div className="text-center py-8 text-gray-400 text-sm">
-              <p>구독 중인 매체가 없습니다.</p>
-              <Link to="/media" className="mt-2 inline-flex items-center gap-1 text-[#1e3a5f] dark:text-blue-400 hover:underline font-medium">
-                매체 구독 선택하러 가기 <ExternalLink className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {subscribedSources.map(s => (
-                <span
-                  key={s.id}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border ${
-                    s.pricingTier === 'paid'
-                      ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
-                      : s.pricingTier === 'requires_subscription'
-                      ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'
-                      : 'bg-gray-100 dark:bg-gray-700 border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300'
-                  }`}
-                >
-                  {s.name}
-                  {s.pricingTier === 'paid' && <span className="text-[10px] font-bold bg-red-500 text-white px-1 rounded">유료</span>}
-                  {s.pricingTier === 'requires_subscription' && <span className="text-[10px] font-bold bg-amber-500 text-white px-1 rounded">구독</span>}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* ─── 알림 설정 ─── */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Mail className="w-5 h-5 text-[#1e3a5f] dark:text-blue-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">보고서 알림 설정</h2>
-          </div>
+        <div className="mt-4 flex justify-end">
           <button
-            onClick={handleSaveNotifications}
-            disabled={savingNotifications || !canEdit}
-            className="flex items-center px-4 py-1.5 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#2a4a73] transition-colors disabled:opacity-50"
+            onClick={savePrompts}
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#24456f] disabled:opacity-50"
           >
-            {savingNotifications ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <CheckCircle2 className="w-3 h-3 mr-1" />}
-            설정 저장
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            저장
           </button>
         </div>
+      </div>
 
-        <div className="p-6 space-y-8">
-          {/* 이메일 */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider">이메일 수신인</h3>
-            <div className="space-y-3">
-              {subscriberEmails.map((email, idx) => (
-                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-700">
-                  <span className="text-sm text-gray-800 dark:text-gray-200 font-medium">{email}</span>
-                  {canEdit && (
-                    <button
-                      onClick={() => setSubscriberEmails(prev => prev.filter((_, i) => i !== idx))}
-                      className="text-gray-400 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-            {canEdit && (
-              <div className="flex gap-2">
-                <input
-                  type="email"
-                  value={newEmail}
-                  onChange={e => setNewEmail(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && newEmail.trim()) {
-                      setSubscriberEmails(prev => [...prev, newEmail.trim()]);
-                      setNewEmail('');
-                    }
-                  }}
-                  placeholder="이메일 주소 추가..."
-                  className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                />
-                <button
-                  onClick={() => {
-                    if (newEmail.trim()) {
-                      setSubscriberEmails(prev => [...prev, newEmail.trim()]);
-                      setNewEmail('');
-                    }
-                  }}
-                  className="px-3 py-2 bg-[#1e3a5f] text-white rounded-lg hover:bg-[#2a4a73] transition-colors"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Telegram */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider">텔레그램 알림</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase">Bot Token</label>
-                <input
-                  type="password"
-                  value={telegramConfig.botToken || ''}
-                  onChange={e => setTelegramConfig(prev => ({ ...prev, botToken: e.target.value }))}
-                  placeholder="1234567890:AAF..."
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  disabled={!canEdit}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase">Channel/Chat ID</label>
-                <input
-                  type="text"
-                  value={telegramConfig.chatId || ''}
-                  onChange={e => setTelegramConfig(prev => ({ ...prev, chatId: e.target.value }))}
-                  placeholder="@your_channel_id or -100123456789"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm outline-none focus:ring-2 focus:ring-[#1e3a5f]"
-                  disabled={!canEdit}
-                />
-              </div>
-            </div>
-          </div>
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Database className="h-4 w-4 text-[#1e3a5f]" />
+          구독 매체
         </div>
-      </section>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {sources.map((source) => (
+            <span key={source.id} className="rounded-full bg-gray-100 px-3 py-1.5 text-sm text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+              {source.name}
+            </span>
+          ))}
+          {sources.length === 0 && (
+            <div className="text-sm text-gray-400">구독한 매체가 없습니다.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <CheckCircle2 className="h-4 w-4 text-[#1e3a5f]" />
+          최근 AI 호출
+        </div>
+        <div className="mt-4 space-y-3">
+          {(usage?.recent || []).map((item: any) => (
+            <div key={item.id} className="rounded-xl border border-gray-200 px-4 py-3 text-sm dark:border-gray-700">
+              <div className="font-medium text-gray-900 dark:text-white">{item.stage}</div>
+              <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {item.provider} / {item.model} / {Number(item.totalTokens || 0).toLocaleString()} tokens
+              </div>
+            </div>
+          ))}
+          {(usage?.recent || []).length === 0 && (
+            <div className="text-sm text-gray-400">최근 토큰 사용 기록이 없습니다.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

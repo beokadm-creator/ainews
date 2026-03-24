@@ -6,6 +6,8 @@ setGlobalOptions({
   region: 'us-central1',
   maxInstances: 0,
   concurrency: 1,
+  cpu: 'gcf_gen1',
+  memory: '256MiB',
   invoker: 'public',
 });
 import * as admin from 'firebase-admin';
@@ -13,9 +15,10 @@ import axios from 'axios';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
-import { sendBriefingEmails } from './services/emailService';
+import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
+import { processScrapingSources } from './services/scrapingSourceService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
@@ -56,6 +59,138 @@ async function resolveRuntime(uid: string, companyId?: string, overrides?: Pipel
   const resolvedCompanyId = companyId || await getPrimaryCompanyId(uid);
   await assertCompanyAccess(uid, resolvedCompanyId);
   return getCompanyRuntimeConfig(resolvedCompanyId, overrides);
+}
+
+type ManagedReportMode = 'internal' | 'external';
+
+interface ManagedReportFilters {
+  sourceIds?: string[];
+  keywords?: string[];
+  datePreset?: '24h' | '3d' | '7d' | '15d' | '30d';
+  startDate?: string | null;
+  endDate?: string | null;
+  limit?: number;
+}
+
+function getPresetWindowHours(datePreset?: ManagedReportFilters['datePreset']) {
+  switch (datePreset) {
+    case '3d': return 72;
+    case '7d': return 168;
+    case '15d': return 360;
+    case '30d': return 720;
+    case '24h':
+    default:
+      return 24;
+  }
+}
+
+function getManagedReportWindow(filters?: ManagedReportFilters) {
+  const now = new Date();
+  const fallbackStart = new Date(now.getTime() - getPresetWindowHours(filters?.datePreset) * 60 * 60 * 1000);
+  const parsedStart = filters?.startDate ? new Date(filters.startDate) : fallbackStart;
+  const parsedEnd = filters?.endDate ? new Date(filters.endDate) : now;
+
+  return {
+    startDate: Number.isNaN(parsedStart.getTime()) ? fallbackStart : parsedStart,
+    endDate: Number.isNaN(parsedEnd.getTime()) ? now : parsedEnd,
+  };
+}
+
+async function loadAccessibleArticlesForManagedReport(
+  companyId: string,
+  filters?: ManagedReportFilters,
+): Promise<any[]> {
+  const db = admin.firestore();
+  const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
+  const subscribedSourceIds: string[] = subDoc.exists
+    ? ((subDoc.data() as any).subscribedSourceIds || [])
+    : [];
+
+  if (subscribedSourceIds.length === 0) {
+    return [];
+  }
+
+  const requestedSourceIds = Array.isArray(filters?.sourceIds) && filters?.sourceIds.length > 0
+    ? filters!.sourceIds!.filter((id) => subscribedSourceIds.includes(id))
+    : subscribedSourceIds;
+
+  if (requestedSourceIds.length === 0) {
+    return [];
+  }
+
+  const { startDate, endDate } = getManagedReportWindow(filters);
+  const snap = await db.collection('articles')
+    .where('publishedAt', '>=', startDate)
+    .where('publishedAt', '<=', endDate)
+    .orderBy('publishedAt', 'desc')
+    .limit(Math.min(filters?.limit || 120, 200))
+    .get();
+
+  const keywordPool = (filters?.keywords || [])
+    .map((keyword) => `${keyword || ''}`.trim().toLowerCase())
+    .filter(Boolean);
+  const sourceIdPool = new Set(requestedSourceIds);
+
+  return snap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((article: any) => ['analyzed', 'published'].includes(article.status))
+    .filter((article: any) => article.sourceId ? sourceIdPool.has(article.sourceId) : true)
+    .filter((article: any) => {
+      if (keywordPool.length === 0) return true;
+      const haystack = [
+        article.title || '',
+        article.content || '',
+        ...(article.summary || []),
+        ...(article.tags || []),
+      ].join(' ').toLowerCase();
+      return keywordPool.some((keyword) => haystack.includes(keyword));
+    });
+}
+
+function buildManagedReportPrompt(
+  mode: ManagedReportMode,
+  sourceNames: string[],
+  basePrompt?: string,
+) {
+  const sourceText = sourceNames.length > 0
+    ? `대상 매체: ${sourceNames.join(', ')}`
+    : '대상 매체: 구독 중인 전체 선택 매체';
+
+  const sharedRules = [
+    '모든 문장은 한국어로 작성합니다.',
+    '팩트 기반으로만 요약하고 분석합니다.',
+    'AI의 의견, 투자 조언, 추가 제언, 낙관적/비관적 전망은 넣지 않습니다.',
+    '중복 기사는 묶고, 서로 상충하는 팩트는 구분해서 적습니다.',
+    '기사에서 반드시 챙겨봐야 할 포인트, 놓치기 쉬운 수치, 이해관계자 변화만 정리합니다.',
+  ].join('\n');
+
+  if (mode === 'external') {
+    return `${sharedRules}
+${sourceText}
+외부 배포용 데일리 리포트 형식으로 작성합니다.
+분량은 임원 메일로 바로 읽을 수 있게 간결하게 유지합니다.
+구성은 다음 순서를 따릅니다:
+1. 핵심 요약
+2. 주요 기사 포인트 3~6개
+3. 주의 깊게 볼 변화 또는 체크포인트
+4. 참고 기사 목록
+${basePrompt || ''}`.trim();
+  }
+
+  return `${sharedRules}
+${sourceText}
+내부 분석용 리포트 형식으로 작성합니다.
+구성은 다음 순서를 따릅니다:
+1. 핵심 요약
+2. 공통적으로 드러난 흐름
+3. 매체별/기사군별 체크포인트
+4. 놓치면 안 되는 팩트
+5. 참고 기사 목록
+${basePrompt || ''}`.trim();
+}
+
+function getFunctionsBaseUrl() {
+  return 'https://us-central1-eumnews-9a99c.cloudfunctions.net';
 }
 
 // superadmin용: systemSettings/aiConfig + systemSettings/promptConfig에서 AI 설정 로드
@@ -205,7 +340,7 @@ export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', 
   const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
   const access = await assertCompanyAccess(request.auth.uid, companyId);
-  if (!['superadmin', 'company_admin', 'company_editor'].includes(access.role)) {
+  if (!['superadmin', 'company_admin'].includes(access.role)) {
     throw new HttpsError('permission-denied', 'Permission denied');
   }
   if (!Array.isArray(subscribedSourceIds)) {
@@ -691,14 +826,17 @@ export const runBulkAiAnalysisHttp = onRequest(
       console.log(`[Pipeline] Collecting from ${allActiveSourceIds.length} active sources (superadmin mode)`);
       const sourceFilter = { filters: { ...runtimeFilters, sourceIds: allActiveSourceIds }, aiConfig };
 
-      const [rssResult, apiResult] = await Promise.allSettled([
+      const [rssResult, apiResult, scrapingResult] = await Promise.allSettled([
         processRssSources(sourceFilter),
         processApiSources(sourceFilter),
+        processScrapingSources(sourceFilter),
       ]);
       if (rssResult.status === 'fulfilled') totalCollected += (rssResult.value as any)?.totalCollected || 0;
       if (apiResult.status === 'fulfilled') totalCollected += (apiResult.value as any)?.totalCollected || 0;
+      if (scrapingResult.status === 'fulfilled') totalCollected += (scrapingResult.value as any)?.totalCollected || 0;
       if (rssResult.status === 'rejected') console.error('[Pipeline] RSS error:', (rssResult as any).reason?.message);
       if (apiResult.status === 'rejected') console.error('[Pipeline] API error:', (apiResult as any).reason?.message);
+      if (scrapingResult.status === 'rejected') console.error('[Pipeline] Scraping error:', (scrapingResult as any).reason?.message);
       console.log(`[Pipeline] Step 1 done: collected=${totalCollected}`);
 
       // ── 중단 체크 ──
@@ -1028,7 +1166,7 @@ export const diagnosticHttp = onRequest(
 // ─────────────────────────────────────────
 // HTTP triggers (collection)
 // ─────────────────────────────────────────
-// triggerRssCollection, triggerScrapingCollection: removed (replaced by scheduled pipeline in runFullPipeline)
+// triggerRssCollection: removed (replaced by scheduled pipeline in runFullPipeline)
 // triggerAiFiltering, triggerDeepAnalysis, triggerBriefingGeneration: removed (internal steps, use runFullPipeline)
 export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
@@ -1046,6 +1184,179 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
+
+export const requestManagedReport = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const {
+      companyId: rawCompanyId,
+      mode = 'internal',
+      articleIds = [],
+      filters = {},
+      reportTitle,
+      prompt = '',
+      distributionGroupId = null,
+      distributionGroupName = null,
+      recipients = [],
+      sendNow = false,
+      scheduledAt = null,
+      sourceNames = [],
+    } = request.data || {};
+
+    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    const access = await assertCompanyAccess(request.auth.uid, companyId);
+
+    if (mode === 'external' && !['superadmin', 'company_admin'].includes(access.role)) {
+      throw new HttpsError('permission-denied', 'Only company admins can manage external delivery');
+    }
+
+    if (!Array.isArray(articleIds) && typeof filters !== 'object') {
+      throw new HttpsError('invalid-argument', 'Article IDs or filters are required');
+    }
+
+    const db = admin.firestore();
+    const outputRef = db.collection('outputs').doc();
+
+    await outputRef.set({
+      id: outputRef.id,
+      companyId,
+      type: 'managed_report',
+      status: scheduledAt ? 'scheduled' : 'pending',
+      serviceMode: mode,
+      title: reportTitle || (mode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트'),
+      articleIds: Array.isArray(articleIds) ? articleIds : [],
+      filters: filters || {},
+      analysisPrompt: prompt || '',
+      distributionGroupId,
+      distributionGroupName,
+      recipientCount: Array.isArray(recipients) ? recipients.length : 0,
+      recipientsPreview: Array.isArray(recipients) ? recipients.slice(0, 20) : [],
+      sendNow: Boolean(sendNow),
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+      requestedBy: request.auth.uid,
+      attempts: 0,
+      sourceNames: Array.isArray(sourceNames) ? sourceNames : [],
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if (!scheduledAt) {
+      fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          outputId: outputRef.id,
+          companyId,
+          requestedBy: request.auth.uid,
+          recipients,
+        }),
+      }).catch((error) => console.error('Failed to trigger processManagedReportHttp:', error));
+    }
+
+    return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'pending' };
+  }
+);
+
+export const retryManagedReport = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const { outputId } = request.data || {};
+    if (!outputId) throw new HttpsError('invalid-argument', 'outputId is required');
+
+    const db = admin.firestore();
+    const outputRef = db.collection('outputs').doc(outputId);
+    const outputDoc = await outputRef.get();
+    if (!outputDoc.exists) throw new HttpsError('not-found', 'Output not found');
+
+    const output = outputDoc.data() as any;
+    const companyId = output.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    await outputRef.set({
+      status: 'pending',
+      errorMessage: null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        outputId,
+        companyId,
+        requestedBy: request.auth.uid,
+        recipients: output.recipientsPreview || [],
+      }),
+    }).catch((error) => console.error('Failed to retry managed report:', error));
+
+    return { success: true, outputId };
+  }
+);
+
+export const getAiUsageSummary = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    const access = await assertCompanyAccess(request.auth.uid, companyId);
+
+    if (!['superadmin', 'company_admin'].includes(access.role)) {
+      throw new HttpsError('permission-denied', 'Only admins can view token usage');
+    }
+
+    const db = admin.firestore();
+    const snap = await db.collection('aiCostTracking')
+      .where('companyId', '==', companyId)
+      .orderBy('createdAt', 'desc')
+      .limit(500)
+      .get();
+
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const sevenDays = 7 * oneDay;
+    const thirtyDays = 30 * oneDay;
+
+    const summary = {
+      last24h: { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalCostUSD: 0, requests: 0 },
+      last7d: { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalCostUSD: 0, requests: 0 },
+      last30d: { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalCostUSD: 0, requests: 0 },
+      recent: [] as any[],
+    };
+
+    snap.docs.forEach((doc) => {
+      const data = doc.data() as any;
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate().getTime() : now;
+      const entry = {
+        id: doc.id,
+        stage: data.stage || 'unknown',
+        provider: data.provider || 'unknown',
+        model: data.model || '',
+        totalTokens: Number(data.totalTokens || 0),
+        totalCostUSD: Number(data.totalCostUSD || 0),
+        createdAt: data.createdAt || null,
+      };
+
+      if (summary.recent.length < 20) summary.recent.push(entry);
+
+      const apply = (bucket: typeof summary.last24h) => {
+        bucket.totalTokens += Number(data.totalTokens || 0);
+        bucket.promptTokens += Number(data.promptTokens || 0);
+        bucket.completionTokens += Number(data.completionTokens || 0);
+        bucket.totalCostUSD += Number(data.totalCostUSD || 0);
+        bucket.requests += 1;
+      };
+
+      if (now - createdAt <= thirtyDays) apply(summary.last30d);
+      if (now - createdAt <= sevenDays) apply(summary.last7d);
+      if (now - createdAt <= oneDay) apply(summary.last24h);
+    });
+
+    return summary;
+  }
+);
 // getPaidSourceAccess, managePaidSourceAccess: removed (paid source access UI removed)
 // scheduledNewsCollection: removed (replaced by local PC scraper auto-scheduler)
 // ─────────────────────────────────────────
@@ -1061,6 +1372,77 @@ export const scheduledAiAnalysis = onSchedule('0 */4 * * *', async () => {
       await processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
     } catch (err: any) {
       console.error(`Scheduled AI analysis failed for company ${companyDoc.id}:`, err.message);
+    }
+  }
+});
+
+export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async () => {
+  const db = admin.firestore();
+  const now = new Date();
+  const kstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const todayKst = kstNow.toISOString().slice(0, 10);
+  const hhmm = `${`${kstNow.getHours()}`.padStart(2, '0')}:${`${kstNow.getMinutes()}`.padStart(2, '0')}`;
+
+  const groupsSnap = await db.collection('distributionGroups').where('active', '==', true).get();
+  const groups = groupsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() as any }));
+
+  for (const group of groups) {
+    try {
+      const shouldRunAuto = Boolean(group.autoEnabled)
+        && group.autoTimeKst === hhmm
+        && group.lastAutoSentOnKst !== todayKst;
+
+      const scheduledAt = group.nextReservedSendAt?.toDate
+        ? group.nextReservedSendAt.toDate()
+        : (group.nextReservedSendAt ? new Date(group.nextReservedSendAt) : null);
+      const shouldRunReserved = Boolean(scheduledAt) && scheduledAt.getTime() <= now.getTime();
+
+      if (!shouldRunAuto && !shouldRunReserved) continue;
+
+      const requestRef = db.collection('outputs').doc();
+      await requestRef.set({
+        id: requestRef.id,
+        companyId: group.companyId,
+        type: 'managed_report',
+        status: 'pending',
+        serviceMode: 'external',
+        title: group.reportTitle || `${group.name} 외부 리포트`,
+        filters: {
+          sourceIds: group.sourceIds || [],
+          keywords: group.keywords || [],
+          datePreset: group.datePreset || '24h',
+        },
+        analysisPrompt: group.prompt || '',
+        distributionGroupId: group.id,
+        distributionGroupName: group.name,
+        recipientCount: Array.isArray(group.emails) ? group.emails.length : 0,
+        recipientsPreview: Array.isArray(group.emails) ? group.emails.slice(0, 20) : [],
+        sendNow: true,
+        requestedBy: '__scheduler__',
+        attempts: 0,
+        sourceNames: group.sourceNames || [],
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          outputId: requestRef.id,
+          companyId: group.companyId,
+          requestedBy: '__scheduler__',
+          recipients: group.emails || [],
+        }),
+      }).catch((error) => console.error('Failed to trigger scheduled distribution:', error));
+
+      await db.collection('distributionGroups').doc(group.id).set({
+        lastAutoSentOnKst: shouldRunAuto ? todayKst : (group.lastAutoSentOnKst || null),
+        nextReservedSendAt: shouldRunReserved ? null : (group.nextReservedSendAt || null),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } catch (error) {
+      console.error(`scheduledDistributionDispatch failed for group ${group.id}:`, error);
     }
   }
 });
@@ -1204,16 +1586,18 @@ export const executePipelineHttp = onRequest(
       // Step 1: Collection
       await updateStep('collection', 'running');
       const collectionStart = Date.now();
-      const [rssResult, apiResult] = await Promise.all([
+      const [rssResult, apiResult, scrapingResult] = await Promise.all([
         processRssSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
         processApiSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
+        processScrapingSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
       ]);
       const totalCollected =
         (rssResult.totalCollected || 0) +
-        (apiResult.totalCollected || 0);
+        (apiResult.totalCollected || 0) +
+        (scrapingResult.totalCollected || 0);
       await updateStep('collection', 'completed', {
         duration: Date.now() - collectionStart,
-        rss: rssResult, api: apiResult, totalCollected,
+        rss: rssResult, api: apiResult, scraping: scrapingResult, totalCollected,
       });
 
       // ★ Abort 체크: Collection 후
@@ -1423,6 +1807,125 @@ export const generateReportContentHttp = onRequest(
   },
 );
 
+export const processManagedReportHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
+  async (req, res) => {
+    const { outputId, companyId, requestedBy, recipients = [] } = req.body || {};
+
+    if (!outputId || !companyId) {
+      res.status(400).json({ error: 'Missing outputId or companyId' });
+      return;
+    }
+
+    res.json({ accepted: true, outputId, status: 'processing' });
+
+    (async () => {
+      const db = admin.firestore();
+      const outputRef = db.collection('outputs').doc(outputId);
+
+      try {
+        const outputDoc = await outputRef.get();
+        if (!outputDoc.exists) {
+          throw new Error('Managed report document not found');
+        }
+
+        const output = outputDoc.data() as any;
+        await outputRef.set({
+          status: 'processing',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          startedAt: admin.firestore.FieldValue.serverTimestamp(),
+          attempts: admin.firestore.FieldValue.increment(1),
+        }, { merge: true });
+
+        let reportArticles: any[] = [];
+        if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
+          const articleDocs = await Promise.all(
+            output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
+          );
+          reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
+        } else {
+          reportArticles = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+        }
+
+        if (reportArticles.length === 0) {
+          throw new Error('No analyzed articles found for the selected window and sources');
+        }
+
+        const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
+        const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, output.analysisPrompt || '');
+        const runtime = await getCompanyRuntimeConfig(companyId);
+        const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
+
+        const result = await generateCustomReport({
+          companyId,
+          articleIds: reportArticles.map((article) => article.id),
+          keywords: output.filters?.keywords || [],
+          analysisPrompt: prompt,
+          reportTitle,
+          requestedBy: requestedBy || output.requestedBy || '__system__',
+          aiConfig: runtime.ai,
+        });
+
+        const generatedOutputRef = db.collection('outputs').doc(result.outputId);
+        const generatedOutputDoc = await generatedOutputRef.get();
+        const generatedOutput = generatedOutputDoc.data() as any;
+
+        await outputRef.set({
+          status: 'completed',
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          generatedOutputId: result.outputId,
+          articleIds: generatedOutput?.articleIds || reportArticles.map((article) => article.id),
+          articleCount: generatedOutput?.articleCount || reportArticles.length,
+          htmlContent: generatedOutput?.htmlContent || null,
+          rawOutput: generatedOutput?.rawOutput || null,
+        }, { merge: true });
+
+        if (generatedOutputDoc.exists) {
+          await generatedOutputRef.set({
+            serviceMode: output.serviceMode || 'internal',
+            distributionGroupId: output.distributionGroupId || null,
+            distributionGroupName: output.distributionGroupName || null,
+            parentRequestId: outputId,
+            scheduledAt: output.scheduledAt || null,
+          }, { merge: true });
+        }
+
+        const resolvedRecipients = Array.isArray(recipients) && recipients.length > 0
+          ? recipients
+          : (output.recipientsPreview || []);
+
+        if (output.serviceMode === 'external' && (output.sendNow || resolvedRecipients.length > 0)) {
+          const sendResult = await sendOutputEmails(
+            result.outputId,
+            resolvedRecipients,
+            {
+              subjectPrefix: '[EUM PE 외부리포트]',
+              markAsField: 'externalSentAt',
+              metadata: {
+                externalSendCount: resolvedRecipients.length,
+              },
+            }
+          );
+
+          await outputRef.set({
+            externalSentAt: admin.firestore.FieldValue.serverTimestamp(),
+            externalSendCount: sendResult.sentCount || resolvedRecipients.length,
+          }, { merge: true });
+        }
+      } catch (error: any) {
+        console.error('processManagedReportHttp error:', error);
+        await outputRef.set({
+          status: 'failed',
+          errorMessage: error.message || 'Unknown error',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          failedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true }).catch(() => {});
+      }
+    })().catch((error) => console.error('Managed report async task failed:', error));
+  }
+);
+
 // ─────────────────────────────────────────
 // [NEW] searchArticles: 기사 검색 (키워드/날짜/매체)
 // ─────────────────────────────────────────
@@ -1443,38 +1946,101 @@ export const searchArticles = onCall(
         offset: offsetNum = 0,
       } = request.data || {};
 
-      // companyId is currently not used for filtering as articles are global
       if (!request.auth.uid) throw new HttpsError('unauthenticated', 'Authentication required');
 
       const db = admin.firestore();
-      let q: admin.firestore.Query = db.collection('articles');
+      const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+      const access = await assertCompanyAccess(request.auth.uid, companyId);
+      const isSuperadmin = access.role === 'superadmin';
 
-      // Status filter
-      if (statuses && Array.isArray(statuses) && statuses.length > 0) {
-        q = q.where('status', 'in', statuses.slice(0, 10));
-      }
+      const now = new Date();
+      const defaultStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const parsedStart = startDate ? new Date(startDate) : defaultStart;
+      const parsedEnd = endDate ? new Date(endDate) : now;
+      const effectiveStart = !isNaN(parsedStart.getTime()) ? parsedStart : defaultStart;
+      const effectiveEnd = !isNaN(parsedEnd.getTime()) ? parsedEnd : now;
+      const normalizedStatuses = Array.isArray(statuses) && statuses.length > 0
+        ? [...new Set(statuses)].slice(0, 10)
+        : ['analyzed', 'published'];
+      const allowedStatuses = isSuperadmin ? normalizedStatuses : ['analyzed', 'published'];
 
-      // Date filters (collectedAt)
-      if (startDate) {
-        const start = new Date(startDate);
-        if (!isNaN(start.getTime())) {
-          q = q.where('collectedAt', '>=', start);
-        } else {
-          console.warn('searchArticles: invalid startDate', startDate);
+      let accessibleSourceIds: string[] = [];
+      let accessibleSourceNames: string[] = [];
+
+      if (!isSuperadmin) {
+        const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
+        const subscribedSourceIds: string[] = subDoc.exists
+          ? ((subDoc.data() as any).subscribedSourceIds || [])
+          : [];
+
+        if (subscribedSourceIds.length === 0) {
+          return { articles: [], total: 0, hasMore: false };
+        }
+
+        const batches: string[][] = [];
+        for (let i = 0; i < subscribedSourceIds.length; i += 30) {
+          batches.push(subscribedSourceIds.slice(i, i + 30));
+        }
+
+        const sourceDocs = (
+          await Promise.all(
+            batches.map((batch) =>
+              db.collection('globalSources')
+                .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+                .get()
+            )
+          )
+        ).flatMap((snap) => snap.docs);
+
+        const accessibleSources = sourceDocs
+          .map((doc) => ({ id: doc.id, ...(doc.data() as any) }))
+          .filter((source) => {
+            if (source.status !== 'active') return false;
+            const isPremium = source.pricingTier === 'paid' || source.pricingTier === 'requires_subscription';
+            if (!isPremium) return true;
+            return Array.isArray(source.allowedCompanyIds) && source.allowedCompanyIds.includes(companyId);
+          });
+
+        accessibleSourceIds = accessibleSources.map((source) => source.id);
+        accessibleSourceNames = accessibleSources.map((source) => source.name).filter(Boolean);
+
+        if (accessibleSourceIds.length === 0) {
+          return { articles: [], total: 0, hasMore: false };
         }
       }
-      if (endDate) {
-        const end = new Date(endDate);
-        if (!isNaN(end.getTime())) {
-          q = q.where('collectedAt', '<=', end);
-        } else {
-          console.warn('searchArticles: invalid endDate', endDate);
+
+      const requestedSourceIds = Array.isArray(sourceIds) ? sourceIds.filter(Boolean) : [];
+      const effectiveSourceIds = isSuperadmin
+        ? requestedSourceIds
+        : requestedSourceIds.length > 0
+          ? requestedSourceIds.filter((id: string) => accessibleSourceIds.includes(id))
+          : accessibleSourceIds;
+
+      let requestedSourceNames: string[] = [];
+      if (effectiveSourceIds.length > 0) {
+        const batches: string[][] = [];
+        for (let i = 0; i < effectiveSourceIds.length; i += 30) {
+          batches.push(effectiveSourceIds.slice(i, i + 30));
         }
+
+        requestedSourceNames = (
+          await Promise.all(
+            batches.map((batch) =>
+              db.collection('globalSources')
+                .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+                .get()
+                .then((snap) => snap.docs.map((doc) => (doc.data().name as string) || ''))
+            )
+          )
+        ).flat().filter(Boolean);
       }
 
-      q = q.orderBy('collectedAt', 'desc').limit(200);
-
-      const snap = await q.get();
+      const snap = await db.collection('articles')
+        .where('publishedAt', '>=', effectiveStart)
+        .where('publishedAt', '<=', effectiveEnd)
+        .orderBy('publishedAt', 'desc')
+        .limit(300)
+        .get();
       let articles = snap.docs.map(d => {
         const data = d.data() as any;
         return {
@@ -1494,38 +2060,28 @@ export const searchArticles = onCall(
           companyId: data.companyId,
         };
       });
+      articles = articles.filter((article) => allowedStatuses.includes(article.status));
 
-      // Source filter (memory) — resolve source names and support direct source name matching
-      if (sourceIds && Array.isArray(sourceIds) && sourceIds.length > 0) {
-        // Try to resolve source names from globalSources
-        let sourceNames: string[] = [];
-        const nameBatches: string[][] = [];
-        for (let i = 0; i < sourceIds.length; i += 30) nameBatches.push(sourceIds.slice(i, i + 30));
-        try {
-          const nameResults = await Promise.all(
-            nameBatches.map(batch =>
-              db.collection('globalSources')
-                .where(admin.firestore.FieldPath.documentId(), 'in', batch)
-                .get()
-                .then(snap => snap.docs.map(d => (d.data().name as string) || ''))
-            )
-          );
-          sourceNames = nameResults.flat().filter(Boolean);
-        } catch (err) {
-          console.warn('Failed to resolve source names from globalSources:', err);
-        }
+      const sourceIdPool = new Set(effectiveSourceIds);
+      const sourceNamePool = new Set(requestedSourceNames);
+      const accessibleNamePool = new Set(accessibleSourceNames);
 
-        // Filter: match by globalSourceId, source ID, source name (direct), or resolved names
-        articles = articles.filter(a => {
-          // 1. Direct ID match (globalSourceId)
-          if (a.sourceId && sourceIds.includes(a.sourceId)) return true;
-          // 2. Source ID as string (for "thebell", "marketinsight", etc.)
-          if (sourceIds.includes(a.source)) return true;
-          // 3. Resolved source names from globalSources
-          if (sourceNames.includes(a.source)) return true;
-          // 4. Direct source name match (for "더벨", "마켓인사이트", etc.)
-          if (sourceIds.includes(a.source)) return true;
-          return false;
+      if (isSuperadmin && effectiveSourceIds.length > 0) {
+        articles = articles.filter((article) =>
+          (article.sourceId && sourceIdPool.has(article.sourceId)) ||
+          sourceIdPool.has(article.source) ||
+          sourceNamePool.has(article.source)
+        );
+      }
+
+      if (!isSuperadmin) {
+        articles = articles.filter((article) => {
+          const isAccessible = (article.sourceId && accessibleSourceIds.includes(article.sourceId))
+            || accessibleNamePool.has(article.source);
+          if (!isAccessible) return false;
+          return (article.sourceId && sourceIdPool.has(article.sourceId))
+            || sourceIdPool.has(article.source)
+            || sourceNamePool.has(article.source);
         });
       }
 
@@ -1547,7 +2103,13 @@ export const searchArticles = onCall(
       const total = articles.length;
       const paged = articles.slice(offsetNum, offsetNum + limitNum);
 
-      return { articles: paged, total, hasMore: offsetNum + limitNum < total };
+      return {
+        articles: paged,
+        total,
+        hasMore: offsetNum + limitNum < total,
+        startDate: effectiveStart.toISOString(),
+        endDate: effectiveEnd.toISOString(),
+      };
     } catch (err: any) {
       console.error('searchArticles error:', err);
       if (err instanceof HttpsError) throw err;

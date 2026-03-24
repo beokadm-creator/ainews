@@ -165,6 +165,18 @@ export async function generateEmailHtml(output: any, articles: any[]) {
 }
 
 export async function sendBriefingEmails(outputId: string) {
+  return sendOutputEmails(outputId);
+}
+
+export async function sendOutputEmails(
+  outputId: string,
+  explicitRecipients?: string[],
+  options?: {
+    subjectPrefix?: string;
+    markAsField?: string;
+    metadata?: Record<string, any>;
+  }
+) {
   const db = admin.firestore();
 
   try {
@@ -182,10 +194,18 @@ export async function sendBriefingEmails(outputId: string) {
     }
     const output = outputDoc.data()!;
 
-    const articlesSnapshot = await db.collection('articles')
-      .where('publishedInOutputId', '==', outputId)
-      .get();
-    const articles = articlesSnapshot.docs.map(doc => doc.data());
+    let articles: any[] = [];
+    if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
+      const articleDocs = await Promise.all(
+        output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
+      );
+      articles = articleDocs.filter((doc) => doc.exists).map((doc) => doc.data());
+    } else {
+      const articlesSnapshot = await db.collection('articles')
+        .where('publishedInOutputId', '==', outputId)
+        .get();
+      articles = articlesSnapshot.docs.map(doc => doc.data());
+    }
 
     const html = await generateEmailHtml(output, articles);
 
@@ -205,6 +225,10 @@ export async function sendBriefingEmails(outputId: string) {
       subscriberEmails = subscribersSnapshot.docs.map(doc => doc.data().email).filter(Boolean);
     }
 
+    if (Array.isArray(explicitRecipients) && explicitRecipients.length > 0) {
+      subscriberEmails = explicitRecipients.filter(Boolean);
+    }
+
     if (subscriberEmails.length === 0) {
       console.log('No active subscribers found.');
       return { success: true, sentCount: 0, message: 'No subscribers configured' };
@@ -213,15 +237,17 @@ export async function sendBriefingEmails(outputId: string) {
     const info = await retryWithBackoff(() => transporter.sendMail({
       from: config.from,
       bcc: subscriberEmails,
-      subject: `[EUM PE] AI News Report (${resolveOutputDate(output)})`,
+      subject: `${options?.subjectPrefix || '[EUM PE]'} ${output.title || 'AI News Report'} (${resolveOutputDate(output)})`,
       html,
     }));
 
-    await outputDoc.ref.update({
+    const markField = options?.markAsField || 'emailSentAt';
+    await outputDoc.ref.set({
       emailSent: true,
-      emailSentAt: admin.firestore.FieldValue.serverTimestamp(),
       emailSuccessCount: subscriberEmails.length,
-    });
+      [markField]: admin.firestore.FieldValue.serverTimestamp(),
+      ...(options?.metadata || {}),
+    }, { merge: true });
 
     return { success: true, sentCount: subscriberEmails.length, messageId: info.messageId };
   } catch (error) {

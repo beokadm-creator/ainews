@@ -16,7 +16,7 @@ import {
   BookOpen,
   ShieldCheck,
   Database,
-  TrendingUp
+  Send,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -27,10 +27,14 @@ interface LayoutProps {
 
 function getRoleLabel(role?: string) {
   switch (role) {
-    case 'superadmin': return 'Superadmin';
-    case 'company_admin': return 'Company Admin';
-    case 'company_editor': return 'Company Editor';
-    default: return 'Viewer';
+    case 'superadmin':
+      return 'Superadmin';
+    case 'company_admin':
+      return 'Company Admin';
+    case 'company_editor':
+      return 'Company Editor';
+    default:
+      return 'Viewer';
   }
 }
 
@@ -42,30 +46,26 @@ export default function Layout({ children }: LayoutProps) {
 
   const role = (user as any)?.role;
   const isSuperadmin = role === 'superadmin';
-  const isAdminOrAbove = role === 'company_admin' || role === 'superadmin';
+  const isAdminOrAbove = role === 'company_admin' || role === 'company_editor' || role === 'superadmin';
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
   }, [theme]);
 
-  // ─────────────────────────────────────────
-  // Navigation: role-aware (company + superadmin)
-  // ─────────────────────────────────────────
   const navigation = [
-    { name: '대시보드', href: '/', icon: LayoutDashboard, show: true },
-    { name: '실행 이력', href: '/history', icon: History, show: isAdminOrAbove },
-    { name: '분석 결과', href: '/briefing', icon: BookOpen, show: true },
-    { name: '수동 입력', href: '/manual-entry', icon: Newspaper, show: isAdminOrAbove },
-    { name: '매체 구독', href: '/media', icon: Library, show: isAdminOrAbove },
-    { name: '팀 관리', href: '/team', icon: Users, show: role === 'company_admin' },
-    { name: '설정', href: '/settings', icon: Settings, show: isAdminOrAbove },
-
-    // ──── Superadmin only section ────
+    { name: '대시보드', href: '/home', icon: LayoutDashboard, show: true },
+    { name: '기사 검색', href: '/articles', icon: Search, show: true },
+    { name: '내부 리포트', href: '/briefing', icon: BookOpen, show: true },
+    { name: '리포트 이력', href: '/history', icon: History, show: isAdminOrAbove },
+    { name: '수동 기사 등록', href: '/manual-entry', icon: Newspaper, show: isAdminOrAbove },
+    { name: '외부 메일링', href: '/delivery', icon: Send, show: role === 'company_admin' },
+    { name: '매체 구독', href: '/media', icon: Library, show: role === 'company_admin' },
+    { name: '사용자 관리', href: '/team', icon: Users, show: role === 'company_admin' },
+    { name: '회사 설정', href: '/settings', icon: Settings, show: role === 'company_admin' },
     { name: '관리 도구', href: '#', icon: ShieldCheck, show: isSuperadmin },
-    { name: '매체 관리', href: '/admin/media', icon: Database, show: isSuperadmin },
-    { name: '사용자 관리', href: '/admin/management', icon: Users, show: isSuperadmin },
-    { name: '스크래핑 규칙', href: '/admin/scraping', icon: TrendingUp, show: isSuperadmin },
+    { name: '매체 마스터', href: '/admin/sources', icon: Database, show: isSuperadmin },
+    { name: '회사 관리', href: '/admin/companies', icon: Users, show: isSuperadmin },
   ];
 
   const handleLogout = async () => {
@@ -73,7 +73,10 @@ export default function Layout({ children }: LayoutProps) {
   };
 
   const NavLink = ({ item }: { item: typeof navigation[0] }) => {
-    const isActive = location.pathname === item.href;
+    const isActive = item.href === '/home'
+      ? location.pathname === '/home' || location.pathname === '/'
+      : location.pathname === item.href;
+
     return (
       <Link
         key={item.name}
@@ -92,13 +95,18 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div
+          className="fixed inset-0 bg-gray-600 bg-opacity-75 z-20 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
       )}
 
-      {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-30 w-64 bg-[#1e3a5f] dark:bg-gray-950 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <div
+        className={`fixed inset-y-0 left-0 z-30 w-64 bg-[#1e3a5f] dark:bg-gray-950 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <div className="flex flex-col h-full">
-          {/* Logo */}
           <div className="flex items-center justify-between h-16 px-6 border-b border-white/10 flex-shrink-0">
             <div className="flex items-center">
               <div className="w-8 h-8 bg-[#d4af37] rounded flex items-center justify-center mr-3">
@@ -111,13 +119,12 @@ export default function Layout({ children }: LayoutProps) {
             </button>
           </div>
 
-          {/* Navigation */}
           <nav className="flex-1 px-4 py-5 space-y-1 overflow-y-auto">
-            {navigation.filter(i => i.show).map(item => <NavLink key={item.name} item={item} />)}
+            {navigation.filter((item) => item.show).map((item) => (
+              <NavLink key={item.name} item={item} />
+            ))}
+          </nav>
 
-            </nav>
-
-          {/* User info */}
           <div className="p-4 border-t border-white/10 flex-shrink-0">
             <div className="flex items-center mb-3">
               <div className="w-8 h-8 bg-[#d4af37] rounded-full flex items-center justify-center mr-3 flex-shrink-0">
@@ -139,11 +146,12 @@ export default function Layout({ children }: LayoutProps) {
         </div>
       </div>
 
-      {/* Main content */}
       <div className="lg:pl-64">
-        {/* Top bar */}
         <div className="sticky top-0 z-10 h-16 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 lg:px-8 transition-colors duration-200">
-          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="lg:hidden text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          >
             <Menu className="w-6 h-6" />
           </button>
           <div className="flex-1" />
@@ -156,9 +164,7 @@ export default function Layout({ children }: LayoutProps) {
           </button>
         </div>
 
-        <main className="p-4 lg:p-8">
-          {children}
-        </main>
+        <main className="p-4 lg:p-8">{children}</main>
       </div>
     </div>
   );
