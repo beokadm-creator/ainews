@@ -1,6 +1,7 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
+import { logger } from 'firebase-functions';
 
 setGlobalOptions({
   region: 'us-central1',
@@ -145,6 +146,33 @@ function articleMatchesSourcePool(article: any, allowedPool: Set<string>) {
     if (allowedPool.has(key)) return true;
   }
   return false;
+}
+
+async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: string) {
+  let totalFiltered = 0;
+  let totalAnalyzed = 0;
+  const maxRounds = 20;
+
+  for (let round = 0; round < maxRounds; round++) {
+    const filterResult = await processRelevanceFiltering({
+      companyId,
+      aiConfig,
+    });
+
+    const analysisResult = await processDeepAnalysis({
+      companyId,
+      aiConfig,
+    });
+
+    totalFiltered += Number(filterResult?.processed || 0);
+    totalAnalyzed += Number(analysisResult?.processed || 0);
+
+    if ((filterResult?.processed || 0) === 0 && (analysisResult?.processed || 0) === 0) {
+      break;
+    }
+  }
+
+  return { totalFiltered, totalAnalyzed };
 }
 
 async function loadAccessibleArticlesForManagedReport(
@@ -1257,20 +1285,8 @@ export const runAiOnlyHttp = onRequest(
       const aiConfig = sys.aiConfig;
       const companyId = sys.companyId;
       console.log(`[AI-Only] Starting: provider=${aiConfig.provider}, model=${aiConfig.model}, companyId=${companyId}`);
-
-      const filterResult = await processRelevanceFiltering({ aiConfig, companyId, abortChecker });
-      const totalFiltered = (filterResult as any).processed || 0;
-      console.log(`[AI-Only] Filter done: processed=${totalFiltered}, passed=${(filterResult as any).passed || 0}`);
-
-      if (await abortChecker()) {
-        console.log('[AI-Only] Abort requested after filter step.');
-        await controlRef.set({ aiOnlyRunning: false, aiOnlyLastResult: { totalFiltered, totalAnalyzed: 0 } }, { merge: true });
-        return;
-      }
-
-      const analysisResult = await processDeepAnalysis({ aiConfig, companyId, abortChecker });
-      const totalAnalyzed = (analysisResult as any).processed || 0;
-      console.log(`[AI-Only] Analysis done: analyzed=${totalAnalyzed}`);
+      const { totalFiltered, totalAnalyzed } = await drainAiAnalysisQueue(aiConfig, companyId);
+      console.log(`[AI-Only] Queue drained: filtered=${totalFiltered}, analyzed=${totalAnalyzed}`);
 
       await controlRef.set({ lastAiOnlyAt: admin.firestore.FieldValue.serverTimestamp(), aiOnlyLastResult: { totalFiltered, totalAnalyzed } }, { merge: true });
     } catch (err: any) {
@@ -1646,16 +1662,12 @@ export const getAiUsageSummary = onCall(
 // Scheduled: AI Analysis (every 4 hours)
 // ─────────────────────────────────────────
 export const scheduledAiAnalysis = onSchedule('0 */4 * * *', async () => {
-  const db = admin.firestore();
-  const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
-  for (const companyDoc of companiesSnapshot.docs) {
-    try {
-      const runtime = await getCompanyRuntimeConfig(companyDoc.id);
-      await processRelevanceFiltering({ companyId: runtime.companyId, aiConfig: runtime.ai, filters: runtime.filters });
-      await processDeepAnalysis({ companyId: runtime.companyId, aiConfig: runtime.ai });
-    } catch (err: any) {
-      console.error(`Scheduled AI analysis failed for company ${companyDoc.id}:`, err.message);
-    }
+  try {
+    const { aiConfig, companyId } = await getSystemAiConfig();
+    const result = await drainAiAnalysisQueue(aiConfig, companyId);
+    logger.info('scheduledAiAnalysis completed', result);
+  } catch (err: any) {
+    console.error('Scheduled AI analysis failed:', err.message);
   }
 });
 
@@ -2318,13 +2330,7 @@ export const searchArticles = onCall(
         buildSourceIdentityPool(source).forEach((key) => effectiveSourcePool.add(key));
       });
 
-      const snap = await db.collection('articles')
-        .where('publishedAt', '>=', effectiveStart)
-        .where('publishedAt', '<=', effectiveEnd)
-        .orderBy('publishedAt', 'desc')
-        .limit(300)
-        .get();
-      let articles = snap.docs.map(d => {
+      const normalizeArticle = (d: FirebaseFirestore.QueryDocumentSnapshot) => {
         const data = d.data() as any;
         return {
           id: d.id,
@@ -2344,37 +2350,68 @@ export const searchArticles = onCall(
           url: data.url || '',
           companyId: data.companyId,
         };
-      });
-      articles = articles.filter((article) => allowedStatuses.includes(article.status));
+      };
 
-      if (isSuperadmin && effectiveSourcePool.size > 0) {
-        articles = articles.filter((article) => articleMatchesSourcePool(article, effectiveSourcePool));
-      }
+      const matchesSourceAccess = (article: any) => {
+        if (isSuperadmin) {
+          return effectiveSourcePool.size === 0 || articleMatchesSourcePool(article, effectiveSourcePool);
+        }
 
-      if (!isSuperadmin) {
-        articles = articles.filter((article) => {
-          if (!articleMatchesSourcePool(article, accessibleSourcePool)) return false;
-          return articleMatchesSourcePool(article, effectiveSourcePool);
-        });
-      }
+        if (!articleMatchesSourcePool(article, accessibleSourcePool)) return false;
+        return articleMatchesSourcePool(article, effectiveSourcePool);
+      };
 
-      // Keyword filter (memory)
-      if (keywords && Array.isArray(keywords) && keywords.length > 0) {
+      const matchesKeyword = (article: any) => {
+        if (!keywords || !Array.isArray(keywords) || keywords.length === 0) return true;
         const kwLower = (keywords as string[]).map((k: string) => k.toLowerCase());
-        articles = articles.filter(article => {
-          const text = [
-            article.title,
-            article.content,
-            ...(article.summary || []),
-            ...(article.tags || []),
-          ].join(' ').toLowerCase();
-          return kwLower.some(kw => text.includes(kw));
-        });
+        const text = [
+          article.title,
+          article.content,
+          ...(article.summary || []),
+          ...(article.tags || []),
+        ].join(' ').toLowerCase();
+        return kwLower.some((kw) => text.includes(kw));
+      };
+
+      const matchedArticles: any[] = [];
+      const scanBatchSize = 400;
+      const maxScan = 2400;
+      const requiredMatches = Number(offsetNum || 0) + Number(limitNum || 50) + 50;
+      let scanned = 0;
+      let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+
+      while (scanned < maxScan) {
+        let articleQuery: FirebaseFirestore.Query = db.collection('articles')
+          .where('publishedAt', '>=', effectiveStart)
+          .where('publishedAt', '<=', effectiveEnd)
+          .orderBy('publishedAt', 'desc')
+          .limit(scanBatchSize);
+
+        if (lastDoc) {
+          articleQuery = articleQuery.startAfter(lastDoc);
+        }
+
+        const snap = await articleQuery.get();
+        if (snap.empty) break;
+
+        scanned += snap.size;
+        lastDoc = snap.docs[snap.docs.length - 1];
+
+        matchedArticles.push(
+          ...snap.docs
+            .map(normalizeArticle)
+            .filter((article) => allowedStatuses.includes(article.status))
+            .filter(matchesSourceAccess)
+            .filter(matchesKeyword)
+        );
+
+        if (matchedArticles.length >= requiredMatches || snap.size < scanBatchSize) {
+          break;
+        }
       }
 
-      // Pagination
-      const total = articles.length;
-      const paged = articles.slice(offsetNum, offsetNum + limitNum);
+      const total = matchedArticles.length;
+      const paged = matchedArticles.slice(offsetNum, offsetNum + limitNum);
 
       return {
         articles: paged,
