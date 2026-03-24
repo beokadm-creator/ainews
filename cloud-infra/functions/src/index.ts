@@ -20,6 +20,7 @@ import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
+import { purgeRejectedArticlesPreservingDedupe } from './services/articleDedupService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
@@ -85,11 +86,34 @@ function getPresetWindowHours(datePreset?: ManagedReportFilters['datePreset']) {
   }
 }
 
+function parseKstDateInput(value?: string | null, fallback?: Date) {
+  if (!value) return fallback || null;
+
+  const raw = `${value}`.trim();
+  if (!raw) return fallback || null;
+
+  let parsed: Date | null = null;
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(raw)) {
+    parsed = new Date(`${raw}:00+09:00`);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    parsed = new Date(`${raw}T00:00:00+09:00`);
+  } else {
+    parsed = new Date(raw);
+  }
+
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    return fallback || null;
+  }
+
+  return parsed;
+}
+
 function getManagedReportWindow(filters?: ManagedReportFilters) {
   const now = new Date();
   const fallbackStart = new Date(now.getTime() - getPresetWindowHours(filters?.datePreset) * 60 * 60 * 1000);
-  const parsedStart = filters?.startDate ? new Date(filters.startDate) : fallbackStart;
-  const parsedEnd = filters?.endDate ? new Date(filters.endDate) : now;
+  const parsedStart = parseKstDateInput(filters?.startDate, fallbackStart) || fallbackStart;
+  const parsedEnd = parseKstDateInput(filters?.endDate, now) || now;
 
   return {
     startDate: Number.isNaN(parsedStart.getTime()) ? fallbackStart : parsedStart,
@@ -111,6 +135,11 @@ function getSourceIdentityAliases(value?: string) {
 
   aliases.add(normalized);
 
+  if (normalized === '3syjizr4ih9bluozttba') {
+    aliases.add('thebell');
+    aliases.add('더벨');
+  }
+
   if (normalized.includes('thebell') || normalized.includes('더벨')) {
     aliases.add('thebell');
     aliases.add('더벨');
@@ -119,6 +148,11 @@ function getSourceIdentityAliases(value?: string) {
   if (normalized.includes('marketinsight') || normalized.includes('마켓인사이트')) {
     aliases.add('marketinsight');
     aliases.add('마켓인사이트');
+  }
+
+  if (normalized.includes('navernews') || normalized.includes('네이버뉴스')) {
+    aliases.add('navernews');
+    aliases.add('네이버뉴스');
   }
 
   return aliases;
@@ -289,6 +323,21 @@ ${basePrompt || ''}`.trim();
 
 function getFunctionsBaseUrl() {
   return 'https://us-central1-eumnews-9a99c.cloudfunctions.net';
+}
+
+function triggerManagedReportProcessing(payload: {
+  outputId: string;
+  companyId: string;
+  requestedBy?: string;
+  recipients?: string[];
+}) {
+  fetch(`${getFunctionsBaseUrl()}/processManagedReportHttp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.error('Failed to trigger processManagedReportHttp:', error);
+  });
 }
 
 interface ManagedReportExecutionOptions {
@@ -1350,6 +1399,265 @@ export const diagnosticHttp = onRequest(
           res.json({ success: true, message: `Marked ${count} stale jobs as aborted` });
           return;
         }
+        if (action === 'cleanupTheBell') {
+          const normalize = (value: any) => `${value || ''}`.toLowerCase().replace(/[\s_()-]+/g, '');
+          const isTheBell = (payload: any) => {
+            const candidates = [
+              payload?.sourceId,
+              payload?.globalSourceId,
+              payload?.source,
+              payload?.url,
+              payload?.normalizedUrl,
+              payload?.title,
+            ].map(normalize);
+            return candidates.some((value) =>
+              value.includes('thebell') ||
+              value.includes('더벨') ||
+              value.includes('3syjizr4ih9bluozttba')
+            );
+          };
+
+          const [articleSnap, dedupSnap] = await Promise.all([
+            db.collection('articles').get(),
+            db.collection('articleDedup').get(),
+          ]);
+
+          const articleMap = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+          const dedupMap = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+          articleSnap.docs.forEach((doc) => {
+            if (isTheBell(doc.data())) articleMap.set(doc.id, doc);
+          });
+          dedupSnap.docs.forEach((doc) => {
+            if (isTheBell(doc.data())) dedupMap.set(doc.id, doc);
+          });
+
+          const deleteBatchDocs = async (docs: FirebaseFirestore.QueryDocumentSnapshot[]) => {
+            let deleted = 0;
+            for (let i = 0; i < docs.length; i += 400) {
+              const batch = db.batch();
+              docs.slice(i, i + 400).forEach((doc) => batch.delete(doc.ref));
+              await batch.commit();
+              deleted += Math.min(400, docs.length - i);
+            }
+            return deleted;
+          };
+
+          const deletedArticles = await deleteBatchDocs([...articleMap.values()]);
+          const deletedDedup = await deleteBatchDocs([...dedupMap.values()]);
+
+          res.json({
+            success: true,
+            action,
+            deletedArticles,
+            deletedDedup,
+          });
+          return;
+        }
+        if (action === 'inspectApiSources') {
+          const apiSnap = await db.collection('globalSources')
+            .where('type', '==', 'api')
+            .get();
+          const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
+          const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+
+          res.json({
+            success: true,
+            action,
+            naverConfig: {
+              hasClientId: !!cfg.clientId,
+              hasClientSecret: !!cfg.clientSecret,
+              clientIdPreview: cfg.clientId ? `${String(cfg.clientId).slice(0, 4)}...` : null,
+            },
+            apiSources: apiSnap.docs.map((doc) => {
+              const data = doc.data() as any;
+              return {
+                id: doc.id,
+                name: data.name || null,
+                status: data.status || null,
+                type: data.type || null,
+                apiType: data.apiType || null,
+                url: data.url || null,
+                apiEndpoint: data.apiEndpoint || null,
+                defaultKeywords: Array.isArray(data.defaultKeywords) ? data.defaultKeywords : [],
+                lastStatus: data.lastStatus || null,
+                lastTestResult: data.lastTestResult || null,
+              };
+            }),
+          });
+          return;
+        }
+        if (action === 'testNaverApi') {
+          const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
+          const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+          const apiSnap = await db.collection('globalSources')
+            .where('type', '==', 'api')
+            .get();
+
+          const sources = apiSnap.docs
+            .map((doc) => ({ id: doc.id, ...(doc.data() as any) }))
+            .filter((source: any) => source.apiType === 'naver');
+
+          if (!cfg.clientId || !cfg.clientSecret) {
+            res.json({
+              success: false,
+              action,
+              error: 'Naver API credentials are missing',
+              sourceCount: sources.length,
+            });
+            return;
+          }
+
+          const results = await Promise.all(sources.map(async (source: any) => {
+            const keyword = (Array.isArray(source.defaultKeywords) && source.defaultKeywords.length > 0)
+              ? source.defaultKeywords[0]
+              : 'M&A';
+            try {
+              const resp = await axios.get('https://openapi.naver.com/v1/search/news.json', {
+                headers: {
+                  'X-Naver-Client-Id': cfg.clientId,
+                  'X-Naver-Client-Secret': cfg.clientSecret,
+                },
+                params: { query: keyword, display: 10, start: 1, sort: 'date' },
+                timeout: 10000,
+              });
+              const items = Array.isArray(resp.data?.items) ? resp.data.items : [];
+              return {
+                id: source.id,
+                name: source.name || null,
+                status: source.status || null,
+                keyword,
+                total: resp.data?.total ?? null,
+                returnedItems: items.length,
+                linksPresent: items.filter((item: any) => item.originallink || item.link).length,
+                sampleTitles: items.slice(0, 3).map((item: any) => `${item.title || ''}`.replace(/<\/?b>/gi, '')),
+              };
+            } catch (error: any) {
+              return {
+                id: source.id,
+                name: source.name || null,
+                status: source.status || null,
+                keyword,
+                error: error.message || 'Unknown error',
+                responseStatus: error.response?.status || null,
+                responseData: error.response?.data || null,
+              };
+            }
+          }));
+
+          res.json({
+            success: true,
+            action,
+            naverConfig: {
+              hasClientId: !!cfg.clientId,
+              hasClientSecret: !!cfg.clientSecret,
+            },
+            results,
+          });
+          return;
+        }
+        if (action === 'runApiCollection') {
+          const result = await processApiSources();
+          const since = new Date(Date.now() - 30 * 60 * 1000);
+          const recentSnap = await db.collection('articles')
+            .where('collectedAt', '>=', admin.firestore.Timestamp.fromDate(since))
+            .orderBy('collectedAt', 'desc')
+            .limit(100)
+            .get();
+
+          const bySource: Record<string, number> = {};
+          recentSnap.docs.forEach((doc) => {
+            const data = doc.data() as any;
+            const source = data.source || 'unknown';
+            bySource[source] = (bySource[source] || 0) + 1;
+          });
+
+          res.json({
+            success: true,
+            action,
+            result,
+            recentCollectedBySource: bySource,
+          });
+          return;
+        }
+        if (action === 'countNaverArticles') {
+          const statuses = ['pending', 'filtered', 'analyzed', 'published'];
+          const sourceNames = ['네이버 뉴스', '네이버 뉴스 (M&A/투자)'];
+          const sourceCounts: Record<string, Record<string, number>> = {};
+
+          for (const sourceName of sourceNames) {
+            sourceCounts[sourceName] = {};
+            for (const status of statuses) {
+              const snap = await db.collection('articles')
+                .where('source', '==', sourceName)
+                .where('status', '==', status)
+                .count()
+                .get();
+              sourceCounts[sourceName][status] = snap.data().count || 0;
+            }
+          }
+
+          res.json({
+            success: true,
+            action,
+            sourceCounts,
+          });
+          return;
+        }
+        if (action === 'normalizeNaverSources') {
+          const canonicalId = 'qp7aZkqLLDGqRAqscpYK';
+          const legacyId = 'XTu0io8BExlACzgBUemZ';
+          const canonicalName = '네이버 뉴스 (M&A/투자)';
+
+          const [legacyArticles, legacyDedup] = await Promise.all([
+            db.collection('articles').where('sourceId', '==', legacyId).get(),
+            db.collection('articleDedup').where('sourceId', '==', legacyId).get(),
+          ]);
+
+          const updateDocs = async (
+            docs: FirebaseFirestore.QueryDocumentSnapshot[],
+            updates: Record<string, any>,
+          ) => {
+            let updated = 0;
+            for (let i = 0; i < docs.length; i += 400) {
+              const batch = db.batch();
+              const chunk = docs.slice(i, i + 400);
+              chunk.forEach((doc) => batch.set(doc.ref, updates, { merge: true }));
+              await batch.commit();
+              updated += chunk.length;
+            }
+            return updated;
+          };
+
+          const [updatedArticles, updatedDedup] = await Promise.all([
+            updateDocs(legacyArticles.docs, {
+              sourceId: canonicalId,
+              globalSourceId: canonicalId,
+              source: canonicalName,
+            }),
+            updateDocs(legacyDedup.docs, {
+              sourceId: canonicalId,
+              globalSourceId: canonicalId,
+              source: canonicalName,
+            }),
+          ]);
+
+          await db.collection('globalSources').doc(legacyId).set({
+            status: 'inactive',
+            notes: 'Inactive placeholder source. Consolidated into 네이버 뉴스 (M&A/투자).',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastStatus: 'inactive',
+          }, { merge: true });
+
+          res.json({
+            success: true,
+            action,
+            canonicalId,
+            legacyId,
+            updatedArticles,
+            updatedDedup,
+          });
+          return;
+        }
       }
       // 1. AI config
       const aiDoc = await db.collection('systemSettings').doc('aiConfig').get();
@@ -1528,26 +1836,15 @@ export const requestManagedReport = onCall(
     });
 
     if (!scheduledAt) {
-      try {
-        await executeManagedReport({
-          outputId: outputRef.id,
-          companyId,
-          requestedBy: request.auth.uid,
-          recipients,
-        });
-      } catch (error: any) {
-        console.error('requestManagedReport execution failed:', error);
-        await outputRef.set({
-          status: 'failed',
-          errorMessage: error.message || 'Unknown error',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          failedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        throw new HttpsError('internal', error.message || 'Managed report generation failed');
-      }
+      triggerManagedReportProcessing({
+        outputId: outputRef.id,
+        companyId,
+        requestedBy: request.auth.uid,
+        recipients,
+      });
     }
 
-    return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'completed' };
+    return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'pending' };
   }
 );
 
@@ -1573,25 +1870,14 @@ export const retryManagedReport = onCall(
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    try {
-      await executeManagedReport({
-        outputId,
-        companyId,
-        requestedBy: request.auth.uid,
-        recipients: output.recipientsPreview || [],
-      });
-    } catch (error: any) {
-      console.error('retryManagedReport failed:', error);
-      await outputRef.set({
-        status: 'failed',
-        errorMessage: error.message || 'Unknown error',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        failedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      throw new HttpsError('internal', error.message || 'Managed report retry failed');
-    }
+    triggerManagedReportProcessing({
+      outputId,
+      companyId,
+      requestedBy: request.auth.uid,
+      recipients: output.recipientsPreview || [],
+    });
 
-    return { success: true, outputId };
+    return { success: true, outputId, status: 'pending' };
   }
 );
 
@@ -1606,18 +1892,6 @@ export const getAiUsageSummary = onCall(
       throw new HttpsError('permission-denied', 'Only admins can view token usage');
     }
 
-    const db = admin.firestore();
-    const snap = await db.collection('aiCostTracking')
-      .where('companyId', '==', companyId)
-      .orderBy('createdAt', 'desc')
-      .limit(500)
-      .get();
-
-    const now = Date.now();
-    const oneDay = 24 * 60 * 60 * 1000;
-    const sevenDays = 7 * oneDay;
-    const thirtyDays = 30 * oneDay;
-
     const summary = {
       last24h: { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalCostUSD: 0, requests: 0 },
       last7d: { totalTokens: 0, promptTokens: 0, completionTokens: 0, totalCostUSD: 0, requests: 0 },
@@ -1625,33 +1899,49 @@ export const getAiUsageSummary = onCall(
       recent: [] as any[],
     };
 
-    snap.docs.forEach((doc) => {
-      const data = doc.data() as any;
-      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate().getTime() : now;
-      const entry = {
-        id: doc.id,
-        stage: data.stage || 'unknown',
-        provider: data.provider || 'unknown',
-        model: data.model || '',
-        totalTokens: Number(data.totalTokens || 0),
-        totalCostUSD: Number(data.totalCostUSD || 0),
-        createdAt: data.createdAt || null,
-      };
+    try {
+      const db = admin.firestore();
+      const snap = await db.collection('aiCostTracking')
+        .where('companyId', '==', companyId)
+        .orderBy('createdAt', 'desc')
+        .limit(500)
+        .get();
 
-      if (summary.recent.length < 20) summary.recent.push(entry);
+      const now = Date.now();
+      const oneDay = 24 * 60 * 60 * 1000;
+      const sevenDays = 7 * oneDay;
+      const thirtyDays = 30 * oneDay;
 
-      const apply = (bucket: typeof summary.last24h) => {
-        bucket.totalTokens += Number(data.totalTokens || 0);
-        bucket.promptTokens += Number(data.promptTokens || 0);
-        bucket.completionTokens += Number(data.completionTokens || 0);
-        bucket.totalCostUSD += Number(data.totalCostUSD || 0);
-        bucket.requests += 1;
-      };
+      snap.docs.forEach((doc) => {
+        const data = doc.data() as any;
+        const createdAt = data.createdAt?.toDate ? data.createdAt.toDate().getTime() : now;
+        const entry = {
+          id: doc.id,
+          stage: data.stage || 'unknown',
+          provider: data.provider || 'unknown',
+          model: data.model || '',
+          totalTokens: Number(data.totalTokens || 0),
+          totalCostUSD: Number(data.totalCostUSD || 0),
+          createdAt: data.createdAt || null,
+        };
 
-      if (now - createdAt <= thirtyDays) apply(summary.last30d);
-      if (now - createdAt <= sevenDays) apply(summary.last7d);
-      if (now - createdAt <= oneDay) apply(summary.last24h);
-    });
+        if (summary.recent.length < 20) summary.recent.push(entry);
+
+        const apply = (bucket: typeof summary.last24h) => {
+          bucket.totalTokens += Number(data.totalTokens || 0);
+          bucket.promptTokens += Number(data.promptTokens || 0);
+          bucket.completionTokens += Number(data.completionTokens || 0);
+          bucket.totalCostUSD += Number(data.totalCostUSD || 0);
+          bucket.requests += 1;
+        };
+
+        if (now - createdAt <= thirtyDays) apply(summary.last30d);
+        if (now - createdAt <= sevenDays) apply(summary.last7d);
+        if (now - createdAt <= oneDay) apply(summary.last24h);
+      });
+    } catch (error: any) {
+      logger.error('getAiUsageSummary failed, returning empty summary', error);
+    }
 
     return summary;
   }
@@ -2239,8 +2529,8 @@ export const searchArticles = onCall(
 
       const now = new Date();
       const defaultStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const parsedStart = startDate ? new Date(startDate) : defaultStart;
-      const parsedEnd = endDate ? new Date(endDate) : now;
+      const parsedStart = parseKstDateInput(startDate, defaultStart) || defaultStart;
+      const parsedEnd = parseKstDateInput(endDate, now) || now;
       const effectiveStart = !isNaN(parsedStart.getTime()) ? parsedStart : defaultStart;
       const effectiveEnd = !isNaN(parsedEnd.getTime()) ? parsedEnd : now;
       const normalizedStatuses = Array.isArray(statuses) && statuses.length > 0
@@ -2374,9 +2664,10 @@ export const searchArticles = onCall(
       };
 
       const matchedArticles: any[] = [];
-      const scanBatchSize = 400;
-      const maxScan = 2400;
-      const requiredMatches = Number(offsetNum || 0) + Number(limitNum || 50) + 50;
+      const scanBatchSize = 500;
+      const maxScan = 10000;
+      const safeLimit = Math.min(Number(limitNum || 50), 500);
+      const requiredMatches = Number(offsetNum || 0) + safeLimit + 100;
       let scanned = 0;
       let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
 
@@ -2411,14 +2702,15 @@ export const searchArticles = onCall(
       }
 
       const total = matchedArticles.length;
-      const paged = matchedArticles.slice(offsetNum, offsetNum + limitNum);
+      const paged = matchedArticles.slice(offsetNum, offsetNum + safeLimit);
 
       return {
         articles: paged,
         total,
-        hasMore: offsetNum + limitNum < total,
+        hasMore: offsetNum + safeLimit < total,
         startDate: effectiveStart.toISOString(),
         endDate: effectiveEnd.toISOString(),
+        scanned,
       };
     } catch (err: any) {
       console.error('searchArticles error:', err);
@@ -2446,6 +2738,18 @@ async function deleteArticlesByQuery(db: admin.firestore.Firestore, q: admin.fir
 
     snapshot = await q.limit(500).get();
   }
+  return deleted;
+}
+
+async function purgeRejectedArticlesByQuery(db: admin.firestore.Firestore, q: admin.firestore.Query) {
+  let deleted = 0;
+  let snapshot = await q.limit(500).get();
+
+  while (snapshot.docs.length > 0) {
+    deleted += await purgeRejectedArticlesPreservingDedupe(snapshot.docs);
+    snapshot = await q.limit(500).get();
+  }
+
   return deleted;
 }
 
@@ -2521,7 +2825,7 @@ export const deleteExcludedArticlesHttp = onRequest(
       }
 
       const q = db.collection('articles').where('status', '==', 'rejected');
-      const deleted = await deleteArticlesByQuery(db, q);
+      const deleted = await purgeRejectedArticlesByQuery(db, q);
 
       response.json({
         success: true,
@@ -2532,6 +2836,16 @@ export const deleteExcludedArticlesHttp = onRequest(
       console.error('deleteExcludedArticles error:', err);
       response.status(500).json({ error: err.message });
     }
+  }
+);
+
+export const cleanupRejectedArticles = onSchedule(
+  { region: 'us-central1', schedule: 'every 1 hours', timeoutSeconds: 300, memory: '512MiB' },
+  async () => {
+    const db = admin.firestore();
+    const q = db.collection('articles').where('status', '==', 'rejected');
+    const deleted = await purgeRejectedArticlesByQuery(db, q);
+    logger.info(`cleanupRejectedArticles removed ${deleted} rejected articles`);
   }
 );
 

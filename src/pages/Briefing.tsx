@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Clock3, ExternalLink, Loader2, Mail, RefreshCw, RotateCcw, Search, Send, Sparkles } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import {
+  ArrowLeft,
+  Clock3,
+  ExternalLink,
+  Loader2,
+  Mail,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Send,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -21,6 +33,22 @@ function sanitizeReportHtml(raw: string) {
   return fenceMatch[1].trim();
 }
 
+function formatArticleDate(value: any) {
+  if (!value) return '';
+
+  try {
+    if (typeof value?.toDate === 'function') {
+      return format(value.toDate(), 'yyyy.MM.dd HH:mm');
+    }
+
+    const converted = new Date(value);
+    if (Number.isNaN(converted.getTime())) return '';
+    return format(converted, 'yyyy.MM.dd HH:mm');
+  } catch {
+    return '';
+  }
+}
+
 export default function Briefing() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -31,6 +59,7 @@ export default function Briefing() {
   const [outputs, setOutputs] = useState<any[]>([]);
   const [selectedOutput, setSelectedOutput] = useState<any | null>(null);
   const [articles, setArticles] = useState<any[]>([]);
+  const [previewArticle, setPreviewArticle] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
 
@@ -92,11 +121,32 @@ export default function Briefing() {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    const outputId = searchParams.get('outputId');
+    if (!outputId) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'outputs', outputId), (snap) => {
+      if (!snap.exists()) return;
+
+      const data = snap.data() as any;
+      if (['pending', 'processing'].includes(data.status)) {
+        loadOutputs().catch(console.error);
+        loadOutputDetail(outputId).catch(console.error);
+        return;
+      }
+
+      if (data.generatedOutputId || data.status === 'completed' || data.status === 'failed') {
+        loadOutputs().catch(console.error);
+        loadOutputDetail(outputId).catch(console.error);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [companyId, searchParams]);
+
   const retryOutput = async () => {
     if (!selectedOutput) return;
-    const isManaged = selectedOutput.type === 'managed_report';
-    const fn = httpsCallable(functions, isManaged ? 'retryManagedReport' : 'retryManagedReport');
-    await fn({ outputId: selectedOutput.id });
+    await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
     await loadOutputs();
     await loadOutputDetail(selectedOutput.id);
   };
@@ -133,7 +183,7 @@ export default function Briefing() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            내부 분석용과 외부 배포용 리포트를 함께 확인하고, 실패한 작업은 재시도할 수 있습니다.
+            생성된 분석 리포트를 확인하고, 실패한 작업은 재시도하거나 바로 발송할 수 있습니다.
           </p>
         </div>
         <Link
@@ -206,6 +256,7 @@ export default function Briefing() {
                     <Clock3 className="h-3.5 w-3.5" />
                     {selectedOutput.createdAt?.toDate ? format(selectedOutput.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : ''}
                   </span>
+                  <span>참고 기사 {articles.length}건</span>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {selectedOutput.status === 'failed' && (
@@ -214,7 +265,7 @@ export default function Briefing() {
                       className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
                     >
                       <RotateCcw className="h-4 w-4" />
-                      재시도
+                      다시 시도
                     </button>
                   )}
                   {isAdmin && (
@@ -247,10 +298,7 @@ export default function Briefing() {
 
               <div className="space-y-6 px-6 py-6">
                 {renderHtml ? (
-                  <div
-                    className="prose max-w-none dark:prose-invert"
-                    dangerouslySetInnerHTML={{ __html: renderHtml }}
-                  />
+                  <div className="prose max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: renderHtml }} />
                 ) : (
                   <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-sm text-gray-400 dark:border-gray-700">
                     생성된 HTML 리포트가 아직 없습니다.
@@ -264,17 +312,26 @@ export default function Briefing() {
                       <div key={article.id} className="rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
                         <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
                         <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                        {article.url && (
-                          <a
-                            href={article.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mt-2 inline-flex items-center gap-1 text-xs text-[#1e3a5f] underline dark:text-blue-300"
+                        <div className="mt-2 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewArticle(article)}
+                            className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] underline dark:text-blue-300"
                           >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                            원문 링크
-                          </a>
-                        )}
+                            원문 보기
+                          </button>
+                          {article.url && (
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] underline dark:text-blue-300"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              원문 링크
+                            </a>
+                          )}
+                        </div>
                       </div>
                     ))}
                     {articles.length === 0 && (
@@ -287,6 +344,59 @@ export default function Briefing() {
           )}
         </div>
       </div>
+
+      {previewArticle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={() => setPreviewArticle(null)}>
+          <div
+            className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <span>{previewArticle.source}</span>
+                  <span>{formatArticleDate(previewArticle.publishedAt)}</span>
+                </div>
+                <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
+              </div>
+              <button onClick={() => setPreviewArticle(null)}>
+                <X className="h-5 w-5 text-gray-400" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {previewArticle.summary?.length > 0 && (
+                <div className="mb-6">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI 요약</p>
+                  <div className="mt-3 space-y-2">
+                    {previewArticle.summary.map((line: string, index: number) => (
+                      <p key={index} className="text-sm text-gray-700 dark:text-gray-300">- {line}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-gray-300">
+                  {previewArticle.content || '원문 전문이 저장되지 않은 기사입니다.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
+              {previewArticle.url && (
+                <a
+                  href={previewArticle.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-gray-500 underline dark:text-gray-300"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  원문 링크 열기
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
