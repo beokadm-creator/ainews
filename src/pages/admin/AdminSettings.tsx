@@ -24,15 +24,19 @@ const PROVIDERS: Record<AiProvider, ProviderInfo> = {
   glm: {
     label: 'Zhipu GLM',
     modelDefault: 'glm-4.7',
-    models: ['glm-4.7', 'glm-4-flash', 'glm-4'],
+    models: ['glm-4.7', 'glm-4-plus', 'glm-4-flash', 'glm-4'],
     docsUrl: 'https://open.bigmodel.cn',
     color: '#6366f1',
     placeholder: 'GLM API Key (from open.bigmodel.cn)',
   },
   gemini: {
     label: 'Google Gemini',
-    modelDefault: 'gemini-1.5-pro',
-    models: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-pro'],
+    modelDefault: 'gemini-2.5-flash',
+    models: [
+      'gemini-2.5-pro',         // 최고 성능 · 딥분석용
+      'gemini-2.5-flash',       // 빠름+성능 균형 · 분석 권장
+      'gemini-2.5-flash-lite',  // 가장 빠름·저렴 · 필터링 권장
+    ],
     docsUrl: 'https://aistudio.google.com',
     color: '#4285F4',
     placeholder: 'Gemini API Key (from aistudio.google.com)',
@@ -66,10 +70,13 @@ interface ProviderState {
   apiKeyInput: string;
   baseUrlInput: string;
   selectedModel: string;
+  selectedFilteringModel: string; // 필터링 전용 모델
+  selectedFallbackProvider: AiProvider | '';  // 병목 시 전환할 provider
+  selectedFallbackModel: string;              // fallback provider 모델
 }
 
 function initState(modelDefault: string): ProviderState {
-  return { hasKey: false, isActive: false, testing: false, testResult: null, saving: false, showKey: false, expanded: false, apiKeyInput: '', baseUrlInput: '', selectedModel: modelDefault };
+  return { hasKey: false, isActive: false, testing: false, testResult: null, saving: false, showKey: false, expanded: false, apiKeyInput: '', baseUrlInput: '', selectedModel: modelDefault, selectedFilteringModel: '', selectedFallbackProvider: '', selectedFallbackModel: '' };
 }
 
 // ─── Default prompts (mirrors backend DEFAULT_RELEVANCE_PROMPT / DEFAULT_ANALYSIS_PROMPT)
@@ -165,6 +172,9 @@ export default function AdminSettings() {
         const compData = compDoc.exists() ? compDoc.data() as any : {};
         const storedKeys = compData.apiKeys || sysData.apiKeys || {};
         const storedModels = { ...sysData['aiModels'], ...compData.aiModels };
+        const storedFilteringModels = { ...sysData['aiFilteringModels'], ...compData.aiFilteringModels };
+        const storedFallbackProviders = { ...sysData['aiFallbackProviders'], ...compData.aiFallbackProviders };
+        const storedFallbackModels = { ...sysData['aiFallbackModels'], ...compData.aiFallbackModels };
         const storedBaseUrls = { ...sysData['aiBaseUrls'], ...compData.aiBaseUrls };
         const activeProvider = compData.ai?.provider || sysData.ai?.provider || 'glm';
 
@@ -176,6 +186,9 @@ export default function AdminSettings() {
               hasKey: !!storedKeys[p],
               isActive: p === activeProvider,
               selectedModel: storedModels[p] || PROVIDERS[p].modelDefault,
+              selectedFilteringModel: storedFilteringModels[p] || '',
+              selectedFallbackProvider: (storedFallbackProviders[p] || '') as AiProvider | '',
+              selectedFallbackModel: storedFallbackModels[p] || '',
               baseUrlInput: storedBaseUrls[p] || ''
             };
           });
@@ -226,7 +239,10 @@ export default function AdminSettings() {
         apiKey: state.apiKeyInput.trim() || null,
         baseUrl: state.baseUrlInput.trim() || null,
         model: state.selectedModel,
-        setAsActive: state.isActive, // 사용 중이면 활성 프로바이더로 설정
+        filteringModel: state.selectedFilteringModel || null,
+        fallbackProvider: state.selectedFallbackProvider || null,
+        fallbackModel: state.selectedFallbackModel || null,
+        setAsActive: state.isActive,
       }) as any;
       console.log(`✅ Saved ${provider}:`, result.data);
       update(provider, { saving: false, hasKey: true, apiKeyInput: '', showKey: false });
@@ -493,7 +509,7 @@ export default function AdminSettings() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Model selection */}
                   <div>
-                    <label className="block text-xs text-white/40 mb-1.5">모델</label>
+                    <label className="block text-xs text-white/40 mb-1.5">분석 모델</label>
                     <select
                       value={info.models.includes(state.selectedModel) ? state.selectedModel : 'custom'}
                       onChange={e => e.target.value !== 'custom' && update(provider, { selectedModel: e.target.value })}
@@ -509,6 +525,61 @@ export default function AdminSettings() {
                         placeholder="모델명 입력"
                         className="w-full mt-2 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none"
                       />
+                    )}
+                  </div>
+
+                  {/* Filtering Model selection */}
+                  <div>
+                    <label className="block text-xs text-white/40 mb-1.5">
+                      필터링 모델 <span className="text-white/20">(관련성 판단 전용 · 빠른 모델 권장)</span>
+                    </label>
+                    <select
+                      value={state.selectedFilteringModel || '__same__'}
+                      onChange={e => update(provider, { selectedFilteringModel: e.target.value === '__same__' ? '' : e.target.value })}
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/40"
+                    >
+                      <option value="__same__">분석 모델과 동일</option>
+                      {info.models.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    {state.selectedFilteringModel && (
+                      <p className="mt-1 text-[10px] text-green-400/60">
+                        필터링: {state.selectedFilteringModel} · 분석: {state.selectedModel}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Fallback Provider */}
+                  <div>
+                    <label className="block text-xs text-white/40 mb-1.5">
+                      폴백 Provider <span className="text-white/20">(429·타임아웃 발생 시 자동 전환)</span>
+                    </label>
+                    <select
+                      value={state.selectedFallbackProvider}
+                      onChange={e => update(provider, { selectedFallbackProvider: e.target.value as AiProvider | '', selectedFallbackModel: '' })}
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/40"
+                    >
+                      <option value="">사용 안 함</option>
+                      {(Object.keys(PROVIDERS) as AiProvider[]).filter(p => p !== provider).map(p => (
+                        <option key={p} value={p}>{PROVIDERS[p].label}</option>
+                      ))}
+                    </select>
+                    {state.selectedFallbackProvider && (
+                      <div className="mt-2">
+                        <label className="block text-xs text-white/40 mb-1">폴백 모델</label>
+                        <select
+                          value={state.selectedFallbackModel || '__default__'}
+                          onChange={e => update(provider, { selectedFallbackModel: e.target.value === '__default__' ? '' : e.target.value })}
+                          className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/40"
+                        >
+                          <option value="__default__">기본값 ({PROVIDERS[state.selectedFallbackProvider as AiProvider]?.modelDefault})</option>
+                          {PROVIDERS[state.selectedFallbackProvider as AiProvider]?.models.map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-[10px] text-amber-400/60">
+                          {provider} 실패 시 → {state.selectedFallbackProvider} ({state.selectedFallbackModel || PROVIDERS[state.selectedFallbackProvider as AiProvider]?.modelDefault}) 자동 전환
+                        </p>
+                      </div>
                     )}
                   </div>
 

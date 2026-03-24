@@ -10,7 +10,7 @@ export type ArticleCategory =
   | '인물/기타';
 
 export type ArticleStatus = 'pending' | 'filtered' | 'analyzed' | 'rejected' | 'published';
-export type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'manual';
+export type SourceType = 'rss' | 'scraping' | 'manual';
 
 export interface CompanyInfo {
   acquiror: string | null;
@@ -100,7 +100,7 @@ export interface NewsSource {
   
   // 스크래핑 설정
   selector?: string; // Cheerio CSS 선택자
-  authType?: 'none' | 'session' | 'cookie' | 'puppeteer';
+  authType?: 'none' | 'session' | 'cookie';
   
   lastScrapedAt?: Date;
   lastStatus?: 'success' | 'error';

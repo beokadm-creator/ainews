@@ -42,6 +42,20 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
   rejected:   { label: '제외됨',    color: 'text-red-400',    bg: 'bg-red-500/10 border-red-500/30',       icon: XCircle },
 };
 
+STATUS_CONFIG.ai_error = {
+  label: 'AI 분류 오류',
+  color: 'text-orange-400',
+  bg: 'bg-orange-500/10 border-orange-500/30',
+  icon: AlertTriangle,
+};
+
+STATUS_CONFIG.analysis_error = {
+  label: 'AI 분석 오류',
+  color: 'text-orange-400',
+  bg: 'bg-orange-500/10 border-orange-500/30',
+  icon: AlertTriangle,
+};
+
 const SOURCE_OPTIONS = [
   { value: '', label: '모든 매체' },
   { value: 'thebell', label: '더벨' },
@@ -664,7 +678,7 @@ export default function AdminArticles() {
 
           {/* Status filter */}
           <div className="flex gap-1 flex-wrap">
-            {(['', 'pending', 'filtered', 'analyzed', 'published', 'rejected'] as const).map(s => (
+            {(['', 'pending', 'filtered', 'analyzed', 'published', 'rejected', 'ai_error', 'analysis_error'] as const).map(s => (
               <button
                 key={s}
                 onClick={() => setSelectedStatus(s)}

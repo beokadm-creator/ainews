@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Clock3,
+  Copy,
   Download,
   ExternalLink,
+  Link2,
   Loader2,
   Mail,
   RefreshCw,
@@ -64,6 +66,9 @@ export default function Briefing() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'html' | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -99,6 +104,7 @@ export default function Briefing() {
     }
 
     setSelectedOutput(output);
+    setShareUrl(output.generatedOutput?.shareUrl || output.shareUrl || '');
 
     const effectiveArticleIds = output.generatedOutput?.articleIds || output.articleIds || [];
     if (effectiveArticleIds.length > 0) {
@@ -179,6 +185,7 @@ export default function Briefing() {
     if (!selectedOutput) return;
 
     setDownloadingFormat(format);
+    setActionMessage(null);
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       const fn = httpsCallable(functions, 'downloadReportAsset');
@@ -200,9 +207,39 @@ export default function Briefing() {
       link.download = filename;
       link.click();
       URL.revokeObjectURL(url);
+    } catch (error: any) {
+      setActionMessage(error.message || `${format.toUpperCase()} 다운로드에 실패했습니다.`);
     } finally {
       setDownloadingFormat(null);
     }
+  };
+
+  const createShareUrl = async (regenerate = false) => {
+    if (!selectedOutput) return;
+
+    setSharing(true);
+    setActionMessage(null);
+    try {
+      const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
+      const fn = httpsCallable(functions, 'createReportShareLink');
+      const result = await fn({ id: targetId, companyId, regenerate }) as any;
+      const nextUrl = result.data?.shareUrl || '';
+      setShareUrl(nextUrl);
+      if (nextUrl) {
+        await navigator.clipboard.writeText(nextUrl);
+        setActionMessage('공유 링크를 생성하고 클립보드에 복사했습니다.');
+      }
+    } catch (error: any) {
+      setActionMessage(error.message || '공유 링크 생성에 실패했습니다.');
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    await navigator.clipboard.writeText(shareUrl);
+    setActionMessage('공유 링크를 클립보드에 복사했습니다.');
   };
 
   const renderHtml = sanitizeReportHtml(
@@ -342,9 +379,68 @@ export default function Briefing() {
                     {selectedOutput.errorMessage}
                   </div>
                 )}
+                {actionMessage && (
+                  <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200">
+                    {actionMessage}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-6 px-6 py-6">
+                {isAdmin && (
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white">모바일 공유 링크</div>
+                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          로그인 없이 열리는 모바일 최적화 리포트 페이지입니다.
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => createShareUrl(false)}
+                          disabled={sharing}
+                          className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-3 py-2 text-sm text-white hover:bg-[#24456f] disabled:opacity-50"
+                        >
+                          {sharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                          URL 생성
+                        </button>
+                        <button
+                          onClick={() => createShareUrl(true)}
+                          disabled={sharing}
+                          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          새 링크
+                        </button>
+                        <button
+                          onClick={copyShareUrl}
+                          disabled={!shareUrl}
+                          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                        >
+                          <Copy className="h-4 w-4" />
+                          복사
+                        </button>
+                        {shareUrl && (
+                          <a
+                            href={shareUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                            미리보기
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    {shareUrl && (
+                      <div className="mt-3 break-all rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                        {shareUrl}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {renderHtml ? (
                   <div className="prose max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: renderHtml }} />
                 ) : (

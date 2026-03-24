@@ -2,13 +2,13 @@ import Parser from 'rss-parser';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { isDuplicateArticle, hashUrl } from './duplicateService';
-import { sendErrorNotificationToAdmin } from './telegramService';
+import { recordArticleDedupEntry } from './articleDedupService';
 import { cleanHtmlContent, decodeBuffer } from '../utils/encodingUtils';
-import { matchesRuntimeFilters } from '../utils/textUtils';
 import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 45000;
+const RSS_FETCH_TIMEOUT_MS = 60000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
 
 const parser = new Parser({
@@ -21,9 +21,9 @@ const parser = new Parser({
   customFields: {
     item: [
       ['content:encoded', 'contentEncoded'],
-      ['description', 'description']
-    ]
-  }
+      ['description', 'description'],
+    ],
+  },
 });
 
 interface ParsedArticle {
@@ -33,20 +33,9 @@ interface ParsedArticle {
   publishedAt: Date;
 }
 
-/**
- * 한국 RSS 피드에서 자주 발생하는 비표준 XML 문제를 수정합니다.
- *
- * 수정 항목:
- *  1. Bare & 엔티티 (e.g. "M&A" → "M&amp;A")
- *  2. 값 없는 HTML 불리언 속성 (e.g. <img loading> → <img loading="">)
- *     서울경제, 매일경제 등의 RSS가 HTML 태그를 그대로 삽입하는 경우 발생
- */
 function preprocessXml(xml: string): string {
   return xml
-    // 1. Fix bare & entities
     .replace(/&(?!(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);)/gi, '&amp;')
-    // 2. Fix HTML boolean/valueless attributes inside tags
-    //    Matches: whitespace + attrName (not followed by =) + (whitespace | / | end-of-attrs)
     .replace(/<([a-zA-Z][a-zA-Z0-9_:-]*)([^>]*)>/g, (_m, tagName, rest) => {
       if (!rest || !rest.includes(' ')) return `<${tagName}${rest}>`;
       const fixedRest = rest.replace(
@@ -57,28 +46,34 @@ function preprocessXml(xml: string): string {
     });
 }
 
-/**
- * RSS 피드를 가져옵니다. 파싱 오류 시 XML 전처리 후 재시도합니다.
- * 한국 뉴스 RSS 피드의 비표준 XML 엔티티 문제를 처리합니다.
- */
+async function fetchRssResponse(url: string, attempt = 1) {
+  try {
+    return await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: REQUEST_TIMEOUT_MS,
+      maxRedirects: 5,
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+    });
+  } catch (error: any) {
+    const isTimeout = error?.code === 'ECONNABORTED' || `${error?.message || ''}`.includes('timeout');
+    if (attempt < 3 && isTimeout) {
+      console.warn(`RSS timeout for ${url}, retrying (${attempt}/2)`);
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+      return fetchRssResponse(url, attempt + 1);
+    }
+    throw error;
+  }
+}
+
 export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
-  // Always fetch with axios to control encoding at byte level
-  // This correctly handles EUC-KR feeds (연합뉴스 등) that report wrong charset
-  const response = await axios.get(url, {
-    responseType: 'arraybuffer',
-    timeout: REQUEST_TIMEOUT_MS,
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-    },
-  });
+  const response = await fetchRssResponse(url);
 
   const buffer = Buffer.from(response.data);
   const contentType = response.headers['content-type'] || '';
-
-  // XML encoding declaration is the most reliable source for RSS/XML files
-  // e.g. <?xml version="1.0" encoding="EUC-KR"?>
   const xmlAscii = buffer.slice(0, 400).toString('ascii');
   const encDeclMatch = xmlAscii.match(/encoding=["']([^"']+)/i);
   const declaredEnc = encDeclMatch ? encDeclMatch[1].toLowerCase() : '';
@@ -102,19 +97,13 @@ export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
     if (!item.title || !item.link) continue;
     const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
 
-    // Clean title: strip any HTML tags and decode entities
     let title = item.title ? item.title.trim() : '';
-
-    // Skip articles with severely corrupted titles (detect broken UTF-8)
-    // Patterns: too many consecutive mojibake characters (U+FFFD, control chars, etc.)
     if (title.match(/[\uFFFD\u0080-\u009F]{3,}/)) {
       console.warn(`Skipping article with corrupted title: "${title.substring(0, 50)}"`);
       continue;
     }
 
     title = cleanHtmlContent(title);
-
-    // Skip if title is empty after cleaning or too short
     if (!title || title.length < 3) continue;
 
     let content = item.contentEncoded || item.description || item.content || '';
@@ -135,156 +124,112 @@ export async function processRssSources(options?: {
   const db = admin.firestore();
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
 
-  // ── 소스 목록 수집: globalSources만 사용 (슈퍼어드민이 관리, 회사는 구독으로 조회)
-  const allSourcesToProcess: { id: string; data: any; isGlobal: boolean }[] = [];
+  const allSourcesToProcess: { id: string; data: any }[] = [];
+  const allRssSnap = await db.collection('globalSources')
+    .where('type', '==', 'rss')
+    .where('status', '==', 'active')
+    .get();
 
-  // 1) 구독된 sourceIds가 있으면 해당 소스만 조회
-  // 2) 없으면 globalSources에서 모든 active RSS 소스를 조회
-  const subscribedIds = options?.filters?.sourceIds ?? [];
-
-  let globalQuery: FirebaseFirestore.Query;
-  if (subscribedIds.length > 0) {
-    // 구독 기반: documentId in-query (10개씩 청크 - Firestore 제한)
-    const chunks: string[][] = [];
-    for (let i = 0; i < subscribedIds.length; i += 10) chunks.push(subscribedIds.slice(i, i + 10));
-
-    for (const chunk of chunks) {
-      const snap = await db.collection('globalSources')
-        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-        .get();
-      snap.docs.forEach(d => {
-        const data = d.data();
-        if (data.type !== 'rss' || data.status !== 'active') return;
-        if (allSourcesToProcess.find(s => s.id === d.id)) return;
-        const rssUrl = data.rssUrl || data.url;
-        if (!rssUrl) {
-          console.warn(`[RSS] Skipping ${data.name}: no RSS URL configured`);
-          return;
-        }
-        allSourcesToProcess.push({
-          id: d.id,
-          data: { ...data, url: rssUrl, companyId: options?.companyId },
-          isGlobal: true,
-        });
-      });
-    }
-  } else {
-    // 구독 없음: 모든 active RSS 소스
-    const allRssSnap = await db.collection('globalSources')
-      .where('type', '==', 'rss')
-      .where('status', '==', 'active')
-      .get();
-    allRssSnap.docs.forEach(d => {
-      const data = d.data();
-      const rssUrl = data.rssUrl || data.url;
-      if (!rssUrl) return;
-      allSourcesToProcess.push({
-        id: d.id,
-        data: { ...data, url: rssUrl, companyId: options?.companyId },
-        isGlobal: true,
-      });
+  allRssSnap.docs.forEach((d) => {
+    const data = d.data();
+    const rssUrl = data.rssUrl || data.url;
+    if (!rssUrl) return;
+    allSourcesToProcess.push({
+      id: d.id,
+      data: { ...data, url: rssUrl, companyId: options?.companyId },
     });
-  }
+  });
 
   console.log(`[RSS] Total sources to process: ${allSourcesToProcess.length}`);
 
   let totalCollected = 0;
 
-  // ── 순차 수집: 각 소스를 순차적으로 처리 (안정성 우선) ──
-  // 병렬 처리 시 하나의 소스가 멈추면 전체 파이프라인이 멈추는 문제 방지
   for (const { id: sourceId, data: source } of allSourcesToProcess) {
     const docRef = db.collection('globalSources').doc(sourceId);
 
     try {
-      // 타임아웃과 함께 RSS 피드 가져오기
       const articles = await Promise.race([
         fetchRssFeed(source.url || source.rssUrl),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('RSS fetch timeout after 30s')), 30000)
-        )
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`RSS fetch timeout after ${RSS_FETCH_TIMEOUT_MS / 1000}s`)), RSS_FETCH_TIMEOUT_MS)
+        ),
       ]);
 
-      // ★ 배치 처리: 순차 처리를 병렬 + 배치 커밋으로 최적화
-      // 1단계: 필터링된 기사 수집
-      const validArticles = articles.filter(article => {
+      const validArticles = articles.filter((article) => {
         if (startDate && article.publishedAt < startDate) return false;
         if (endDate && article.publishedAt > endDate) return false;
-
-        // ★ source.defaultKeywords를 수집 pre-filter로 사용하지 않음
-        // → AI가 관련성 분류 단계에서 판단. 수집은 pipeline-level 강제 필터만 적용.
-        return matchesRuntimeFilters(article.title, article.content, {
-          anyKeywords: options?.filters?.keywords || [],
-          includeKeywords: options?.filters?.includeKeywords,
-          mustIncludeKeywords: options?.filters?.mustIncludeKeywords,
-          excludeKeywords: options?.filters?.excludeKeywords,
-          sectors: options?.filters?.sectors
-        });
+        return true;
       });
 
       if (validArticles.length === 0) {
-        console.log(`[RSS] ${source.name}: 필터링 후 수집할 기사 없음`);
+        console.log(`[RSS] ${source.name}: no articles in date range`);
         await docRef.update({
           lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
           lastStatus: 'success',
-          errorMessage: null
+          errorMessage: null,
         });
         continue;
       }
 
-      // 2단계: 병렬 중복 체크 (Firestore batch 최대 500개 제한 고려)
-      const BATCH_SIZE = 500;
+      const batchSize = 500;
       let sourceCollected = 0;
 
-      for (let i = 0; i < validArticles.length; i += BATCH_SIZE) {
-        const chunk = validArticles.slice(i, Math.min(i + BATCH_SIZE, validArticles.length));
-
-        // 병렬로 중복 체크
+      for (let i = 0; i < validArticles.length; i += batchSize) {
+        const chunk = validArticles.slice(i, Math.min(i + batchSize, validArticles.length));
         const dupChecks = await Promise.all(
-          chunk.map(article => isDuplicateArticle(article, {
+          chunk.map((article) => isDuplicateArticle(article, {
             companyId: source.companyId || options?.companyId,
           }))
         );
 
-        // 배치 생성
         const batch = db.batch();
-
+        const dedupWrites: Promise<any>[] = [];
         dupChecks.forEach((check, idx) => {
-          if (!check.isDuplicate) {
-            const article = chunk[idx];
-            const articleRef = db.collection('articles').doc();
-            batch.set(articleRef, {
-              id: articleRef.id,
-              ...article,
-              companyId: source.companyId || options?.companyId || null,
-              pipelineRunId: options?.pipelineRunId || null,
-              source: source.name,
-              sourceId,
-              globalSourceId: sourceId,  // 항상 globalSources에서 조회
-              sourceCategory: source.category || null,
-              collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-              status: 'pending',
-              urlHash: hashUrl(article.url)
-            });
-            sourceCollected++;
-          }
+          if (check.isDuplicate) return;
+          const article = chunk[idx];
+          const articleRef = db.collection('articles').doc();
+          batch.set(articleRef, {
+            id: articleRef.id,
+            ...article,
+            companyId: source.companyId || options?.companyId || null,
+            pipelineRunId: options?.pipelineRunId || null,
+            source: source.name,
+            sourceId,
+            globalSourceId: sourceId,
+            sourceCategory: source.category || null,
+            sourcePricingTier: source.pricingTier || 'free',
+            collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            urlHash: hashUrl(article.url),
+          });
+          dedupWrites.push(recordArticleDedupEntry({
+            id: articleRef.id,
+            ...article,
+            companyId: source.companyId || options?.companyId || null,
+            sourceId,
+            globalSourceId: sourceId,
+            source: source.name,
+            status: 'pending',
+            collectedAt: new Date(),
+          }));
+          sourceCollected++;
         });
 
-        // 배치 커밋 (한 번에 DB 쓰기)
         await batch.commit();
+        await Promise.all(dedupWrites);
       }
 
       await docRef.update({
         lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
         lastStatus: 'success',
-        errorMessage: null
+        errorMessage: null,
       });
 
-      console.log(`[RSS] ${source.name}: +${sourceCollected}건 (배치 처리)`);
+      console.log(`[RSS] ${source.name}: +${sourceCollected} articles`);
       totalCollected += sourceCollected;
     } catch (error: any) {
       await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
-      console.error(`[RSS] ${source.name} 오류: ${error.message}`);
-      // 오류가 나도 다음 소스 계속 처리
+      console.error(`[RSS] ${source.name} error: ${error.message}`);
     }
   }
 

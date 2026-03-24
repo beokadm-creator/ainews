@@ -8,9 +8,9 @@
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "deploy": "npm run build && cd firebase/functions && npm run build && cd ../.. && firebase deploy",
+    "deploy": "npm run build && cd cloud-infra/functions && npm run build && cd ../.. && firebase deploy",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
-    "deploy:functions": "cd firebase/functions && npm run build && cd ../.. && firebase deploy --only functions",
+    "deploy:functions": "cd cloud-infra/functions && npm run build && cd ../.. && firebase deploy --only functions",
     "check": "tsc -b --noEmit"
   },
   "dependencies": {

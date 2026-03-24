@@ -8,7 +8,7 @@ import { validateApiKey } from './secretManager';
  */
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
-  maxRetries: number = 3
+  maxRetries: number = 4
 ): Promise<T> {
   let lastError: Error;
   
@@ -26,7 +26,14 @@ export async function retryWithBackoff<T>(
         if (status === 429 || (status && status >= 500 && status < 600)) {
           if (attempt < maxRetries - 1) {
             // 지수 백오프: 2초, 4초, 8초...
-            const waitTime = Math.pow(2, attempt) * 1000;
+            const retryAfterHeader = error.response?.headers?.['retry-after'];
+            const retryAfterSeconds = Number(Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader);
+            const baseDelay = Math.min(30000, Math.pow(2, attempt) * 2000);
+            const retryAfterDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+              ? retryAfterSeconds * 1000
+              : 0;
+            const jitter = Math.floor(Math.random() * 1500);
+            const waitTime = Math.max(baseDelay, retryAfterDelay) + jitter;
             console.warn(`Rate limited or server error (attempt ${attempt + 1}/${maxRetries}). Retrying after ${waitTime}ms...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;

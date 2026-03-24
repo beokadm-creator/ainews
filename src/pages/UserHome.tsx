@@ -1,14 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Search, FileText, TrendingUp, Clock, ChevronRight,
-  Newspaper, BookOpen, ArrowRight, Rss, Globe
+  ArrowRight,
+  BookOpen,
+  Coins,
+  FileText,
+  Loader2,
+  Newspaper,
+  Search,
+  Send,
+  TrendingUp,
 } from 'lucide-react';
-import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
-import { useAuthStore } from '@/store/useAuthStore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
+import { db, functions } from '@/lib/firebase';
+import { useAuthStore } from '@/store/useAuthStore';
 
 interface RecentArticle {
   id: string;
@@ -17,7 +25,6 @@ interface RecentArticle {
   category?: string;
   relevanceScore?: number;
   publishedAt?: any;
-  status: string;
 }
 
 interface RecentReport {
@@ -25,331 +32,287 @@ interface RecentReport {
   title: string;
   type: string;
   articleCount: number;
-  keywords?: string[];
   createdAt?: any;
 }
 
-function ArticleCard({ article }: { article: RecentArticle }) {
-  const navigate = useNavigate();
-  const score = article.relevanceScore ?? 0;
-  const scoreColor = score >= 7 ? 'text-green-400' : score >= 4 ? 'text-yellow-400' : 'text-red-400';
-
-  return (
-    <div
-      onClick={() => navigate(`/articles?highlight=${article.id}`)}
-      className="group p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-[#d4af37]/40 hover:shadow-sm transition-all cursor-pointer"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-gray-900 dark:text-white leading-snug line-clamp-2 group-hover:text-[#d4af37] transition-colors">
-            {article.title}
-          </p>
-          <div className="flex items-center gap-2 mt-1.5">
-            <span className="text-xs text-gray-400">{article.source}</span>
-            {article.category && (
-              <span className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-[10px] text-gray-500 dark:text-gray-400">
-                {article.category}
-              </span>
-            )}
-          </div>
-        </div>
-        {article.relevanceScore != null && (
-          <div className="flex-shrink-0 text-right">
-            <span className={`text-sm font-bold ${scoreColor}`}>{score.toFixed(1)}</span>
-            <p className="text-[10px] text-gray-400">관련성</p>
-          </div>
-        )}
-      </div>
-      {article.publishedAt && (
-        <p className="text-[10px] text-gray-300 dark:text-gray-500 mt-2">
-          {article.publishedAt?.toDate
-            ? format(article.publishedAt.toDate(), 'M월 d일 HH:mm', { locale: ko })
-            : ''}
-        </p>
-      )}
-    </div>
-  );
+function formatTimestamp(value: any) {
+  if (!value) return '';
+  try {
+    const date = value?.toDate ? value.toDate() : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return format(date, 'M월 d일 HH:mm', { locale: ko });
+  } catch {
+    return '';
+  }
 }
 
-function ReportCard({ report }: { report: RecentReport }) {
-  const createdAt = report.createdAt?.toDate
-    ? format(report.createdAt.toDate(), 'M월 d일', { locale: ko })
-    : '';
-  const typeLabel = report.type === 'custom_report' ? '커스텀 보고서' : 'AI 브리핑';
-
-  return (
-    <Link
-      to={`/briefing?outputId=${report.id}`}
-      className="group flex items-center gap-4 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-[#d4af37]/40 hover:shadow-sm transition-all"
-    >
-      <div className="w-10 h-10 bg-[#d4af37]/10 rounded-xl flex items-center justify-center flex-shrink-0">
-        <BookOpen className="w-5 h-5 text-[#d4af37]" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 dark:text-white truncate group-hover:text-[#d4af37] transition-colors">
-          {report.title}
-        </p>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs text-gray-400">{typeLabel}</span>
-          <span className="text-gray-200 dark:text-gray-600">·</span>
-          <span className="text-xs text-gray-400">기사 {report.articleCount}개</span>
-          {createdAt && (
-            <>
-              <span className="text-gray-200 dark:text-gray-600">·</span>
-              <span className="text-xs text-gray-400">{createdAt}</span>
-            </>
-          )}
-        </div>
-        {report.keywords && report.keywords.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1.5">
-            {report.keywords.slice(0, 3).map(k => (
-              <span key={k} className="px-1.5 py-0.5 bg-[#d4af37]/10 text-[#d4af37] text-[10px] rounded font-medium">
-                {k}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600 group-hover:text-[#d4af37] transition-colors flex-shrink-0" />
-    </Link>
-  );
-}
-
-// ─── Quick action cards ───────────────────────────────────
-function QuickAction({ icon: Icon, title, desc, to, color }: {
-  icon: any; title: string; desc: string; to: string; color: string;
+function QuickAction({
+  icon: Icon,
+  title,
+  desc,
+  to,
+  tone,
+}: {
+  icon: any;
+  title: string;
+  desc: string;
+  to: string;
+  tone: string;
 }) {
   return (
     <Link
       to={to}
-      className="group flex flex-col gap-3 p-5 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-[#d4af37]/40 hover:shadow-md transition-all"
+      className="group flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-5 transition-all hover:-translate-y-0.5 hover:border-[#d4af37]/40 hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
     >
-      <div className={`w-10 h-10 ${color} rounded-xl flex items-center justify-center`}>
-        <Icon className="w-5 h-5 text-white" />
+      <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${tone}`}>
+        <Icon className="h-5 w-5 text-white" />
       </div>
       <div>
-        <p className="text-sm font-semibold text-gray-900 dark:text-white group-hover:text-[#d4af37] transition-colors">{title}</p>
-        <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{desc}</p>
+        <p className="text-sm font-semibold text-gray-900 transition-colors group-hover:text-[#d4af37] dark:text-white">
+          {title}
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{desc}</p>
       </div>
-      <div className="flex items-center gap-1 text-xs text-gray-400 group-hover:text-[#d4af37] transition-colors mt-auto">
-        바로 가기 <ArrowRight className="w-3 h-3" />
+      <div className="mt-auto flex items-center gap-1 text-xs text-gray-400 transition-colors group-hover:text-[#d4af37]">
+        바로 가기
+        <ArrowRight className="h-3 w-3" />
       </div>
     </Link>
   );
 }
 
-// ─── Main ─────────────────────────────────────────────────
 export default function UserHome() {
   const { user } = useAuthStore();
+  const navigate = useNavigate();
   const companyId = (user as any)?.primaryCompanyId;
+  const role = (user as any)?.role;
+  const canViewUsage = role === 'company_admin' || role === 'superadmin';
+
   const [recentArticles, setRecentArticles] = useState<RecentArticle[]>([]);
   const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
-  const [loadingArticles, setLoadingArticles] = useState(true);
-  const [loadingReports, setLoadingReports] = useState(true);
+  const [usage, setUsage] = useState<any>(null);
   const [todayCount, setTodayCount] = useState(0);
   const [analyzedCount, setAnalyzedCount] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!companyId) return;
 
-    // Load recent analyzed articles
-    async function loadArticles() {
-      setLoadingArticles(true);
+    async function loadDashboard() {
+      setLoading(true);
       try {
-        const snap = await getDocs(
-          query(
-            collection(db, 'articles'),
-            where('companyId', '==', companyId),
-            where('status', 'in', ['analyzed', 'published']),
-            orderBy('analyzedAt', 'desc'),
-            limit(6)
-          )
-        );
-        const arts: RecentArticle[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as RecentArticle));
-        setRecentArticles(arts);
+        const searchArticles = httpsCallable(functions, 'searchArticles');
+        const usageCallable = httpsCallable(functions, 'getAiUsageSummary');
 
-        // Today count
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todaySnap = await getDocs(
-          query(
-            collection(db, 'articles'),
-            where('companyId', '==', companyId),
-            where('createdAt', '>=', today),
-            limit(100)
-          )
-        );
-        setTodayCount(todaySnap.size);
-        setAnalyzedCount(arts.length);
+        const [articleResult, reportSnap, usageResult] = await Promise.all([
+          searchArticles({
+            companyId,
+            statuses: ['analyzed', 'published'],
+            limit: 6,
+            offset: 0,
+          }) as Promise<any>,
+          getDocs(
+            query(
+              collection(db, 'outputs'),
+              where('companyId', '==', companyId),
+            )
+          ),
+          canViewUsage
+            ? (usageCallable({ companyId }).catch(() => ({ data: null })) as Promise<any>)
+            : Promise.resolve({ data: null }),
+        ]);
+
+        const articleData = articleResult?.data || {};
+        setRecentArticles(articleData.articles || []);
+        setTodayCount(Number(articleData.total || 0));
+        setAnalyzedCount(Number(articleData.total || 0));
+
+        const reports = reportSnap.docs
+          .map((doc) => ({ id: doc.id, ...(doc.data() as any) }))
+          .filter((report: any) => report.companyId === companyId)
+          .sort((a: any, b: any) => {
+            const aTime = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+            const bTime = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+            return bTime - aTime;
+          })
+          .slice(0, 5);
+        setRecentReports(reports);
+        setUsage((usageResult as any)?.data || null);
       } finally {
-        setLoadingArticles(false);
+        setLoading(false);
       }
     }
 
-    // Load recent reports
-    async function loadReports() {
-      setLoadingReports(true);
-      try {
-        const snap = await getDocs(
-          query(
-            collection(db, 'outputs'),
-            where('companyId', '==', companyId),
-            orderBy('createdAt', 'desc'),
-            limit(5)
-          )
-        );
-        const rpts: RecentReport[] = snap.docs.map(d => ({ id: d.id, ...d.data() } as RecentReport));
-        setRecentReports(rpts);
-      } finally {
-        setLoadingReports(false);
-      }
-    }
-
-    loadArticles();
-    loadReports();
-  }, [companyId]);
+    loadDashboard().catch(console.error);
+  }, [companyId, canViewUsage]);
 
   const hour = new Date().getHours();
-  const greeting = hour < 12 ? '좋은 아침이에요' : hour < 18 ? '안녕하세요' : '안녕하세요';
-  const userName = (user as any)?.displayName || user?.email?.split('@')[0] || '';
+  const greeting = hour < 12 ? '좋은 아침입니다' : hour < 18 ? '안녕하세요' : '좋은 저녁입니다';
+  const userName = (user as any)?.displayName || user?.email?.split('@')[0] || '사용자';
 
   return (
-    <div className="space-y-8 max-w-5xl">
-      {/* Greeting */}
+    <div className="mx-auto max-w-6xl space-y-8 pb-12">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
           {greeting}, <span className="text-[#d4af37]">{userName}</span>님
         </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          오늘도 최신 뉴스 인텔리전스를 확인하세요.
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          오늘 수집된 분석 기사와 최근 리포트, AI 사용 현황을 한 번에 확인할 수 있습니다.
         </p>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl p-5">
+      <div className={`grid gap-4 ${canViewUsage ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-blue-50 dark:bg-blue-500/10 rounded-lg flex items-center justify-center">
-              <Newspaper className="w-5 h-5 text-blue-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 dark:bg-blue-500/10">
+              <Newspaper className="h-5 w-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{todayCount}</p>
-              <p className="text-xs text-gray-400">오늘 수집된 기사</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{todayCount.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">조회 가능한 분석 기사</p>
             </div>
           </div>
         </div>
-        <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl p-5">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-green-50 dark:bg-green-500/10 rounded-lg flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-green-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-50 dark:bg-green-500/10">
+              <TrendingUp className="h-5 w-5 text-green-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{analyzedCount}</p>
-              <p className="text-xs text-gray-400">최근 분석 완료</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{analyzedCount.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">최근 분석 완료 기사</p>
             </div>
           </div>
         </div>
-        <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl p-5">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-purple-50 dark:bg-purple-500/10 rounded-lg flex items-center justify-center">
-              <BookOpen className="w-5 h-5 text-purple-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-50 dark:bg-purple-500/10">
+              <BookOpen className="h-5 w-5 text-purple-500" />
             </div>
             <div>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">{recentReports.length}</p>
-              <p className="text-xs text-gray-400">최근 보고서</p>
+              <p className="text-xs text-gray-400">최근 리포트</p>
             </div>
           </div>
         </div>
+        {canViewUsage && (
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 dark:bg-amber-500/10">
+                <Coins className="h-5 w-5 text-amber-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {Number(usage?.last24h?.totalTokens || 0).toLocaleString()}
+                </p>
+                <p className="text-xs text-gray-400">최근 24시간 토큰</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Quick actions */}
+      {canViewUsage && (
+        <div className="grid gap-4 md:grid-cols-3">
+          {[
+            { label: '최근 24시간', value: usage?.last24h?.totalTokens || 0, sub: `${usage?.last24h?.requests || 0}회 호출` },
+            { label: '최근 7일', value: usage?.last7d?.totalTokens || 0, sub: `$${Number(usage?.last7d?.totalCostUSD || 0).toFixed(2)}` },
+            { label: '최근 30일', value: usage?.last30d?.totalTokens || 0, sub: `$${Number(usage?.last30d?.totalCostUSD || 0).toFixed(2)}` },
+          ].map((item) => (
+            <div key={item.label} className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-300">{item.label}</p>
+              <p className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{Number(item.value).toLocaleString()}</p>
+              <p className="mt-1 text-xs text-gray-400">{item.sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div>
-        <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">빠른 시작</h2>
-        <div className="grid grid-cols-3 gap-4">
-          <QuickAction
-            icon={Search}
-            title="기사 검색"
-            desc="키워드로 수집된 기사를 검색하고 분석 대상을 선택하세요"
-            to="/articles"
-            color="bg-blue-500"
-          />
-          <QuickAction
-            icon={FileText}
-            title="보고서 생성"
-            desc="선택한 기사들로 AI 분석 보고서를 만드세요"
-            to="/articles"
-            color="bg-[#d4af37]"
-          />
-          <QuickAction
-            icon={BookOpen}
-            title="보고서 보기"
-            desc="지금까지 생성된 모든 AI 분석 보고서를 확인하세요"
-            to="/briefing"
-            color="bg-purple-500"
-          />
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">빠른 시작</h2>
+        <div className="grid gap-4 md:grid-cols-3">
+          <QuickAction icon={Search} title="기사 검색" desc="매체와 기간 기준으로 분석 완료 기사를 찾습니다." to="/articles" tone="bg-blue-500" />
+          <QuickAction icon={FileText} title="리포트 생성" desc="검색 결과 전체 또는 선택 기사로 새 리포트를 생성합니다." to="/articles" tone="bg-[#d4af37]" />
+          <QuickAction icon={Send} title="발송 관리" desc="메일링 그룹과 자동·수동 발송 일정을 관리합니다." to={role === 'company_admin' ? '/delivery' : '/briefing'} tone="bg-purple-500" />
         </div>
       </div>
 
-      {/* Two-column: articles + reports */}
-      <div className="grid grid-cols-2 gap-6">
-        {/* Recent articles */}
+      <div className="grid gap-6 lg:grid-cols-2">
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              최근 분석된 기사
-            </h2>
-            <Link to="/articles" className="text-xs text-[#d4af37] hover:underline flex items-center gap-1">
-              전체 보기 <ChevronRight className="w-3 h-3" />
-            </Link>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 분석 기사</h2>
+            <Link to="/articles" className="text-xs text-[#d4af37] hover:underline">전체 보기</Link>
           </div>
-          {loadingArticles ? (
-            <div className="space-y-2">
-              {[...Array(4)].map((_, i) => (
-                <div key={i} className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
-              ))}
-            </div>
-          ) : recentArticles.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl">
-              <Rss className="w-8 h-8 text-gray-200 dark:text-gray-600 mb-2" />
-              <p className="text-sm text-gray-400">수집된 기사가 없습니다</p>
-              <p className="text-xs text-gray-300 dark:text-gray-500 mt-1">매체 구독 설정을 확인해 주세요</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {recentArticles.map(a => <ArticleCard key={a.id} article={a} />)}
-            </div>
-          )}
+          <div className="space-y-3">
+            {loading ? (
+              <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                <Loader2 className="h-6 w-6 animate-spin text-[#1e3a5f]" />
+              </div>
+            ) : recentArticles.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-800">
+                표시할 분석 기사가 없습니다.
+              </div>
+            ) : (
+              recentArticles.map((article) => (
+                <button
+                  key={article.id}
+                  onClick={() => navigate(`/articles?highlight=${article.id}`)}
+                  className="w-full rounded-2xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-[#d4af37]/40 hover:shadow-sm dark:border-gray-700 dark:bg-gray-800"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 text-sm font-semibold text-gray-900 dark:text-white">{article.title}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                        <span>{article.source}</span>
+                        {article.category && (
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                            {article.category}
+                          </span>
+                        )}
+                        <span>{formatTimestamp(article.publishedAt)}</span>
+                      </div>
+                    </div>
+                    <span className="text-sm font-bold text-[#1e3a5f] dark:text-[#d4af37]">
+                      {Number(article.relevanceScore || 0).toFixed(1)}
+                    </span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
         </div>
 
-        {/* Recent reports */}
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              최근 보고서
-            </h2>
-            <Link to="/briefing" className="text-xs text-[#d4af37] hover:underline flex items-center gap-1">
-              전체 보기 <ChevronRight className="w-3 h-3" />
-            </Link>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 리포트</h2>
+            <Link to="/history" className="text-xs text-[#d4af37] hover:underline">이력 보기</Link>
           </div>
-          {loadingReports ? (
-            <div className="space-y-2">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse" />
-              ))}
-            </div>
-          ) : recentReports.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl">
-              <Globe className="w-8 h-8 text-gray-200 dark:text-gray-600 mb-2" />
-              <p className="text-sm text-gray-400">생성된 보고서가 없습니다</p>
-              <Link to="/articles" className="text-xs text-[#d4af37] mt-2 hover:underline">
-                기사를 선택해서 첫 보고서 만들기 →
-              </Link>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {recentReports.map(r => <ReportCard key={r.id} report={r} />)}
-            </div>
-          )}
+          <div className="space-y-3">
+            {loading ? (
+              <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                <Loader2 className="h-6 w-6 animate-spin text-[#1e3a5f]" />
+              </div>
+            ) : recentReports.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-800">
+                생성된 리포트가 없습니다.
+              </div>
+            ) : (
+              recentReports.map((report) => (
+                <Link
+                  key={report.id}
+                  to={`/briefing?outputId=${report.id}`}
+                  className="block rounded-2xl border border-gray-200 bg-white p-4 transition-all hover:border-[#d4af37]/40 hover:shadow-sm dark:border-gray-700 dark:bg-gray-800"
+                >
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{report.title}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                    <span>{report.type === 'custom_report' ? '맞춤 리포트' : '브리핑'}</span>
+                    <span>참고 기사 {report.articleCount || 0}건</span>
+                    <span>{formatTimestamp(report.createdAt)}</span>
+                  </div>
+                </Link>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -105,6 +105,20 @@ export async function isDuplicateArticle(
   const urlHash = hashUrl(newArticle.url);
   const titleHash = hashTitle(newArticle.title);
 
+  const dedupDoc = await db.collection('articleDedup').doc(urlHash).get();
+  if (dedupDoc.exists) {
+    const dedupData = dedupDoc.data() as any;
+    // companyId 컨텍스트 없는 경우(글로벌) 또는 dedup 항목의 companyId가 현재 company와 일치하는 경우만 중복으로 판정
+    // Note: dedupData.companyId가 없는 구형 항목은 per-company 컨텍스트에서 중복 판정하지 않음 (articles 컬렉션 체크로 폴스루)
+    if (!options?.companyId || (dedupData?.companyId && dedupData.companyId === options.companyId)) {
+      return {
+        isDuplicate: true,
+        reason: 'Dedupe ledger match',
+        duplicateOf: dedupData?.articleId || dedupDoc.id,
+      };
+    }
+  }
+
   let exactUrlQuery: FirebaseFirestore.Query = db.collection('articles')
     .where('url', '==', newArticle.url);
   if (options?.companyId) {

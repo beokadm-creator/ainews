@@ -31,6 +31,9 @@ export interface RuntimeFilters {
 export interface RuntimeAiConfig {
   provider: AiProvider;
   model: string;
+  filteringModel?: string;    // 필터링 전용 빠른 모델 (미설정 시 model과 동일)
+  fallbackProvider?: AiProvider; // 기본 provider 실패 시 전환할 provider (429/timeout/5xx)
+  fallbackModel?: string;     // fallback provider에서 사용할 모델 (미설정 시 해당 provider 기본값)
   baseUrl?: string; // ★ Custom API endpoint (e.g. z.ai)
   apiKeyEnvKey?: string;
   relevancePrompt?: string;
@@ -82,7 +85,7 @@ export interface PipelineInvocationOverrides {
 // Provider-specific defaults
 export const PROVIDER_DEFAULTS: Record<AiProvider, { model: string; apiKeyEnvKey: string }> = {
   glm: { model: 'glm-4', apiKeyEnvKey: 'GLM_API_KEY' },
-  gemini: { model: 'gemini-1.5-pro', apiKeyEnvKey: 'GEMINI_API_KEY' },
+  gemini: { model: 'gemini-2.5-flash', apiKeyEnvKey: 'GEMINI_API_KEY' },
   openai: { model: 'gpt-4o', apiKeyEnvKey: 'OPENAI_API_KEY' },
   claude: { model: 'claude-3-5-sonnet-20241022', apiKeyEnvKey: 'ANTHROPIC_API_KEY' },
 };

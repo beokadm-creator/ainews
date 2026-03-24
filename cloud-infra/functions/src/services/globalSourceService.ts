@@ -1,7 +1,8 @@
 import * as admin from 'firebase-admin';
 import axios from 'axios';
+import { testScrapingSource } from './scrapingSourceService';
 
-export type GlobalSourceType = 'rss' | 'api' | 'newsletter';
+export type GlobalSourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
 export type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
 export type ContentLanguage = 'ko' | 'en' | 'ja' | 'zh';
 
@@ -21,7 +22,12 @@ export interface GlobalSource {
   apiKeyRequired?: boolean;
   apiKeyEnvName?: string;
 
-  // Scraping config (deprecated)
+  // Scraping config
+  listSelector?: string;
+  titleSelector?: string;
+  linkSelector?: string;
+  contentSelector?: string;
+  dateSelector?: string;
   loginRequired?: boolean;
   authType?: 'none' | 'session' | 'cookie';
 
@@ -204,22 +210,6 @@ export const INITIAL_GLOBAL_SOURCES: Omit<GlobalSource, 'id' | 'createdAt' | 'up
   },
   // === API ===
   {
-    name: 'NewsAPI',
-    description: '전 세계 비즈니스 뉴스 어그리게이터. 무료 티어: 일일 100회. M&A 키워드 검색.',
-    url: 'https://newsapi.org',
-    type: 'api',
-    apiEndpoint: 'https://newsapi.org/v2/everything',
-    apiKeyRequired: true,
-    apiKeyEnvName: 'NEWSAPI_KEY',
-    language: 'en',
-    relevanceScore: 3,
-    category: 'global',
-    defaultKeywords: BASE_EN_KEYWORDS,
-    status: 'inactive',
-    pricingTier: 'free',
-    notes: '무료 티어: 일 100회 요청. API 키 필요 (newsapi.org 가입).',
-  },
-  {
     name: 'Reuters Content API',
     description: '글로벌 M&A 실시간. 딜 뉴스 신속. 유료 API.',
     url: 'https://www.reuters.com/developers',
@@ -382,6 +372,8 @@ export async function testGlobalSource(sourceId: string): Promise<{
         return { success: false, message: 'RSS source is missing feed URL' };
       }
       return await testRssSource(source, startMs);
+    } else if (source.type === 'scraping') {
+      return await testScrapingSource(source);
     } else if (source.type === 'api') {
       return await testApiSource(source, startMs);
     } else {

@@ -156,6 +156,17 @@ export default function Articles() {
   const [previewArticle, setPreviewArticle] = useState<ArticleItem | null>(null);
 
   useEffect(() => {
+    const next = getDefaultDateRange();
+    setKeywords([]);
+    setSelectedSourceIds([]);
+    setStartDate(next.startDate);
+    setEndDate(next.endDate);
+    setArticles([]);
+    setSelectedIds(new Set());
+    setSearched(false);
+  }, []);
+
+  useEffect(() => {
     if (!companyId) return;
     const loadSources = async () => {
       const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
@@ -184,7 +195,7 @@ export default function Articles() {
         endDate,
         sourceIds: selectedSourceIds.length > 0 ? selectedSourceIds : undefined,
         statuses: ['analyzed', 'published'],
-        limit: 100,
+        limit: 300,
         offset: 0,
       }) as any;
       setArticles(result.data?.articles || []);

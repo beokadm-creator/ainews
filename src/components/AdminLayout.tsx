@@ -1,29 +1,40 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Globe, FileSearch, Building2,
-  Database, LogOut, Menu, X, Moon, Sun, ChevronRight, Key
+  LayoutDashboard,
+  Globe,
+  FileSearch,
+  Building2,
+  LogOut,
+  Menu,
+  X,
+  Moon,
+  Sun,
+  ChevronRight,
+  Key,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
 
-interface AdminLayoutProps { children: ReactNode; }
+interface AdminLayoutProps {
+  children: ReactNode;
+}
 
 const adminNav = [
   {
-    label: '수집 모니터링',
+    label: '수집 관리',
     items: [
-      { name: '수집 현황', href: '/admin', icon: LayoutDashboard, desc: '방식별 실시간 수집 상태' },
-      { name: '매체 라이브러리', href: '/admin/sources', icon: Globe, desc: 'RSS / API / 스크래핑 / 로컬PC' },
-      { name: '수집 기사 검증', href: '/admin/articles', icon: FileSearch, desc: '전체 기사 조회 & AI 검증 현황' },
-    ]
+      { name: '수집 현황', href: '/admin', icon: LayoutDashboard, desc: '수집과 분석 파이프라인 상태' },
+      { name: '매체 마스터 관리', href: '/admin/sources', icon: Globe, desc: 'RSS / API / 외부 스크래핑 통합 관리' },
+      { name: '수집 기사 검토', href: '/admin/articles', icon: FileSearch, desc: '수집 기사와 AI 판정 결과 검토' },
+    ],
   },
   {
-    label: '관리',
+    label: '운영 관리',
     items: [
-      { name: '회사 & 사용자', href: '/admin/companies', icon: Building2, desc: '고객사 및 계정 관리' },
-      { name: 'AI 설정', href: '/admin/settings', icon: Key, desc: '글로벌 AI 프로바이더 API 키 관리' },
-    ]
+      { name: '회사 관리', href: '/admin/companies', icon: Building2, desc: '회사 계정과 유료 매체 제공 여부 관리' },
+      { name: 'AI 설정', href: '/admin/settings', icon: Key, desc: '전사 AI 모델과 프롬프트 관리' },
+    ],
   },
 ];
 
@@ -39,21 +50,25 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     else document.documentElement.classList.remove('dark');
   }, [theme]);
 
-  const handleLogout = async () => { await logout(); navigate('/login'); };
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   const isActive = (href: string) =>
     href === '/admin' ? location.pathname === '/admin' : location.pathname.startsWith(href);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      {/* Mobile overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-gray-900 border-r border-white/5 flex flex-col transform transition-transform duration-300 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        {/* Logo */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-30 w-64 bg-gray-900 border-r border-white/5 flex flex-col transform transition-transform duration-300 lg:translate-x-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <div className="h-16 px-5 flex items-center justify-between border-b border-white/5">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 bg-[#d4af37] rounded-lg flex items-center justify-center">
@@ -69,13 +84,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </button>
         </div>
 
-        {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
-          {adminNav.map(group => (
+          {adminNav.map((group) => (
             <div key={group.label}>
               <p className="px-2 mb-1.5 text-[10px] font-bold uppercase tracking-widest text-white/25">{group.label}</p>
               <div className="space-y-0.5">
-                {group.items.map(item => {
+                {group.items.map((item) => {
                   const active = isActive(item.href);
                   return (
                     <Link
@@ -102,7 +116,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           ))}
         </nav>
 
-        {/* Footer */}
         <div className="p-3 border-t border-white/5">
           <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-white/5 mb-2">
             <div className="w-7 h-7 bg-[#d4af37] rounded-full flex items-center justify-center flex-shrink-0">
@@ -117,24 +130,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white/40 hover:text-white hover:bg-white/5 rounded-lg transition-colors"
           >
-            <LogOut className="w-3.5 h-3.5" />로그아웃
+            <LogOut className="w-3.5 h-3.5" />
+            로그아웃
           </button>
         </div>
       </aside>
 
-      {/* Main */}
       <div className="lg:pl-64 min-h-screen flex flex-col">
-        {/* Top bar */}
         <header className="sticky top-0 z-10 h-14 bg-gray-900/90 backdrop-blur border-b border-white/5 flex items-center justify-between px-4 lg:px-6">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-white/40 hover:text-white">
             <Menu className="w-5 h-5" />
           </button>
-          {/* Breadcrumb */}
           <div className="hidden lg:flex items-center gap-2 text-sm">
             <span className="text-white/30">EUM NEWS</span>
             <ChevronRight className="w-3.5 h-3.5 text-white/20" />
             <span className="text-white/70 font-medium">
-              {adminNav.flatMap(g => g.items).find(i => isActive(i.href))?.name || 'Superadmin'}
+              {adminNav.flatMap((group) => group.items).find((item) => isActive(item.href))?.name || 'Superadmin'}
             </span>
           </div>
           <div className="flex items-center gap-2 ml-auto">
@@ -144,9 +155,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-6">
-          {children}
-        </main>
+        <main className="flex-1 p-4 lg:p-6">{children}</main>
       </div>
     </div>
   );

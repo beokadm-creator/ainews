@@ -668,6 +668,9 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
     ...defaults,
     provider,
     model: sysData[`aiModels.${provider}`] || sysData.ai?.model || defaults.model,
+    filteringModel: sysData[`aiFilteringModels.${provider}`] || sysData.aiFilteringModels?.[provider] || sysData.ai?.filteringModel || undefined,
+    fallbackProvider: (sysData[`aiFallbackProviders.${provider}`] || sysData.aiFallbackProviders?.[provider] || sysData.ai?.fallbackProvider) as AiProvider | undefined || undefined,
+    fallbackModel: sysData[`aiFallbackModels.${provider}`] || sysData.aiFallbackModels?.[provider] || sysData.ai?.fallbackModel || undefined,
     baseUrl: sysData[`aiBaseUrls.${provider}`] || sysData.ai?.baseUrl || null,
     maxPendingBatch: 60,
     maxAnalysisBatch: 40,
@@ -1032,7 +1035,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
       throw new HttpsError('unauthenticated', 'Authentication required');
     }
     console.log('saveAiApiKey: Starting with data:', { ...request.data, apiKey: request.data?.apiKey ? '***' : undefined });
-    const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, setAsActive } = request.data || {};
+    const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, filteringModel, fallbackProvider, fallbackModel, setAsActive } = request.data || {};
 
     let companyId: string;
     try {
@@ -1083,11 +1086,21 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     if (model !== undefined) {
       updates[`aiModels.${provider}`] = model;
     }
+    if (filteringModel !== undefined) {
+      updates[`aiFilteringModels.${provider}`] = filteringModel || null;
+    }
+    if (fallbackProvider !== undefined) {
+      updates[`aiFallbackProviders.${provider}`] = fallbackProvider || null;
+    }
+    if (fallbackModel !== undefined) {
+      updates[`aiFallbackModels.${provider}`] = fallbackModel || null;
+    }
     // setAsActive이면 활성 프로바이더로 설정
     if (setAsActive) {
       updates['ai.provider'] = provider;
       if (model) updates['ai.model'] = model;
       if (baseUrl) updates['ai.baseUrl'] = baseUrl;
+      if (filteringModel !== undefined) updates['ai.filteringModel'] = filteringModel || null;
     }
     console.log('saveAiApiKey: Writing to companySettings:', { companyId, updates });
     await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
@@ -1112,7 +1125,11 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
         if (apiKey) nested.apiKeys = { [provider]: apiKey.trim() };
         if (baseUrl !== undefined) { nested.aiBaseUrls = { [provider]: baseUrl }; }
         if (model !== undefined) { nested.aiModels = { [provider]: model }; }
-        if (setAsActive) { nested.ai = { provider, model: model || undefined, baseUrl: baseUrl || undefined }; }
+        if (filteringModel !== undefined) { nested.aiFilteringModels = { [provider]: filteringModel || null }; }
+        if (filteringModel !== undefined) { nested.aiFilteringModels = { [provider]: filteringModel || null }; }
+        if (fallbackProvider !== undefined) { nested.aiFallbackProviders = { [provider]: fallbackProvider || null }; }
+        if (fallbackModel !== undefined) { nested.aiFallbackModels = { [provider]: fallbackModel || null }; }
+        if (setAsActive) { nested.ai = { provider, model: model || undefined, baseUrl: baseUrl || undefined, filteringModel: filteringModel || undefined, fallbackProvider: fallbackProvider || undefined, fallbackModel: fallbackModel || undefined }; }
         else { nested.ai = { provider }; }
         await sysDocRef.set(nested, { merge: true });
       }

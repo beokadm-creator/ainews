@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin';
 import { GLM_API_URL, OPENAI_API_URL, ANTHROPIC_API_URL } from '../config/constants';
 import { retryWithBackoff } from '../utils/errorHandling';
 import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils/secretManager';
-import { RuntimeAiConfig, AiProvider } from '../types/runtime';
+import { RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from '../types/runtime';
 import { syncArticlesToDedup } from './articleDedupService';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
@@ -330,14 +330,19 @@ async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Pro
   return getApiKeyByEnvKey(aiConfig.apiKeyEnvKey);
 }
 
-async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: { temperature?: number; maxTokens?: number }): Promise<ApiCallResult> {
+function isRetryableForFallback(error: any): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const status = error.response?.status;
+  return status === 429 || (status !== undefined && status >= 500) || status === undefined;
+}
+
+type ApiCallOptions = { temperature?: number; maxTokens?: number; maxRetries?: number };
+
+async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: ApiCallOptions): Promise<ApiCallResult> {
   return retryWithBackoff(async () => {
-    // ★ Use custom baseUrl if provided (e.g. https://z.ai/api/v1/chat/completions)
     let url = aiConfig.baseUrl || GLM_API_URL;
     if (url.endsWith('/')) url = url.slice(0, -1);
-    if (!url.endsWith('/chat/completions')) {
-      url += '/chat/completions';
-    }
+    if (!url.endsWith('/chat/completions')) url += '/chat/completions';
     console.log(`[AI-START] Calling ${aiConfig.provider} (${aiConfig.model}) at ${url}...`);
     const response = await axios.post(
       url,
@@ -347,9 +352,9 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
         temperature: options?.temperature ?? 0.2,
         ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
       },
-      { 
+      {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 240000 // 4분 타임아웃
+        timeout: 240000,
       }
     );
     const rawContent = response.data.choices?.[0]?.message?.content;
@@ -358,14 +363,11 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
       console.error('GLM empty content. finish_reason:', finishReason, 'full response:', JSON.stringify(response.data).substring(0, 500));
       throw new Error(`Model returned empty content. finish_reason: ${finishReason || 'unknown'}. Check model name "${aiConfig.model}" and endpoint.`);
     }
-    return {
-      content: rawContent.trim(),
-      usage: extractTokenUsage(response.data, 'glm'),
-    };
-  });
+    return { content: rawContent.trim(), usage: extractTokenUsage(response.data, 'glm') };
+  }, options?.maxRetries);
 }
 
-async function callOpenAiApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: { temperature?: number; maxTokens?: number }): Promise<ApiCallResult> {
+async function callOpenAiApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: ApiCallOptions): Promise<ApiCallResult> {
   return retryWithBackoff(async () => {
     const url = aiConfig.baseUrl || OPENAI_API_URL;
     const response = await axios.post(
@@ -378,14 +380,11 @@ async function callOpenAiApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
       },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
     );
-    return {
-      content: response.data.choices[0].message.content.trim(),
-      usage: extractTokenUsage(response.data, 'openai'),
-    };
-  });
+    return { content: response.data.choices[0].message.content.trim(), usage: extractTokenUsage(response.data, 'openai') };
+  }, options?.maxRetries);
 }
 
-async function callGeminiApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: { temperature?: number; maxTokens?: number }): Promise<ApiCallResult> {
+async function callGeminiApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: ApiCallOptions): Promise<ApiCallResult> {
   return retryWithBackoff(async () => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${aiConfig.model}:generateContent?key=${apiKey}`;
     const response = await axios.post(
@@ -400,14 +399,11 @@ async function callGeminiApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
       { headers: { 'Content-Type': 'application/json' } }
     );
     const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return {
-      content: content.trim(),
-      usage: extractTokenUsage(response.data, 'gemini'),
-    };
-  });
+    return { content: content.trim(), usage: extractTokenUsage(response.data, 'gemini') };
+  }, options?.maxRetries);
 }
 
-async function callClaudeApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: { temperature?: number; maxTokens?: number }): Promise<ApiCallResult> {
+async function callClaudeApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: ApiCallOptions): Promise<ApiCallResult> {
   return retryWithBackoff(async () => {
     const response = await axios.post(
       ANTHROPIC_API_URL,
@@ -426,15 +422,21 @@ async function callClaudeApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
       }
     );
     const content = response.data.content?.[0]?.text || '';
-    return {
-      content: content.trim(),
-      usage: extractTokenUsage(response.data, 'claude'),
-    };
-  });
+    return { content: content.trim(), usage: extractTokenUsage(response.data, 'claude') };
+  }, options?.maxRetries);
+}
+
+function routeToProvider(provider: string, prompt: string, apiKey: string, config: RuntimeAiConfig, opts?: ApiCallOptions): Promise<ApiCallResult> {
+  switch (provider) {
+    case 'gemini': return callGeminiApi(prompt, apiKey, config, opts);
+    case 'openai': return callOpenAiApi(prompt, apiKey, config, opts);
+    case 'claude': return callClaudeApi(prompt, apiKey, config, opts);
+    default:       return callGlmApi(prompt, apiKey, config, opts);
+  }
 }
 
 // ─────────────────────────────────────────
-// Unified API caller (routes by provider)
+// Unified API caller (routes by provider + fallback)
 // ─────────────────────────────────────────
 export async function callAiProvider(
   prompt: string,
@@ -446,16 +448,31 @@ export async function callAiProvider(
   const apiKey = await resolveApiKey(aiConfig, companyId);
   validateApiKey(apiKey, aiConfig.provider);
 
-  switch (aiConfig.provider) {
-    case 'openai':
-      return callOpenAiApi(prompt, apiKey, aiConfig, options);
-    case 'gemini':
-      return callGeminiApi(prompt, apiKey, aiConfig, options);
-    case 'claude':
-      return callClaudeApi(prompt, apiKey, aiConfig, options);
-    case 'glm':
-    default:
-      return callGlmApi(prompt, apiKey, aiConfig, options);
+  // fallback 설정 시 재시도 횟수를 줄여 빠르게 전환 (기본 4회 → 2회)
+  const primaryOpts: ApiCallOptions = { ...options, maxRetries: aiConfig.fallbackProvider ? 2 : undefined };
+
+  try {
+    return await routeToProvider(aiConfig.provider, prompt, apiKey, aiConfig, primaryOpts);
+  } catch (primaryError: any) {
+    // 429 / timeout / 5xx 이고 fallback이 설정된 경우 전환
+    if (aiConfig.fallbackProvider && isRetryableForFallback(primaryError)) {
+      const defaults = PROVIDER_DEFAULTS[aiConfig.fallbackProvider];
+      const fallbackConfig: RuntimeAiConfig = {
+        ...aiConfig,
+        provider: aiConfig.fallbackProvider,
+        model: aiConfig.fallbackModel || defaults.model,
+        baseUrl: undefined, // fallback provider 기본 URL 사용
+        apiKeyEnvKey: defaults.apiKeyEnvKey,
+      };
+      console.warn(
+        `[AI-FALLBACK] ${aiConfig.provider}(${aiConfig.model}) 실패: ${primaryError.message?.substring(0, 80)}` +
+        ` → ${fallbackConfig.provider}(${fallbackConfig.model}) 로 전환`
+      );
+      const fallbackKey = await resolveApiKey(fallbackConfig, companyId);
+      validateApiKey(fallbackKey, fallbackConfig.provider);
+      return routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, options);
+    }
+    throw primaryError;
   }
 }
 
@@ -712,9 +729,13 @@ export async function processRelevanceFiltering(options?: {
         } else {
           try {
             const resolvedCompanyId = article.companyId || options?.companyId;
+            // filteringModel이 설정된 경우 해당 모델로 교체 (빠른 판단 전용)
+            const filteringAiConfig = options!.aiConfig.filteringModel
+              ? { ...options!.aiConfig, model: options!.aiConfig.filteringModel }
+              : options!.aiConfig;
             aiRelevanceResult = await checkRelevance(
               { title: article.title, content: article.content || article.title, source: article.source },
-              options!.aiConfig,
+              filteringAiConfig,
               { companyId: resolvedCompanyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
               filters
             );
@@ -810,9 +831,9 @@ export async function processRelevanceFiltering(options?: {
       await syncArticlesToDedup(rejectedDocs, 'rejected');
     }
 
-    // 배치 간 딜레이 (API 레이트 리미팅)
-    if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 900));
+    // 에러가 많으면 잠시 대기, 정상 상태면 즉시 다음 배치 처리
+    if (i + parallelLimit < articles.length && recentErrorCount > 0) {
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
   }
 
@@ -929,9 +950,9 @@ export async function processDeepAnalysis(options?: {
       await batch.commit();
     }
 
-    // 배치 간 딜레이
-    if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 1200));
+    // 에러가 많으면 잠시 대기, 정상 상태면 즉시 다음 배치 처리
+    if (i + parallelLimit < articles.length && recentErrorCount > 0) {
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
   }
 

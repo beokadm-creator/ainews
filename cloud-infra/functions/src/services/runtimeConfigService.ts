@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import {
+  AiProvider,
   CompanyDocument,
   CompanyRuntimeSettings,
   PipelineInvocationOverrides,
@@ -17,7 +18,7 @@ const DEFAULT_FILTERS: RuntimeFilters = {
   excludeKeywords: [],
   sectors: [],
   sourceIds: [],
-  dateRange: 'today'
+  dateRange: 'week'
 };
 
 const DEFAULT_AI_CONFIG: RuntimeAiConfig = {
@@ -95,6 +96,9 @@ export async function getCompanyRuntimeConfig(
     ...DEFAULT_AI_CONFIG,
     provider: activeProvider as any,
     model: sysSettings[`aiModels.${activeProvider}`] || sysSettings.ai?.model || DEFAULT_AI_CONFIG.model,
+    filteringModel: sysSettings[`aiFilteringModels.${activeProvider}`] || sysSettings.aiFilteringModels?.[activeProvider] || sysSettings.ai?.filteringModel || undefined,
+    fallbackProvider: (sysSettings[`aiFallbackProviders.${activeProvider}`] || sysSettings.aiFallbackProviders?.[activeProvider] || sysSettings.ai?.fallbackProvider) as AiProvider | undefined || undefined,
+    fallbackModel: sysSettings[`aiFallbackModels.${activeProvider}`] || sysSettings.aiFallbackModels?.[activeProvider] || sysSettings.ai?.fallbackModel || undefined,
     baseUrl: sysSettings[`aiBaseUrls.${activeProvider}`] || sysSettings.ai?.baseUrl || null,
   };
 

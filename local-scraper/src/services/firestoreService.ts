@@ -41,6 +41,38 @@ export function hashUrl(url: string): string {
   return crypto.createHash('md5').update(url).digest('hex');
 }
 
+async function recordArticleDedupEntry(article: {
+  id?: string;
+  url: string;
+  title?: string;
+  source?: string;
+  sourceId?: string;
+  globalSourceId?: string;
+  publishedAt?: Date;
+  status?: string;
+}): Promise<void> {
+  if (!initialized || !article.url) return;
+
+  const db = admin.firestore();
+  const urlHash = hashUrl(article.url);
+  const ref = db.collection('articleDedup').doc(urlHash);
+
+  await ref.set({
+    id: urlHash,
+    urlHash,
+    normalizedUrl: article.url,
+    articleId: article.id || null,
+    sourceId: article.sourceId || null,
+    globalSourceId: article.globalSourceId || article.sourceId || null,
+    source: article.source || null,
+    title: article.title || null,
+    lastStatus: article.status || 'pending',
+    publishedAt: article.publishedAt || null,
+    firstSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
 /**
  * 이미 수집된 URL 해시 집합을 반환 (detail fetch 전 사전 필터링용).
  * sourceId 기준으로 최근 N개 urlHash를 로드.
@@ -48,17 +80,37 @@ export function hashUrl(url: string): string {
 export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Promise<Set<string>> {
   if (!initialized) return new Set();
   const db = admin.firestore();
-  const snap = await db.collection('articles')
-    .where('sourceId', '==', sourceId)
-    .orderBy('collectedAt', 'desc')
-    .limit(limit)
-    .get();
-  const hashes = new Set<string>();
-  snap.docs.forEach(d => {
-    const h = d.data().urlHash;
-    if (h) hashes.add(h);
-  });
-  return hashes;
+  try {
+    const snap = await db.collection('articleDedup')
+      .where('sourceId', '==', sourceId)
+      .orderBy('lastSeenAt', 'desc')
+      .limit(limit)
+      .get();
+    const hashes = new Set<string>();
+    snap.docs.forEach(d => {
+      const h = d.data().urlHash;
+      if (h) hashes.add(h);
+    });
+    return hashes;
+  } catch (err: any) {
+    // Firestore 복합 인덱스가 없거나 articleDedup 컬렉션이 비어있는 경우 빈 Set 반환
+    console.warn(`[getCollectedUrlHashes] articleDedup 조회 실패 (${sourceId}): ${err?.message}. articles 컬렉션으로 폴백합니다.`);
+    try {
+      const snap = await db.collection('articles')
+        .where('sourceId', '==', sourceId)
+        .orderBy('collectedAt', 'desc')
+        .limit(limit)
+        .get();
+      const hashes = new Set<string>();
+      snap.docs.forEach(d => {
+        const h = d.data().urlHash;
+        if (h) hashes.add(h);
+      });
+      return hashes;
+    } catch {
+      return new Set();
+    }
+  }
 }
 
 export interface ArticleData {
@@ -68,8 +120,12 @@ export interface ArticleData {
   publishedAt: Date;
   source: string;
   sourceId: string;
+  globalSourceId?: string;
   category?: string;
   isPaid?: boolean;
+  sourcePricingTier?: 'free' | 'paid' | 'requires_subscription';
+  priorityAnalysis?: boolean;
+  priorityAnalysisReason?: string;
   author?: string;
   subtitle?: string;
   date?: string;
@@ -87,12 +143,8 @@ export async function saveArticleGlobal(article: ArticleData): Promise<boolean> 
   const db = admin.firestore();
   const urlHash = hashUrl(article.url);
 
-  const existing = await db.collection('articles')
-    .where('urlHash', '==', urlHash)
-    .limit(1)
-    .get();
-
-  if (!existing.empty) return false;
+  const existingDedup = await db.collection('articleDedup').doc(urlHash).get();
+  if (existingDedup.exists) return false;
 
   const articleRef = db.collection('articles').doc();
   await articleRef.set({
@@ -103,7 +155,11 @@ export async function saveArticleGlobal(article: ArticleData): Promise<boolean> 
     publishedAt: article.publishedAt,
     source: article.source,
     sourceId: article.sourceId,
+    globalSourceId: article.globalSourceId || article.sourceId,
     sourceCategory: article.category || null,
+    sourcePricingTier: article.sourcePricingTier || (article.isPaid ? 'paid' : 'free'),
+    priorityAnalysis: article.priorityAnalysis ?? Boolean(article.isPaid),
+    priorityAnalysisReason: article.priorityAnalysisReason || (article.isPaid ? 'local paid source' : null),
     isPaid: article.isPaid ?? true, // 로컬 스크래퍼 기사는 유료
     author: article.author || null,
     subtitle: article.subtitle || null,
@@ -114,6 +170,12 @@ export async function saveArticleGlobal(article: ArticleData): Promise<boolean> 
     status: 'pending',
     urlHash,
     collectedBy: 'local-scraper',
+  });
+
+  await recordArticleDedupEntry({
+    id: articleRef.id,
+    ...article,
+    status: 'pending',
   });
 
   return true;

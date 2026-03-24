@@ -11,6 +11,10 @@
     ],
     "rewrites": [
       {
+        "source": "/shared-report/**",
+        "function": "sharedReportPage"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
@@ -24,7 +28,14 @@
         "node_modules",
         ".git",
         "firebase-debug.log",
-        "firebase-debug.*.log"
+        "firebase-debug.*.log",
+        "service-account.json",
+        "*.log",
+        "full_logs.txt",
+        "full_pipeline_logs.txt",
+        "logs.txt",
+        "deploy_output.log",
+        "*.md"
       ],
       "runtime": "nodejs22",
       "predeploy": [

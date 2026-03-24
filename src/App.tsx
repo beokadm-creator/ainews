@@ -16,7 +16,6 @@ import Articles from '@/pages/Articles';
 import ReportNew from '@/pages/ReportNew';
 import Briefing from '@/pages/Briefing';
 import History from '@/pages/History';
-import ManualEntry from '@/pages/ManualEntry';
 import MediaSelector from '@/pages/MediaSelector';
 import Team from '@/pages/Team';
 import Settings from '@/pages/Settings';
@@ -82,11 +81,6 @@ export default function App() {
         <Route path="/history" element={
           <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
             <Layout><History /></Layout>
-          </ProtectedRoute>
-        } />
-        <Route path="/manual-entry" element={
-          <ProtectedRoute requiredRole={['company_admin', 'company_editor']}>
-            <Layout><ManualEntry /></Layout>
           </ProtectedRoute>
         } />
         <Route path="/media" element={
