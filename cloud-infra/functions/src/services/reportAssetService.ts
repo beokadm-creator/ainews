@@ -11,6 +11,13 @@ interface ReportBranding {
   logoDataUrl: string | null;
 }
 
+interface OutputHtmlAsset {
+  output: any;
+  articles: any[];
+  html: string;
+  htmlFilename: string;
+}
+
 function stripMarkdownCodeFence(raw: string) {
   const trimmed = (raw || '').trim();
   if (!trimmed.startsWith('```')) {
@@ -222,25 +229,33 @@ function buildBrandedShell({
     <style>
       body {
         margin: 0;
-        background: #eef2f6;
+        background:
+          radial-gradient(circle at top left, rgba(212, 175, 55, 0.14), transparent 28%),
+          linear-gradient(180deg, #f3f6fa 0%, #e8edf4 100%);
         color: #111827;
         font-family: "Noto Sans KR Variable", "Malgun Gothic", sans-serif;
       }
       .brand-page {
-        max-width: 980px;
-        margin: 0 auto;
+        max-width: 1080px;
+        margin: 28px auto;
         background: #ffffff;
-        min-height: 100vh;
-        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+        min-height: calc(100vh - 56px);
+        border: 1px solid rgba(22, 50, 79, 0.08);
+        border-radius: 28px;
+        overflow: hidden;
+        box-shadow:
+          0 20px 45px rgba(15, 23, 42, 0.08),
+          0 6px 18px rgba(15, 23, 42, 0.06);
       }
       .brand-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 20px;
-        padding: 24px 36px;
-        border-bottom: 1px solid #dbe4ef;
-        background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        padding: 30px 38px 26px;
+        border-bottom: 1px solid #d9e2ec;
+        background:
+          linear-gradient(135deg, rgba(22, 50, 79, 0.98) 0%, rgba(28, 69, 111, 0.97) 52%, rgba(212, 175, 55, 0.92) 160%);
       }
       .brand-id {
         display: flex;
@@ -249,49 +264,63 @@ function buildBrandedShell({
         min-width: 0;
       }
       .brand-logo {
-        width: 52px;
-        height: 52px;
+        width: 58px;
+        height: 58px;
         object-fit: contain;
-        border-radius: 14px;
-        background: #fff;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.96);
+        padding: 6px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
       }
       .brand-badge {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 52px;
-        height: 52px;
-        border-radius: 14px;
-        background: #16324f;
-        color: #fff;
-        font-size: 24px;
+        width: 58px;
+        height: 58px;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.16);
+        color: #ffffff;
+        font-size: 26px;
         font-weight: 700;
+        border: 1px solid rgba(255,255,255,0.24);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
       }
       .brand-name {
-        font-size: 18px;
+        font-size: 20px;
         font-weight: 700;
-        color: #16324f;
+        color: #ffffff;
+        letter-spacing: -0.02em;
       }
       .brand-note {
         margin-top: 4px;
         font-size: 12px;
-        color: #64748b;
+        color: rgba(255,255,255,0.72);
       }
       .report-meta {
         text-align: right;
+        padding: 12px 14px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.14);
+        backdrop-filter: blur(8px);
       }
       .report-title {
-        font-size: 15px;
+        font-size: 16px;
         font-weight: 700;
-        color: #16324f;
+        color: #ffffff;
+        letter-spacing: -0.01em;
       }
       .report-date {
         margin-top: 4px;
         font-size: 12px;
-        color: #64748b;
+        color: rgba(255,255,255,0.72);
       }
       .report-body {
-        padding: 0;
+        padding: 30px 38px 0;
+      }
+      .report-body > *:first-child {
+        margin-top: 0 !important;
       }
       .report-body .container,
       .report-body .report-shell {
@@ -299,12 +328,151 @@ function buildBrandedShell({
         margin: 0;
         box-shadow: none;
       }
+      .report-body article.report-content,
+      .report-body .report-shell {
+        background: transparent !important;
+      }
+      .report-body .hero {
+        border-radius: 24px;
+        overflow: hidden;
+        margin-bottom: 22px;
+        box-shadow: 0 18px 32px rgba(22, 50, 79, 0.12);
+      }
+      .report-body .report-section,
+      .report-body section {
+        border-radius: 22px;
+        background: #ffffff;
+        border: 1px solid #e5ebf2;
+        box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
+        margin-bottom: 18px;
+      }
+      .report-body h1,
+      .report-body h2,
+      .report-body h3 {
+        letter-spacing: -0.02em;
+      }
+      .report-body p,
+      .report-body li {
+        line-height: 1.78;
+        color: #334155;
+      }
+      .report-body ul,
+      .report-body ol {
+        padding-left: 1.25rem;
+      }
+      .report-body table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: 16px;
+        font-size: 14px;
+      }
+      .report-body th,
+      .report-body td {
+        border: 1px solid #e5e7eb;
+        padding: 10px 12px;
+        vertical-align: top;
+      }
+      .report-body th {
+        background: #f8fafc;
+        color: #16324f;
+      }
+      .report-body blockquote {
+        margin: 18px 0;
+        padding: 14px 18px;
+        border-left: 4px solid #d4af37;
+        background: #fffaf0;
+        color: #475569;
+      }
+      .report-body .highlight-box,
+      .report-body .article-card {
+        box-shadow: none;
+      }
       .brand-footer {
-        padding: 16px 36px 32px;
+        padding: 18px 38px 32px;
         font-size: 12px;
-        color: #94a3b8;
-        border-top: 1px solid #e5e7eb;
-        background: #fafbfd;
+        color: #64748b;
+        border-top: 1px solid #e2e8f0;
+        background: linear-gradient(180deg, #fbfcfe 0%, #f3f6fa 100%);
+      }
+      @media (max-width: 768px) {
+        body {
+          background: #ffffff;
+        }
+        .brand-page {
+          max-width: 100%;
+          min-height: auto;
+          box-shadow: none;
+          margin: 0;
+          border-radius: 0;
+          border: none;
+        }
+        .brand-header {
+          display: block;
+          padding: 22px 18px 18px;
+        }
+        .brand-id {
+          align-items: center;
+        }
+        .brand-logo,
+        .brand-badge {
+          width: 44px;
+          height: 44px;
+          border-radius: 12px;
+        }
+        .brand-name {
+          font-size: 16px;
+        }
+        .brand-note,
+        .report-date {
+          font-size: 11px;
+        }
+        .report-meta {
+          margin-top: 14px;
+          text-align: left;
+        }
+        .report-body {
+          padding: 18px 18px 0;
+        }
+        .report-title {
+          font-size: 14px;
+        }
+        .brand-footer {
+          padding: 14px 18px 24px;
+        }
+        .hero {
+          padding: 26px 18px 20px !important;
+        }
+        .hero h1 {
+          font-size: 24px !important;
+        }
+        .hero p,
+        .eyebrow {
+          font-size: 12px !important;
+        }
+        .report-section {
+          padding: 18px !important;
+        }
+        .report-section h2 {
+          font-size: 17px !important;
+        }
+        .highlight-box {
+          padding: 14px !important;
+          border-radius: 12px !important;
+        }
+        .body-copy,
+        .article-main ul,
+        .article-main h3 {
+          font-size: 14px !important;
+          line-height: 1.7 !important;
+        }
+        .article-card {
+          display: block !important;
+          padding: 12px 0 !important;
+        }
+        .article-index {
+          margin-bottom: 6px;
+        }
       }
       @page {
         size: A4;
@@ -361,6 +529,26 @@ export async function generateEmailHtml(output: any, articles?: any[]) {
   return getOutputHtmlDocument(output, articles);
 }
 
+export async function buildOutputHtmlAsset(outputId: string): Promise<OutputHtmlAsset> {
+  const db = admin.firestore();
+  const outputDoc = await db.collection('outputs').doc(outputId).get();
+  if (!outputDoc.exists) {
+    throw new Error(`Output ${outputId} not found`);
+  }
+
+  const output = { id: outputDoc.id, ...(outputDoc.data() as any) };
+  const articles = await loadOutputArticles(output);
+  const html = await getOutputHtmlDocument(output, articles);
+  const fileStem = sanitizeFileName(output.title || `report-${outputId}`);
+
+  return {
+    output,
+    articles,
+    html,
+    htmlFilename: `${fileStem}.html`,
+  };
+}
+
 export async function buildReportPdfBuffer(output: any, articles?: any[]) {
   const html = await getOutputHtmlDocument(output, articles);
   const fontCss = await getFontCss();
@@ -387,24 +575,16 @@ export async function buildReportPdfBuffer(output: any, articles?: any[]) {
 }
 
 export async function buildOutputAssetBundle(outputId: string) {
-  const db = admin.firestore();
-  const outputDoc = await db.collection('outputs').doc(outputId).get();
-  if (!outputDoc.exists) {
-    throw new Error(`Output ${outputId} not found`);
-  }
-
-  const output = { id: outputDoc.id, ...(outputDoc.data() as any) };
-  const articles = await loadOutputArticles(output);
-  const html = await getOutputHtmlDocument(output, articles);
-  const pdfBuffer = await buildReportPdfBuffer(output, articles);
-  const fileStem = sanitizeFileName(output.title || `report-${outputId}`);
+  const htmlAsset = await buildOutputHtmlAsset(outputId);
+  const pdfBuffer = await buildReportPdfBuffer(htmlAsset.output, htmlAsset.articles);
+  const fileStem = sanitizeFileName(htmlAsset.output.title || `report-${outputId}`);
 
   return {
-    output,
-    articles,
-    html,
+    output: htmlAsset.output,
+    articles: htmlAsset.articles,
+    html: htmlAsset.html,
     pdfBuffer,
-    htmlFilename: `${fileStem}.html`,
+    htmlFilename: htmlAsset.htmlFilename,
     pdfFilename: `${fileStem}.pdf`,
   };
 }

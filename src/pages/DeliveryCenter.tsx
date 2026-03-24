@@ -75,7 +75,7 @@ function sanitizeReportHtml(raw: string) {
 export default function DeliveryCenter() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const companyId = (user as any)?.primaryCompanyId || null;
+  const companyId = (user as any)?.primaryCompanyId || (user as any)?.companyId || (user as any)?.companyIds?.[0] || null;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
@@ -96,6 +96,8 @@ export default function DeliveryCenter() {
   const [autoTimeKst, setAutoTimeKst] = useState('08:00');
   const [reservedAt, setReservedAt] = useState('');
   const [message, setMessage] = useState('');
+  const [defaultExternalPrompt, setDefaultExternalPrompt] = useState('');
+  const [defaultReportTitle, setDefaultReportTitle] = useState('');
 
   const [previewRequestId, setPreviewRequestId] = useState<string | null>(null);
   const [previewOutput, setPreviewOutput] = useState<any | null>(null);
@@ -116,8 +118,16 @@ export default function DeliveryCenter() {
 
     setLoading(true);
     try {
-      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
+      const [settingsDoc, subDoc] = await Promise.all([
+        getDoc(doc(db, 'companySettings', companyId)),
+        getDoc(doc(db, 'companySourceSubscriptions', companyId)),
+      ]);
       const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
+      const companySettings = settingsDoc.exists() ? (settingsDoc.data() as any) : {};
+      const externalPrompt = `${companySettings.reportPrompts?.external || ''}`.trim();
+      const publisherName = `${companySettings.branding?.publisherName || companySettings.companyName || ''}`.trim();
+      setDefaultExternalPrompt(externalPrompt);
+      setDefaultReportTitle(publisherName ? `${publisherName} 외부 리포트` : '외부 메일링 리포트');
 
       const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
         getDocs(collection(db, 'globalSources')),
@@ -152,8 +162,8 @@ export default function DeliveryCenter() {
       setName('');
       setEmailsText('');
       setKeywordsText('');
-      setReportTitle('');
-      setPrompt('');
+      setReportTitle(defaultReportTitle);
+      setPrompt(defaultExternalPrompt);
       setDatePreset('24h');
       setSourceIds([]);
       setAutoEnabled(true);
@@ -175,7 +185,7 @@ export default function DeliveryCenter() {
       ? selectedGroup.nextReservedSendAt.toDate()
       : (selectedGroup.nextReservedSendAt ? new Date(selectedGroup.nextReservedSendAt) : null);
     setReservedAt(nextReserved ? format(nextReserved, "yyyy-MM-dd'T'HH:mm") : '');
-  }, [selectedGroup]);
+  }, [defaultExternalPrompt, defaultReportTitle, selectedGroup]);
 
   useEffect(() => {
     if (!previewRequestId) return undefined;

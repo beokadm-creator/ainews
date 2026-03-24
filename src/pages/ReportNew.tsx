@@ -36,43 +36,92 @@ export default function ReportNew() {
   const endDate = searchParams.get('endDate');
 
   const [articles, setArticles] = useState<ArticlePreview[]>([]);
+  const [resolvedArticleIds, setResolvedArticleIds] = useState<string[]>([]);
   const [loadingArticles, setLoadingArticles] = useState(false);
   const [reportTitle, setReportTitle] = useState('');
   const [analysisPrompt, setAnalysisPrompt] = useState(
-    '팩트 기반으로만 요약하고, PE 업계에서 놓치면 안 되는 포인트와 체크포인트 중심으로 정리해주세요. 의견이나 제언은 제외합니다.',
+    '팩트 중심으로만 요약하고, PE 업계에서 놓치면 안 되는 체크포인트를 정리해주세요. AI 의견이나 추가 제언은 제외해주세요.',
   );
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState<{ outputId: string } | null>(null);
 
   useEffect(() => {
-    if (articleIds.length === 0) return;
     const loadArticles = async () => {
       setLoadingArticles(true);
       try {
-        const docs = await Promise.all(articleIds.map((articleId) => getDoc(doc(db, 'articles', articleId))));
-        setArticles(docs.filter((item) => item.exists()).map((item) => ({ id: item.id, ...(item.data() as any) })));
+        if (articleIds.length > 0) {
+          const docs = await Promise.all(articleIds.map((articleId) => getDoc(doc(db, 'articles', articleId))));
+          const nextArticles = docs
+            .filter((item) => item.exists())
+            .map((item) => ({ id: item.id, ...(item.data() as any) }));
+
+          setArticles(nextArticles);
+          setResolvedArticleIds(nextArticles.map((article) => article.id));
+          return;
+        }
+
+        if (!companyId) {
+          setArticles([]);
+          setResolvedArticleIds([]);
+          return;
+        }
+
+        const fn = httpsCallable(functions, 'searchArticles');
+        const result = await fn({
+          companyId,
+          keywords,
+          startDate,
+          endDate,
+          sourceIds,
+          statuses: ['analyzed', 'published'],
+          limit: 500,
+          offset: 0,
+        }) as any;
+
+        const nextArticles = result.data?.articles || [];
+        setArticles(nextArticles);
+        setResolvedArticleIds(nextArticles.map((article: ArticlePreview) => article.id));
       } finally {
         setLoadingArticles(false);
       }
     };
+
     loadArticles().catch(console.error);
-  }, [articleIds]);
+  }, [articleIds, companyId, endDate, keywords, sourceIds, startDate]);
+
+  useEffect(() => {
+    const loadCompanyPrompt = async () => {
+      if (!companyId) return;
+      const settingsDoc = await getDoc(doc(db, 'companySettings', companyId));
+      if (!settingsDoc.exists()) return;
+      const settings = settingsDoc.data() as any;
+      const companyPrompt = `${settings?.reportPrompts?.internal || ''}`.trim();
+      if (companyPrompt) {
+        setAnalysisPrompt(companyPrompt);
+      }
+    };
+
+    loadCompanyPrompt().catch(console.error);
+  }, [companyId]);
 
   const handleGenerate = async () => {
-    if (!companyId) return;
+    if (!companyId || resolvedArticleIds.length === 0) return;
+
     setSubmitting(true);
     try {
       const fn = httpsCallable(functions, 'requestManagedReport');
       const result = await fn({
         companyId,
         mode: 'internal',
-        articleIds,
-        filters: articleIds.length > 0 ? undefined : {
-          sourceIds,
-          keywords,
-          startDate,
-          endDate,
-        },
+        articleIds: resolvedArticleIds,
+        filters: articleIds.length > 0
+          ? undefined
+          : {
+              sourceIds,
+              keywords,
+              startDate,
+              endDate,
+            },
         reportTitle: reportTitle.trim() || undefined,
         prompt: analysisPrompt.trim(),
       }) as any;
@@ -89,9 +138,9 @@ export default function ReportNew() {
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
           <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
         </div>
-        <h1 className="mt-6 text-2xl font-bold text-gray-900 dark:text-white">내부 리포트 생성을 시작했습니다.</h1>
+        <h1 className="mt-6 text-2xl font-bold text-gray-900 dark:text-white">내부 리포트 생성이 시작되었습니다.</h1>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          AI가 기사 묶음을 분석하고 있습니다. 완료되면 내부 리포트 목록에서 확인할 수 있습니다.
+          AI가 선택된 기사 묶음을 기준으로 분석 중입니다. 완료되면 내부 리포트 목록에서 바로 확인할 수 있습니다.
         </p>
         <div className="mt-6 flex justify-center gap-3">
           <button
@@ -123,7 +172,7 @@ export default function ReportNew() {
         </button>
         <h1 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">내부 리포트 생성</h1>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          사실 중심의 내부 분석 리포트를 생성합니다. AI의 추가 견해나 투자 제언은 제외됩니다.
+          검색 결과와 동일한 기사 집합을 기준으로 내부 분석 리포트를 생성합니다.
         </p>
       </div>
 
@@ -133,29 +182,38 @@ export default function ReportNew() {
           리포트 대상
         </div>
 
-        {articleIds.length > 0 ? (
+        {loadingArticles ? (
+          <div className="mt-6 flex items-center justify-center py-10">
+            <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+          </div>
+        ) : articleIds.length > 0 ? (
           <div className="mt-4">
-            <p className="text-sm text-gray-500 dark:text-gray-400">선택 기사 {articleIds.length}건</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">선택 기사 {resolvedArticleIds.length}건</p>
             <div className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
-              {loadingArticles ? (
-                <div className="flex items-center justify-center py-10">
-                  <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+              {articles.map((article, index) => (
+                <div key={article.id} className="px-4 py-3">
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
+                  <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
                 </div>
-              ) : (
-                articles.map((article, index) => (
-                  <div key={article.id} className="px-4 py-3">
-                    <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
-                    <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                  </div>
-                ))
-              )}
+              ))}
             </div>
           </div>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-gray-300 px-4 py-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
             검색 조건 전체를 기준으로 리포트를 생성합니다.
             <div className="mt-2">키워드: {keywords.length > 0 ? keywords.join(', ') : '없음'}</div>
-            <div className="mt-1">매체 수: {sourceIds.length}</div>
+            <div className="mt-1">대상 매체 수: {sourceIds.length}</div>
+            <div className="mt-1">확정 기사 수: {resolvedArticleIds.length}</div>
+            {articles.length > 0 && (
+              <div className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
+                {articles.slice(0, 12).map((article, index) => (
+                  <div key={article.id} className="px-4 py-3">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -173,7 +231,7 @@ export default function ReportNew() {
               value={reportTitle}
               onChange={(event) => setReportTitle(event.target.value)}
               className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
-              placeholder="미입력 시 AI가 생성합니다."
+              placeholder="비워두면 AI가 생성합니다."
             />
           </div>
 
@@ -192,7 +250,7 @@ export default function ReportNew() {
       <div className="flex items-center gap-3">
         <button
           onClick={handleGenerate}
-          disabled={submitting}
+          disabled={submitting || resolvedArticleIds.length === 0}
           className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-6 py-3 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}

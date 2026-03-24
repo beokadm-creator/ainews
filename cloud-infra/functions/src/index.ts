@@ -13,15 +13,16 @@ setGlobalOptions({
 });
 import * as admin from 'firebase-admin';
 import axios from 'axios';
+import { randomBytes } from 'crypto';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
-import { buildOutputAssetBundle } from './services/reportAssetService';
+import { buildOutputAssetBundle, buildOutputHtmlAsset } from './services/reportAssetService';
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
-import { purgeRejectedArticlesPreservingDedupe } from './services/articleDedupService';
+import { purgeRejectedArticlesPreservingDedupe, syncArticlesToDedup } from './services/articleDedupService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
@@ -73,6 +74,13 @@ interface ManagedReportFilters {
   startDate?: string | null;
   endDate?: string | null;
   limit?: number;
+}
+
+interface CompanyReportPromptSettings {
+  internalPrompt: string;
+  externalPrompt: string;
+  companyName: string | null;
+  publisherName: string | null;
 }
 
 function getPresetWindowHours(datePreset?: ManagedReportFilters['datePreset']) {
@@ -284,10 +292,14 @@ function buildManagedReportPrompt(
   mode: ManagedReportMode,
   sourceNames: string[],
   basePrompt?: string,
+  keywords: string[] = [],
 ) {
   const sourceText = sourceNames.length > 0
     ? `대상 매체: ${sourceNames.join(', ')}`
     : '대상 매체: 구독 중인 전체 선택 매체';
+  const keywordText = keywords.length > 0
+    ? `핵심 키워드: ${keywords.join(', ')}`
+    : '핵심 키워드: 별도 지정 없음';
 
   const sharedRules = [
     '모든 문장은 한국어로 작성합니다.',
@@ -300,6 +312,7 @@ function buildManagedReportPrompt(
   if (mode === 'external') {
     return `${sharedRules}
 ${sourceText}
+${keywordText}
 외부 배포용 데일리 리포트 형식으로 작성합니다.
 분량은 임원 메일로 바로 읽을 수 있게 간결하게 유지합니다.
 구성은 다음 순서를 따릅니다:
@@ -312,6 +325,7 @@ ${basePrompt || ''}`.trim();
 
   return `${sharedRules}
 ${sourceText}
+${keywordText}
 내부 분석용 리포트 형식으로 작성합니다.
 구성은 다음 순서를 따릅니다:
 1. 핵심 요약
@@ -322,8 +336,36 @@ ${sourceText}
 ${basePrompt || ''}`.trim();
 }
 
+async function getCompanyReportPromptSettings(companyId: string): Promise<CompanyReportPromptSettings> {
+  const settingsDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
+  const settings = (settingsDoc.data() || {}) as any;
+
+  return {
+    internalPrompt: `${settings?.reportPrompts?.internal || ''}`.trim(),
+    externalPrompt: `${settings?.reportPrompts?.external || ''}`.trim(),
+    companyName: settings?.companyName || null,
+    publisherName: settings?.branding?.publisherName || null,
+  };
+}
+
+async function resolveManagedReportBasePrompt(companyId: string, mode: ManagedReportMode, requestedPrompt?: string) {
+  const trimmedRequestedPrompt = `${requestedPrompt || ''}`.trim();
+  if (trimmedRequestedPrompt) {
+    return trimmedRequestedPrompt;
+  }
+
+  const companyPrompts = await getCompanyReportPromptSettings(companyId);
+  return mode === 'external'
+    ? companyPrompts.externalPrompt
+    : companyPrompts.internalPrompt;
+}
+
 function getFunctionsBaseUrl() {
   return 'https://us-central1-eumnews-9a99c.cloudfunctions.net';
+}
+
+function getPublicAppUrl() {
+  return 'https://eumnews-9a99c.web.app';
 }
 
 function triggerManagedReportProcessing(payload: {
@@ -387,14 +429,16 @@ async function executeManagedReport({
   }
 
   const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
-  const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, output.analysisPrompt || '');
+  const keywordList = Array.isArray(output.filters?.keywords) ? output.filters.keywords : [];
+  const basePrompt = await resolveManagedReportBasePrompt(companyId, output.serviceMode || 'internal', output.analysisPrompt || '');
+  const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList);
   const runtime = await getCompanyRuntimeConfig(companyId);
   const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
 
   const result = await generateCustomReport({
     companyId,
     articleIds: reportArticles.map((article) => article.id),
-    keywords: output.filters?.keywords || [],
+    keywords: keywordList,
     analysisPrompt: prompt,
     reportTitle,
     requestedBy: requestedBy || output.requestedBy || '__system__',
@@ -540,8 +584,8 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
     provider,
     model: sysData[`aiModels.${provider}`] || sysData.ai?.model || defaults.model,
     baseUrl: sysData[`aiBaseUrls.${provider}`] || sysData.ai?.baseUrl || null,
-    maxPendingBatch: 20,
-    maxAnalysisBatch: 10,
+    maxPendingBatch: 60,
+    maxAnalysisBatch: 40,
     // 슈퍼어드민이 커스텀 설정한 프롬프트가 있으면 사용, 없으면 코드 기본값
     relevancePrompt: promptData.relevancePrompt || undefined,
     analysisPrompt: promptData.analysisPrompt || undefined,
@@ -1013,6 +1057,47 @@ export const updateCompanySettings = onCall({ region: 'us-central1', cors: true,
   if (Object.keys(updates).length === 0) return { success: false, message: 'No updates provided' };
   await db.collection('companySettings').doc(targetCompanyId).set(updates, { merge: true });
   return { success: true };
+});
+
+export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const {
+    companyId: rawCompanyId,
+    companyName,
+    publisherName,
+    logoDataUrl,
+    internalPrompt,
+    externalPrompt,
+  } = request.data || {};
+
+  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+  const access = await assertCompanyAccess(request.auth.uid, companyId);
+  if (!['superadmin', 'company_admin'].includes(access.role)) {
+    throw new HttpsError('permission-denied', 'Company admin or superadmin required');
+  }
+
+  const safeCompanyName = `${companyName || publisherName || ''}`.trim() || '이음프라이빗에쿼티';
+  const safePublisherName = `${publisherName || companyName || ''}`.trim() || safeCompanyName;
+  const safeLogoDataUrl = typeof logoDataUrl === 'string' && logoDataUrl.trim()
+    ? logoDataUrl.trim()
+    : null;
+
+  await admin.firestore().collection('companySettings').doc(companyId).set({
+    companyName: safeCompanyName,
+    reportPrompts: {
+      internal: `${internalPrompt || ''}`.trim(),
+      external: `${externalPrompt || ''}`.trim(),
+    },
+    branding: {
+      publisherName: safePublisherName,
+      logoDataUrl: safeLogoDataUrl,
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  }, { merge: true });
+
+  return { success: true, companyId };
 });
 // ─────────────────────────────────────────
 // [NEW] Test AI Provider Connection
@@ -1779,7 +1864,7 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   return sendBriefingToTelegram(outputId);
 });
 export const downloadReportAsset = onCall(
-  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -1798,20 +1883,106 @@ export const downloadReportAsset = onCall(
     const companyId = output.companyId || request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
     await assertCompanyAccess(request.auth.uid, companyId);
 
-    const assetBundle = await buildOutputAssetBundle(outputId);
     if (format === 'html') {
+      const htmlAsset = await buildOutputHtmlAsset(outputId);
       return {
-        filename: assetBundle.htmlFilename,
+        filename: htmlAsset.htmlFilename,
         mimeType: 'text/html;charset=utf-8',
-        base64: Buffer.from(assetBundle.html, 'utf8').toString('base64'),
+        base64: Buffer.from(htmlAsset.html, 'utf8').toString('base64'),
       };
     }
 
+    const assetBundle = await buildOutputAssetBundle(outputId);
     return {
       filename: assetBundle.pdfFilename,
       mimeType: 'application/pdf',
       base64: assetBundle.pdfBuffer.toString('base64'),
     };
+  },
+);
+
+export const createReportShareLink = onCall(
+  { region: 'us-central1', timeoutSeconds: 120, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const outputId = request.data?.id;
+    const regenerate = request.data?.regenerate === true;
+    if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
+
+    const outputRef = admin.firestore().collection('outputs').doc(outputId);
+    const outputDoc = await outputRef.get();
+    if (!outputDoc.exists) {
+      throw new HttpsError('not-found', 'Output not found');
+    }
+
+    const output = outputDoc.data() as any;
+    const companyId = output.companyId || request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const shareToken = !regenerate && output.shareToken
+      ? output.shareToken
+      : randomBytes(18).toString('base64url');
+    const shareUrl = `${getPublicAppUrl()}/shared-report/${shareToken}`;
+
+    await outputRef.set({
+      shareEnabled: true,
+      shareToken,
+      shareUrl,
+      shareUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      shareUpdatedBy: request.auth.uid,
+    }, { merge: true });
+
+    return {
+      success: true,
+      shareToken,
+      shareUrl,
+    };
+  },
+);
+
+export const sharedReportPage = onRequest(
+  { region: 'us-central1', timeoutSeconds: 120, cors: true, invoker: 'public' },
+  async (request, response) => {
+    const tokenFromPath = `${request.path || ''}`.split('/').filter(Boolean).pop();
+    const shareToken = `${request.query.token || tokenFromPath || ''}`.trim();
+
+    if (!shareToken) {
+      response.status(400).send('Missing share token');
+      return;
+    }
+
+    const outputSnap = await admin.firestore()
+      .collection('outputs')
+      .where('shareToken', '==', shareToken)
+      .where('shareEnabled', '==', true)
+      .limit(1)
+      .get();
+
+    if (outputSnap.empty) {
+      response.status(404).send('Shared report not found');
+      return;
+    }
+
+    const output = { id: outputSnap.docs[0].id, ...(outputSnap.docs[0].data() as any) };
+    const htmlAsset = await buildOutputHtmlAsset(output.id);
+    const sharedHtml = htmlAsset.html.replace(
+      '</body>',
+      `<script>
+        (function () {
+          var title = document.querySelector('.report-title');
+          if (title) document.title = title.textContent || document.title;
+        })();
+      </script></body>`
+    );
+
+    await outputSnap.docs[0].ref.set({
+      shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    response.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    response.status(200).send(sharedHtml);
   },
 );
 
@@ -2465,14 +2636,16 @@ export const processManagedReportHttp = onRequest(
         }
 
         const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
-        const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, output.analysisPrompt || '');
+        const keywordList = Array.isArray(output.filters?.keywords) ? output.filters.keywords : [];
+        const basePrompt = await resolveManagedReportBasePrompt(companyId, output.serviceMode || 'internal', output.analysisPrompt || '');
+        const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList);
         const runtime = await getCompanyRuntimeConfig(companyId);
         const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
 
         const result = await generateCustomReport({
           companyId,
           articleIds: reportArticles.map((article) => article.id),
-          keywords: output.filters?.keywords || [],
+          keywords: keywordList,
           analysisPrompt: prompt,
           reportTitle,
           requestedBy: requestedBy || output.requestedBy || '__system__',
@@ -2883,8 +3056,14 @@ export const cleanupRejectedArticles = onSchedule(
   async () => {
     const db = admin.firestore();
     const q = db.collection('articles').where('status', '==', 'rejected');
-    const deleted = await purgeRejectedArticlesByQuery(db, q);
-    logger.info(`cleanupRejectedArticles removed ${deleted} rejected articles`);
+    const snapshot = await q.limit(500).get();
+    if (snapshot.empty) {
+      logger.info('cleanupRejectedArticles found no rejected articles to sync');
+      return;
+    }
+
+    const synced = await syncArticlesToDedup(snapshot.docs, 'rejected');
+    logger.info(`cleanupRejectedArticles synced ${synced} rejected articles without deleting them`);
   }
 );
 

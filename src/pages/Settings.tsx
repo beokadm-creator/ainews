@@ -10,7 +10,7 @@ import {
   Save,
   Sparkles,
 } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -27,7 +27,7 @@ function readFileAsDataUrl(file: File) {
 
 export default function Settings() {
   const { user } = useAuthStore();
-  const companyId = (user as any)?.primaryCompanyId || null;
+  const companyId = (user as any)?.primaryCompanyId || (user as any)?.companyId || (user as any)?.companyIds?.[0] || null;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -78,17 +78,15 @@ export default function Settings() {
     if (!companyId) return;
     setSaving(true);
     try {
-      await setDoc(doc(db, 'companySettings', companyId), {
-        companyName: publisherName.trim() || '이음프라이빗에쿼티',
-        reportPrompts: {
-          internal: internalPrompt.trim(),
-          external: externalPrompt.trim(),
-        },
-        branding: {
-          publisherName: publisherName.trim() || '이음프라이빗에쿼티',
-          logoDataUrl: logoDataUrl || null,
-        },
-      }, { merge: true });
+      const fn = httpsCallable(functions, 'saveCompanySettings');
+      await fn({
+        companyId,
+        companyName: publisherName.trim(),
+        publisherName: publisherName.trim(),
+        internalPrompt: internalPrompt.trim(),
+        externalPrompt: externalPrompt.trim(),
+        logoDataUrl: logoDataUrl || null,
+      });
     } finally {
       setSaving(false);
     }

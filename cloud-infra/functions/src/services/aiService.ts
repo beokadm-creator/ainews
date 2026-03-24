@@ -4,7 +4,7 @@ import { GLM_API_URL, OPENAI_API_URL, ANTHROPIC_API_URL } from '../config/consta
 import { retryWithBackoff } from '../utils/errorHandling';
 import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils/secretManager';
 import { RuntimeAiConfig, AiProvider } from '../types/runtime';
-import { purgeRejectedArticlesPreservingDedupe } from './articleDedupService';
+import { syncArticlesToDedup } from './articleDedupService';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
 const OPENAI_COST_PER_1K_TOKENS = { input: 0.005, output: 0.015 };
@@ -656,9 +656,10 @@ export async function processRelevanceFiltering(options?: {
 
   let processed = 0;
   let passed = 0;
+  let failed = 0;
 
   // ── 병렬 처리: 10개씩 동시 AI 호출 (안정성 우선) ──
-  const parallelLimit = Math.max(2, Math.min(4, getDynamicBatchSize(Math.min(4, options?.aiConfig.maxPendingBatch || 4))));
+  const parallelLimit = Math.max(3, Math.min(6, getDynamicBatchSize(Math.min(6, options?.aiConfig.maxPendingBatch || 6))));
   const articles = pendingArticlesSnapshot.docs;
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
@@ -762,7 +763,7 @@ export async function processRelevanceFiltering(options?: {
     // 결과를 일괄 업데이트
     const batch = db.batch();
     const rejectedDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
-    for (const { doc, result, aiRelevanceResult, priorityDecision } of results) {
+    for (const { doc, result, aiRelevanceResult, priorityDecision, error } of results) {
       if (result) {
         batch.update(doc.ref, {
           status: result.isRelevant ? 'filtered' : 'rejected',
@@ -776,26 +777,46 @@ export async function processRelevanceFiltering(options?: {
           analysisPriority: priorityDecision?.priority || 0,
           priorityAnalysisReason: priorityDecision?.reason || null,
           sourcePricingTier: priorityDecision?.sourceMeta?.pricingTier || doc.data()?.sourcePricingTier || null,
+          relevanceAttemptCount: admin.firestore.FieldValue.delete(),
+          lastAiErrorStage: admin.firestore.FieldValue.delete(),
+          lastAiError: admin.firestore.FieldValue.delete(),
+          lastAiErrorAt: admin.firestore.FieldValue.delete(),
         });
         processed++;
         if (result.isRelevant) passed++;
-        else rejectedDocs.push(doc);
+        else {
+          rejectedDocs.push(doc);
+        }
+      } else if (error) {
+        const currentAttempts = Number(doc.data()?.relevanceAttemptCount || 0);
+        const nextAttempts = currentAttempts + 1;
+        const shouldEscalate = nextAttempts >= 3;
+        batch.update(doc.ref, {
+          status: shouldEscalate ? 'ai_error' : 'pending',
+          relevanceAttemptCount: nextAttempts,
+          lastAiErrorStage: 'relevance',
+          lastAiError: error.message || 'Unknown relevance error',
+          lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        failed++;
       }
     }
     if (results.some(r => r.result)) {
       await batch.commit();
+    } else if (results.some(r => r.error)) {
+      await batch.commit();
     }
     if (rejectedDocs.length > 0) {
-      await purgeRejectedArticlesPreservingDedupe(rejectedDocs);
+      await syncArticlesToDedup(rejectedDocs, 'rejected');
     }
 
     // 배치 간 딜레이 (API 레이트 리미팅)
     if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise(resolve => setTimeout(resolve, 900));
     }
   }
 
-  return { success: true, processed, passed };
+  return { success: true, processed, passed, failed };
 }
 
 // ─────────────────────────────────────────
@@ -821,9 +842,10 @@ export async function processDeepAnalysis(options?: {
   console.log(`[DeepAnalysis] Found ${filteredArticlesSnapshot.size} filtered articles to analyze.`);
 
   let processed = 0;
+  let failed = 0;
 
   // ── 병렬 처리: 5개씩 동시 분석 (안정성 우선) ──
-  const parallelLimit = Math.max(1, Math.min(2, getDynamicBatchSize(Math.min(2, options?.aiConfig.maxAnalysisBatch || 2))));
+  const parallelLimit = Math.max(2, Math.min(4, getDynamicBatchSize(Math.min(4, options?.aiConfig.maxAnalysisBatch || 4))));
   const articles = (await Promise.all(filteredArticlesSnapshot.docs.map(async (doc) => {
     const article = doc.data() as any;
     const priorityDecision = await getSourcePriorityDecision(article);
@@ -867,7 +889,7 @@ export async function processDeepAnalysis(options?: {
 
     // 결과 일괄 업데이트
     const batch = db.batch();
-    for (const { doc, analysisResult, priorityDecision } of results) {
+    for (const { doc, analysisResult, priorityDecision, error } of results) {
       if (analysisResult) {
         batch.update(doc.ref, {
           status: 'analyzed',
@@ -881,19 +903,37 @@ export async function processDeepAnalysis(options?: {
           priorityAnalysis: priorityDecision?.isPriority || false,
           analysisPriority: priorityDecision?.priority || 0,
           priorityAnalysisReason: priorityDecision?.reason || null,
+          analysisAttemptCount: admin.firestore.FieldValue.delete(),
+          lastAiErrorStage: admin.firestore.FieldValue.delete(),
+          lastAiError: admin.firestore.FieldValue.delete(),
+          lastAiErrorAt: admin.firestore.FieldValue.delete(),
         });
         processed++;
+      } else if (error) {
+        const currentAttempts = Number(doc.data()?.analysisAttemptCount || 0);
+        const nextAttempts = currentAttempts + 1;
+        const shouldEscalate = nextAttempts >= 3;
+        batch.update(doc.ref, {
+          status: shouldEscalate ? 'analysis_error' : 'filtered',
+          analysisAttemptCount: nextAttempts,
+          lastAiErrorStage: 'analysis',
+          lastAiError: (error as any)?.message || 'Unknown analysis error',
+          lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        failed++;
       }
     }
     if (results.some(r => r.analysisResult)) {
+      await batch.commit();
+    } else if (results.some(r => r.error)) {
       await batch.commit();
     }
 
     // 배치 간 딜레이
     if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      await new Promise(resolve => setTimeout(resolve, 1200));
     }
   }
 
-  return { success: true, processed };
+  return { success: true, processed, failed };
 }
