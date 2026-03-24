@@ -4,6 +4,7 @@ import { GLM_API_URL, OPENAI_API_URL, ANTHROPIC_API_URL } from '../config/consta
 import { retryWithBackoff } from '../utils/errorHandling';
 import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils/secretManager';
 import { RuntimeAiConfig, AiProvider } from '../types/runtime';
+import { purgeRejectedArticlesPreservingDedupe } from './articleDedupService';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
 const OPENAI_COST_PER_1K_TOKENS = { input: 0.005, output: 0.015 };
@@ -33,6 +34,24 @@ interface ApiCallResult {
   content: string;
   usage: TokenUsage;
 }
+
+interface SourcePriorityDecision {
+  isPriority: boolean;
+  priority: number;
+  reason: string | null;
+  sourceMeta: Record<string, any> | null;
+}
+
+const PRIORITY_SOURCE_NAME_PATTERNS = [
+  '더벨',
+  'thebell',
+  'the bell',
+  '마켓인사이트',
+  'marketinsight',
+  'market insight',
+];
+
+const sourceMetaCache = new Map<string, Record<string, any> | null>();
 
 // ─────────────────────────────────────────
 // Default Prompts
@@ -119,7 +138,7 @@ function getCostPerKTokens(provider: AiProvider) {
 // ─────────────────────────────────────────
 // AI Cost Tracking
 // ─────────────────────────────────────────
-async function trackAiCost(
+export async function trackAiCost(
   stage: string,
   usage: TokenUsage,
   model: string,
@@ -157,6 +176,7 @@ async function trackAiCost(
 // ─────────────────────────────────────────
 let recentErrorCount = 0;
 let lastErrorReset = Date.now();
+let aiThrottleUntil = 0;
 const ERROR_WINDOW_MS = 5 * 60 * 1000;
 const MAX_ERROR_RATE = 0.3;
 
@@ -171,6 +191,100 @@ function recordError(): void { recentErrorCount++; }
 
 function getRateLimitDelay(attempt: number): number {
   return Math.min(5000, 500 * Math.pow(2, attempt));
+}
+
+async function waitForAiThrottleWindow(): Promise<void> {
+  const waitMs = aiThrottleUntil - Date.now();
+  if (waitMs > 0) {
+    console.warn(`[AI-THROTTLE] Cooling down for ${waitMs}ms before next provider call.`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+}
+
+function registerAiRateLimit(error: any): void {
+  if (!axios.isAxiosError(error) || error.response?.status !== 429) return;
+
+  const retryAfterHeader = error.response?.headers?.['retry-after'];
+  const retryAfterSeconds = Number(Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader);
+  const cooldownMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? retryAfterSeconds * 1000
+    : 15000;
+
+  aiThrottleUntil = Math.max(aiThrottleUntil, Date.now() + cooldownMs);
+}
+
+function normalizeSourceName(name?: string): string {
+  return (name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+async function loadSourceMetadata(article: any): Promise<Record<string, any> | null> {
+  const db = admin.firestore();
+  const sourceId = article?.globalSourceId || article?.sourceId;
+  if (sourceId) {
+    const cacheKey = `id:${sourceId}`;
+    if (sourceMetaCache.has(cacheKey)) {
+      return sourceMetaCache.get(cacheKey) || null;
+    }
+
+    const doc = await db.collection('globalSources').doc(sourceId).get();
+    let data = doc.exists ? { id: doc.id, ...doc.data() } : null;
+    if (!data) {
+      const fallbackSnap = await db.collection('globalSources')
+        .where('localScraperId', '==', sourceId)
+        .limit(1)
+        .get();
+      data = fallbackSnap.empty ? null : { id: fallbackSnap.docs[0].id, ...fallbackSnap.docs[0].data() };
+    }
+    sourceMetaCache.set(cacheKey, data);
+    return data;
+  }
+
+  const sourceName = normalizeSourceName(article?.source);
+  if (!sourceName) return null;
+
+  const cacheKey = `name:${sourceName}`;
+  if (sourceMetaCache.has(cacheKey)) {
+    return sourceMetaCache.get(cacheKey) || null;
+  }
+
+  const snap = await db.collection('globalSources')
+    .where('name', '==', article.source)
+    .limit(1)
+    .get();
+  const data = snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+  sourceMetaCache.set(cacheKey, data);
+  return data;
+}
+
+async function getSourcePriorityDecision(article: any): Promise<SourcePriorityDecision> {
+  const sourceMeta = await loadSourceMetadata(article);
+  const sourceName = normalizeSourceName(article?.source || sourceMeta?.name);
+  const pricingTier = sourceMeta?.pricingTier || article?.sourcePricingTier || null;
+
+  if (pricingTier === 'paid' || pricingTier === 'requires_subscription') {
+    return {
+      isPriority: true,
+      priority: pricingTier === 'paid' ? 120 : 110,
+      reason: `priority pricing tier: ${pricingTier}`,
+      sourceMeta,
+    };
+  }
+
+  if (PRIORITY_SOURCE_NAME_PATTERNS.some((pattern) => sourceName.includes(pattern))) {
+    return {
+      isPriority: true,
+      priority: 100,
+      reason: 'priority source name match',
+      sourceMeta,
+    };
+  }
+
+  return {
+    isPriority: Boolean(article?.priorityAnalysis),
+    priority: Number(article?.analysisPriority || 0),
+    reason: article?.priorityAnalysisReason || null,
+    sourceMeta,
+  };
 }
 
 // ─────────────────────────────────────────
@@ -328,6 +442,7 @@ export async function callAiProvider(
   options?: { temperature?: number; maxTokens?: number },
   companyId?: string
 ): Promise<ApiCallResult> {
+  await waitForAiThrottleWindow();
   const apiKey = await resolveApiKey(aiConfig, companyId);
   validateApiKey(apiKey, aiConfig.provider);
 
@@ -433,6 +548,7 @@ export async function checkRelevance(
   if (filters) {
     const include = filters.includeKeywords || [];
     const exclude = filters.excludeKeywords || [];
+    extraGuidelines += `\n애매하지만 거래, 투자, 매각, 상장 준비와 연결될 가능성이 있으면 RELEVANT: YES로 판단하세요.`;
     if (include.length > 0) {
       extraGuidelines += `\n다음 키워드 중 하나라도 포함되어 있으면 관련 기사로 판단하세요: ${include.join(', ')}.`;
     }
@@ -452,7 +568,7 @@ Source: ${article.source}
 Decision:`;
 
   try {
-    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.1, maxTokens: 1000 }, context?.companyId);
+    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.0, maxTokens: 1000 }, context?.companyId);
 
     const relevantMatch = result.content.match(/RELEVANT:\s*(YES|NO)/i);
     const confidenceMatch = result.content.match(/CONFIDENCE:\s*(\d+\.?\d*)/i);
@@ -516,7 +632,7 @@ export async function processRelevanceFiltering(options?: {
   includeGlobalArticles?: boolean; // PC 스크래퍼 글로벌 기사 포함
 }) {
   const db = admin.firestore();
-  const baseBatchSize = 500;
+  const baseBatchSize = options?.aiConfig.maxPendingBatch || 200;
 
   // ── 쿼리: pipelineRunId 기사 + 글로벌 기사(companyId=null) 포함
   let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'pending');
@@ -542,7 +658,7 @@ export async function processRelevanceFiltering(options?: {
   let passed = 0;
 
   // ── 병렬 처리: 10개씩 동시 AI 호출 (안정성 우선) ──
-  const parallelLimit = 10;
+  const parallelLimit = Math.max(2, Math.min(4, getDynamicBatchSize(Math.min(4, options?.aiConfig.maxPendingBatch || 4))));
   const articles = pendingArticlesSnapshot.docs;
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
@@ -555,43 +671,63 @@ export async function processRelevanceFiltering(options?: {
     const promises = chunk.map(async (doc) => {
       const article = doc.data() as any;
       try {
+        const priorityDecision = await getSourcePriorityDecision(article);
         // 사전 필터링
         let fastRejectReason: string | null = null;
-        const mustKeywords = filters?.mustIncludeKeywords || [];
-        if (mustKeywords.length > 0) {
+        if (!priorityDecision.isPriority) {
+          const mustKeywords = filters?.mustIncludeKeywords || [];
+          if (mustKeywords.length > 0) {
           const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+          const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
+            kw.trim() && textToSearch.includes(kw.trim().toLowerCase())
+          );
           for (const kw of mustKeywords) {
             if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
+              if (hasAnyMustKeyword) {
+                break;
+              }
               fastRejectReason = `Missing required keyword: ${kw}`;
               break;
             }
+            }
           }
-        }
-
-        const excludeKeywords = filters?.excludeKeywords || [];
-        if (!fastRejectReason && excludeKeywords.length > 0) {
-          const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
-          for (const kw of excludeKeywords) {
-            if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
-              fastRejectReason = `Contains excluded keyword: ${kw}`;
-              break;
+        
+          const excludeKeywords = filters?.excludeKeywords || [];
+          if (!fastRejectReason && excludeKeywords.length > 0) {
+            const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+            for (const kw of excludeKeywords) {
+              if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
+                fastRejectReason = `Contains excluded keyword: ${kw}`;
+                break;
+              }
             }
           }
         }
 
         let result: RelevanceResult;
+        let aiRelevanceResult: RelevanceResult | null = null;
         if (fastRejectReason) {
           result = { isRelevant: false, confidence: 0, reason: fastRejectReason };
         } else {
           try {
             const resolvedCompanyId = article.companyId || options?.companyId;
-            result = await checkRelevance(
+            aiRelevanceResult = await checkRelevance(
               { title: article.title, content: article.content || article.title, source: article.source },
               options!.aiConfig,
               { companyId: resolvedCompanyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId },
               filters
             );
+            result = aiRelevanceResult;
+
+            if (priorityDecision.isPriority && !result.isRelevant) {
+              result = {
+                isRelevant: true,
+                confidence: Math.max(0.8, result.confidence || 0),
+                reason: `Priority analysis override (${priorityDecision.reason || 'priority source'}). AI relevance note: ${result.reason}`,
+              };
+            }
           } catch (aiError: any) {
+            registerAiRateLimit(aiError);
             console.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {
               title: article.title?.substring(0, 50),
               provider: options?.aiConfig.provider,
@@ -600,15 +736,24 @@ export async function processRelevanceFiltering(options?: {
               status: aiError.response?.status,
               responseData: aiError.response?.data ? JSON.stringify(aiError.response.data).substring(0, 300) : undefined,
             });
-            throw aiError;
+            if (priorityDecision.isPriority) {
+              result = {
+                isRelevant: true,
+                confidence: 1,
+                reason: `Priority analysis override (${priorityDecision.reason || 'priority source'}). Relevance check failed: ${aiError.message}`,
+              };
+            } else {
+              throw aiError;
+            }
           }
         }
 
-        return { doc, result, error: null };
+        return { doc, result, aiRelevanceResult, priorityDecision, error: null };
       } catch (error: any) {
+        registerAiRateLimit(error);
         console.error(`Failed to filter article ${doc.id}:`, error.message);
         recordError();
-        return { doc, result: null, error };
+        return { doc, result: null, aiRelevanceResult: null, priorityDecision: null, error };
       }
     });
 
@@ -616,25 +761,37 @@ export async function processRelevanceFiltering(options?: {
 
     // 결과를 일괄 업데이트
     const batch = db.batch();
-    for (const { doc, result, error } of results) {
+    const rejectedDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+    for (const { doc, result, aiRelevanceResult, priorityDecision } of results) {
       if (result) {
         batch.update(doc.ref, {
           status: result.isRelevant ? 'filtered' : 'rejected',
           filteredAt: admin.firestore.FieldValue.serverTimestamp(),
           relevanceScore: result.confidence,
           relevanceReason: result.reason,
+          aiRelevanceDecision: aiRelevanceResult?.isRelevant ?? result.isRelevant,
+          aiRelevanceScore: aiRelevanceResult?.confidence ?? result.confidence,
+          aiRelevanceReason: aiRelevanceResult?.reason ?? result.reason,
+          priorityAnalysis: priorityDecision?.isPriority || false,
+          analysisPriority: priorityDecision?.priority || 0,
+          priorityAnalysisReason: priorityDecision?.reason || null,
+          sourcePricingTier: priorityDecision?.sourceMeta?.pricingTier || doc.data()?.sourcePricingTier || null,
         });
         processed++;
         if (result.isRelevant) passed++;
+        else rejectedDocs.push(doc);
       }
     }
     if (results.some(r => r.result)) {
       await batch.commit();
     }
+    if (rejectedDocs.length > 0) {
+      await purgeRejectedArticlesPreservingDedupe(rejectedDocs);
+    }
 
     // 배치 간 딜레이 (API 레이트 리미팅)
     if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
   }
 
@@ -651,7 +808,7 @@ export async function processDeepAnalysis(options?: {
   abortChecker?: () => Promise<boolean>;
 }) {
   const db = admin.firestore();
-  const baseBatchSize = 300;
+  const baseBatchSize = options?.aiConfig.maxAnalysisBatch || 100;
 
   let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'filtered');
   if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
@@ -666,8 +823,12 @@ export async function processDeepAnalysis(options?: {
   let processed = 0;
 
   // ── 병렬 처리: 5개씩 동시 분석 (안정성 우선) ──
-  const parallelLimit = 5;
-  const articles = filteredArticlesSnapshot.docs;
+  const parallelLimit = Math.max(1, Math.min(2, getDynamicBatchSize(Math.min(2, options?.aiConfig.maxAnalysisBatch || 2))));
+  const articles = (await Promise.all(filteredArticlesSnapshot.docs.map(async (doc) => {
+    const article = doc.data() as any;
+    const priorityDecision = await getSourcePriorityDecision(article);
+    return { doc, article, priorityDecision };
+  }))).sort((a, b) => (b.priorityDecision.priority || 0) - (a.priorityDecision.priority || 0));
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
     // ── 중단 체크 (배치 사이) ──
@@ -676,8 +837,7 @@ export async function processDeepAnalysis(options?: {
       break;
     }
     const chunk = articles.slice(i, i + parallelLimit);
-    const promises = chunk.map(async (doc) => {
-      const article = doc.data() as any;
+    const promises = chunk.map(async ({ doc, article, priorityDecision }) => {
       try {
         const publishedAtStr = article.publishedAt
           ? (article.publishedAt.toDate ? article.publishedAt.toDate().toISOString() : new Date(article.publishedAt).toISOString())
@@ -692,12 +852,14 @@ export async function processDeepAnalysis(options?: {
         return {
           doc,
           analysisResult,
+          priorityDecision,
           error: null,
         };
       } catch (error) {
+        registerAiRateLimit(error);
         console.error(`Failed to analyze article ${doc.id}:`, error);
         recordError();
-        return { doc, analysisResult: null, error };
+        return { doc, analysisResult: null, priorityDecision, error };
       }
     });
 
@@ -705,7 +867,7 @@ export async function processDeepAnalysis(options?: {
 
     // 결과 일괄 업데이트
     const batch = db.batch();
-    for (const { doc, analysisResult } of results) {
+    for (const { doc, analysisResult, priorityDecision } of results) {
       if (analysisResult) {
         batch.update(doc.ref, {
           status: 'analyzed',
@@ -716,6 +878,9 @@ export async function processDeepAnalysis(options?: {
           deal: analysisResult.deal || { type: 'other', amount: 'undisclosed', stake: null },
           insights: analysisResult.insights || null,
           tags: analysisResult.tags || [],
+          priorityAnalysis: priorityDecision?.isPriority || false,
+          analysisPriority: priorityDecision?.priority || 0,
+          priorityAnalysisReason: priorityDecision?.reason || null,
         });
         processed++;
       }
@@ -726,7 +891,7 @@ export async function processDeepAnalysis(options?: {
 
     // 배치 간 딜레이
     if (i + parallelLimit < articles.length) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 2500));
     }
   }
 

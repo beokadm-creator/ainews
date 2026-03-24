@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
-import { callAiProvider, logPromptExecution } from './aiService';
+import { callAiProvider, logPromptExecution, trackAiCost } from './aiService';
 import { RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
+import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
 
 interface OutputGenerationOptions {
   companyId: string;
@@ -26,19 +27,23 @@ function stripMarkdownCodeFence(raw: string): string {
 
 function buildArticleDigest(articles: any[], includeArticleBody: boolean): string {
   return articles.map((article, index) => {
+    const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
+    const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
+    const safeSummary = (article.summary || []).map((line: string) => fixEncodingIssues(cleanHtmlContent(line || '')));
+    const safeContent = fixEncodingIssues(cleanHtmlContent(article.content || ''));
     const parts = [
-      `[${index + 1}] ${article.title}`,
-      `Source: ${article.source}`,
+      `[${index + 1}] ${safeTitle}`,
+      `Source: ${safeSource}`,
       `PublishedAt: ${article.publishedAt?.toDate ? article.publishedAt.toDate().toISOString() : article.publishedAt || ''}`,
       `Category: ${article.category || 'other'}`,
       `RelevanceScore: ${article.relevanceScore || 0}`,
-      `Summary: ${(article.summary || []).join(' ')}`,
+      `Summary: ${safeSummary.join(' ')}`,
       `DealAmount: ${article.deal?.amount || 'undisclosed'}`,
       `Tags: ${(article.tags || []).join(', ')}`
     ];
 
     if (includeArticleBody) {
-      parts.push(`Body: ${(article.content || '').substring(0, 4000)}`);
+      parts.push(`Body: ${safeContent.substring(0, 4000)}`);
     }
 
     return parts.join('\n');
@@ -154,6 +159,7 @@ ${digest}`;
 
     const aiResponse = await callAiProvider(listSummaryPrompt, options.aiConfig, { temperature: 0.3 }, options.companyId);
     rawOutput = aiResponse.content;
+    await trackAiCost('article-list-summary', aiResponse.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId, options.pipelineRunId);
 
     await logPromptExecution(
       'article-list-summary',
@@ -219,6 +225,7 @@ ${digest}`;
 
     const response = await callAiProvider(prompt, options.aiConfig, { temperature: 0.3 }, options.companyId);
     rawOutput = response.content;
+    await trackAiCost(outputType === 'custom_prompt' ? 'custom-output' : 'daily-briefing', response.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId, options.pipelineRunId);
 
     await logPromptExecution(
       outputType === 'custom_prompt' ? 'custom-output' : 'daily-briefing',
@@ -325,12 +332,15 @@ export async function generateCustomReport(options: CustomReportOptions) {
     const pub = article.publishedAt?.toDate
       ? article.publishedAt.toDate().toLocaleDateString('ko-KR')
       : (article.publishedAt || '');
+    const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
+    const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
+    const safeBody = fixEncodingIssues(cleanHtmlContent(article.content || (article.summary || []).join(' ')));
     return [
       `[기사 ${index + 1}]`,
-      `제목: ${article.title}`,
-      `매체: ${article.source || ''}`,
+      `제목: ${safeTitle}`,
+      `매체: ${safeSource}`,
       `날짜: ${pub}`,
-      `원문:\n${(article.content || (article.summary || []).join(' ')).substring(0, 3000)}`,
+      `원문:\n${safeBody.substring(0, 3000)}`,
     ].join('\n');
   }).join('\n\n---\n\n');
 
@@ -377,6 +387,7 @@ ${articleDigest}`;
     { temperature: 0.3, maxTokens: 8000 },
     options.companyId
   );
+  await trackAiCost('custom-output', response.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId);
 
   const htmlContent = stripMarkdownCodeFence(response.content);
 
