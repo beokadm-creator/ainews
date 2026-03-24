@@ -96,6 +96,57 @@ function getManagedReportWindow(filters?: ManagedReportFilters) {
   };
 }
 
+function normalizeSourceIdentity(value?: string) {
+  return `${value || ''}`
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+function getSourceIdentityAliases(value?: string) {
+  const normalized = normalizeSourceIdentity(value);
+  const aliases = new Set<string>();
+  if (!normalized) return aliases;
+
+  aliases.add(normalized);
+
+  if (normalized.includes('thebell') || normalized.includes('더벨')) {
+    aliases.add('thebell');
+    aliases.add('더벨');
+  }
+
+  if (normalized.includes('marketinsight') || normalized.includes('마켓인사이트')) {
+    aliases.add('marketinsight');
+    aliases.add('마켓인사이트');
+  }
+
+  return aliases;
+}
+
+function buildSourceIdentityPool(source: any) {
+  const pool = new Set<string>();
+  [source?.id, source?.localScraperId, source?.name, source?.url].forEach((value) => {
+    getSourceIdentityAliases(value).forEach((alias) => pool.add(alias));
+  });
+  return pool;
+}
+
+function buildArticleIdentityPool(article: any) {
+  const pool = new Set<string>();
+  [article?.globalSourceId, article?.sourceId, article?.source].forEach((value) => {
+    getSourceIdentityAliases(value).forEach((alias) => pool.add(alias));
+  });
+  return pool;
+}
+
+function articleMatchesSourcePool(article: any, allowedPool: Set<string>) {
+  if (allowedPool.size === 0) return true;
+  for (const key of buildArticleIdentityPool(article)) {
+    if (allowedPool.has(key)) return true;
+  }
+  return false;
+}
+
 async function loadAccessibleArticlesForManagedReport(
   companyId: string,
   filters?: ManagedReportFilters,
@@ -118,6 +169,26 @@ async function loadAccessibleArticlesForManagedReport(
     return [];
   }
 
+  const sourceIdBatches: string[][] = [];
+  for (let i = 0; i < requestedSourceIds.length; i += 30) {
+    sourceIdBatches.push(requestedSourceIds.slice(i, i + 30));
+  }
+
+  const requestedSources = (
+    await Promise.all(
+      sourceIdBatches.map((batch) =>
+        db.collection('globalSources')
+          .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+          .get()
+      )
+    )
+  ).flatMap((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })));
+
+  const requestedSourcePool = new Set<string>();
+  requestedSources.forEach((source) => {
+    buildSourceIdentityPool(source).forEach((key) => requestedSourcePool.add(key));
+  });
+
   const { startDate, endDate } = getManagedReportWindow(filters);
   const snap = await db.collection('articles')
     .where('publishedAt', '>=', startDate)
@@ -129,12 +200,11 @@ async function loadAccessibleArticlesForManagedReport(
   const keywordPool = (filters?.keywords || [])
     .map((keyword) => `${keyword || ''}`.trim().toLowerCase())
     .filter(Boolean);
-  const sourceIdPool = new Set(requestedSourceIds);
 
   return snap.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .filter((article: any) => ['analyzed', 'published'].includes(article.status))
-    .filter((article: any) => article.sourceId ? sourceIdPool.has(article.sourceId) : true)
+    .filter((article: any) => articleMatchesSourcePool(article, requestedSourcePool))
     .filter((article: any) => {
       if (keywordPool.length === 0) return true;
       const haystack = [
@@ -472,7 +542,23 @@ export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, in
   }
   const { id } = request.data || {};
   if (!id) throw new HttpsError('invalid-argument', 'Source ID required');
-  await admin.firestore().collection('globalSources').doc(id).delete();
+  const db = admin.firestore();
+  await db.collection('globalSources').doc(id).delete();
+
+  const subscriptionSnap = await db.collection('companySourceSubscriptions').get();
+  await Promise.all(
+    subscriptionSnap.docs.map(async (subscriptionDoc) => {
+      const subscribedSourceIds: string[] = (subscriptionDoc.data() as any).subscribedSourceIds || [];
+      if (!subscribedSourceIds.includes(id)) return;
+
+      await subscriptionDoc.ref.set({
+        subscribedSourceIds: subscribedSourceIds.filter((sourceId) => sourceId !== id),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth?.uid || '__system__',
+      }, { merge: true });
+    })
+  );
+
   return { success: true };
 });
 /** 글로벌 소스 연결 테스트 (Superadmin만) - HTTP 함수 with CORS */
@@ -2151,7 +2237,7 @@ export const searchArticles = onCall(
       const allowedStatuses = isSuperadmin ? normalizedStatuses : ['analyzed', 'published'];
 
       let accessibleSourceIds: string[] = [];
-      let accessibleSourceNames: string[] = [];
+      let accessibleSources: any[] = [];
 
       if (!isSuperadmin) {
         const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
@@ -2178,7 +2264,7 @@ export const searchArticles = onCall(
           )
         ).flatMap((snap) => snap.docs);
 
-        const accessibleSources = sourceDocs
+        accessibleSources = sourceDocs
           .map((doc) => ({ id: doc.id, ...(doc.data() as any) }))
           .filter((source) => {
             if (source.status !== 'active') return false;
@@ -2188,7 +2274,6 @@ export const searchArticles = onCall(
           });
 
         accessibleSourceIds = accessibleSources.map((source) => source.id);
-        accessibleSourceNames = accessibleSources.map((source) => source.name).filter(Boolean);
 
         if (accessibleSourceIds.length === 0) {
           return { articles: [], total: 0, hasMore: false };
@@ -2202,24 +2287,36 @@ export const searchArticles = onCall(
           ? requestedSourceIds.filter((id: string) => accessibleSourceIds.includes(id))
           : accessibleSourceIds;
 
-      let requestedSourceNames: string[] = [];
+      let effectiveSources: any[] = [];
       if (effectiveSourceIds.length > 0) {
         const batches: string[][] = [];
         for (let i = 0; i < effectiveSourceIds.length; i += 30) {
           batches.push(effectiveSourceIds.slice(i, i + 30));
         }
 
-        requestedSourceNames = (
+        effectiveSources = (
           await Promise.all(
             batches.map((batch) =>
               db.collection('globalSources')
                 .where(admin.firestore.FieldPath.documentId(), 'in', batch)
                 .get()
-                .then((snap) => snap.docs.map((doc) => (doc.data().name as string) || ''))
+                .then((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })))
             )
           )
-        ).flat().filter(Boolean);
+        ).flat();
+      } else if (!isSuperadmin) {
+        effectiveSources = accessibleSources;
       }
+
+      const accessibleSourcePool = new Set<string>();
+      accessibleSources.forEach((source) => {
+        buildSourceIdentityPool(source).forEach((key) => accessibleSourcePool.add(key));
+      });
+
+      const effectiveSourcePool = new Set<string>();
+      effectiveSources.forEach((source) => {
+        buildSourceIdentityPool(source).forEach((key) => effectiveSourcePool.add(key));
+      });
 
       const snap = await db.collection('articles')
         .where('publishedAt', '>=', effectiveStart)
@@ -2233,7 +2330,9 @@ export const searchArticles = onCall(
           id: d.id,
           title: data.title || '',
           source: data.source || '',
-          sourceId: data.sourceId || data.globalSourceId || null,
+          sourceId: data.globalSourceId || data.sourceId || null,
+          globalSourceId: data.globalSourceId || null,
+          legacySourceId: data.sourceId || null,
           publishedAt: data.publishedAt,
           collectedAt: data.collectedAt,
           status: data.status,
@@ -2248,26 +2347,14 @@ export const searchArticles = onCall(
       });
       articles = articles.filter((article) => allowedStatuses.includes(article.status));
 
-      const sourceIdPool = new Set(effectiveSourceIds);
-      const sourceNamePool = new Set(requestedSourceNames);
-      const accessibleNamePool = new Set(accessibleSourceNames);
-
-      if (isSuperadmin && effectiveSourceIds.length > 0) {
-        articles = articles.filter((article) =>
-          (article.sourceId && sourceIdPool.has(article.sourceId)) ||
-          sourceIdPool.has(article.source) ||
-          sourceNamePool.has(article.source)
-        );
+      if (isSuperadmin && effectiveSourcePool.size > 0) {
+        articles = articles.filter((article) => articleMatchesSourcePool(article, effectiveSourcePool));
       }
 
       if (!isSuperadmin) {
         articles = articles.filter((article) => {
-          const isAccessible = (article.sourceId && accessibleSourceIds.includes(article.sourceId))
-            || accessibleNamePool.has(article.source);
-          if (!isAccessible) return false;
-          return (article.sourceId && sourceIdPool.has(article.sourceId))
-            || sourceIdPool.has(article.source)
-            || sourceNamePool.has(article.source);
+          if (!articleMatchesSourcePool(article, accessibleSourcePool)) return false;
+          return articleMatchesSourcePool(article, effectiveSourcePool);
         });
       }
 

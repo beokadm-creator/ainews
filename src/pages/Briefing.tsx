@@ -7,6 +7,20 @@ import { format } from 'date-fns';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 
+function sanitizeReportHtml(raw: string) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed.startsWith('```')) {
+    return trimmed;
+  }
+
+  const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
+  if (!fenceMatch) {
+    return trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
+  }
+
+  return fenceMatch[1].trim();
+}
+
 export default function Briefing() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -109,7 +123,9 @@ export default function Briefing() {
     }
   };
 
-  const renderHtml = selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '';
+  const renderHtml = sanitizeReportHtml(
+    selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
+  );
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-12">

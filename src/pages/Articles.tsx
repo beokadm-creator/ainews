@@ -21,6 +21,7 @@ import { httpsCallable } from 'firebase/functions';
 import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
 
 const DATE_PRESETS = [
   { label: '최근 24시간', hours: 24 },
@@ -134,6 +135,7 @@ interface SourceItem {
   id: string;
   name: string;
   category?: string;
+  localScraperId?: string;
 }
 
 export default function Articles() {
@@ -159,10 +161,11 @@ export default function Articles() {
       const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
       const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
       const sourceSnap = await getDocs(collection(db, 'globalSources'));
-      const available = sourceSnap.docs
+      const available = dedupeSourceCatalog(
+        sourceSnap.docs
         .map((item) => ({ id: item.id, ...(item.data() as any) }))
         .filter((item) => subscribedIds.includes(item.id))
-        .map((item) => ({ id: item.id, name: item.name, category: item.category }));
+      ).map((item) => ({ id: item.id, name: item.name, category: item.category, localScraperId: item.localScraperId }));
       setSources(available);
     };
     loadSources().catch(console.error);

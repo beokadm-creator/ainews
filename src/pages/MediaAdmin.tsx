@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useMemo } from 'react';
 import {
   Globe, Plus, Edit2, Trash2, RefreshCw, CheckCircle2, XCircle, AlertTriangle,
-  Loader2, Rss, Code2, Cpu, Mail, Star, Search, Activity,
+  Loader2, Rss, Code2, Mail, Star, Search, Activity,
   ChevronDown, ChevronUp, Zap, Clock, BarChart2, Lock, Unlock
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
@@ -11,9 +11,10 @@ import { functions, db } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { getAuth } from 'firebase/auth';
 import { format } from 'date-fns';
+import { dedupeSourceCatalog, getSourceOriginLabel } from '@/lib/sourceCatalog';
 
 // ─── Types ──────────────────────────────────────────────────────
-type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
+type SourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
 type PricingTier = 'free' | 'paid' | 'requires_subscription';
 type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
 type TabId = 'all' | 'health' | 'errors';
@@ -29,7 +30,7 @@ interface GlobalSource {
   category: string;
   rssUrl?: string;
   apiEndpoint?: string;
-  apiType?: 'naver' | 'newsapi' | 'custom';
+  apiType?: 'naver';
   apiKeyRequired?: boolean;
   listSelector?: string;
   titleSelector?: string;
@@ -63,7 +64,6 @@ interface SourceHealth {
 const TYPE_META: Record<SourceType, { label: string; icon: any; color: string; bg: string }> = {
   rss:        { label: 'RSS',        icon: Rss,    color: 'text-orange-500',  bg: 'bg-orange-500/10' },
   scraping:   { label: 'Scraping',   icon: Code2,  color: 'text-purple-500',  bg: 'bg-purple-500/10' },
-  puppeteer:  { label: 'Puppeteer',  icon: Cpu,    color: 'text-indigo-400',  bg: 'bg-indigo-500/10' },
   api:        { label: 'API',        icon: Globe,  color: 'text-blue-400',    bg: 'bg-blue-500/10' },
   newsletter: { label: 'Newsletter', icon: Mail,   color: 'text-green-400',   bg: 'bg-green-500/10' },
 };
@@ -214,18 +214,8 @@ function SourceModal({
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50">
                   <option value="">선택...</option>
                   <option value="naver">네이버 뉴스 검색 API</option>
-                  <option value="newsapi">NewsAPI.org</option>
-                  <option value="custom">커스텀 엔드포인트</option>
                 </select>
               </div>
-              {(form as any).apiType !== 'naver' && (
-                <div>
-                  <label className="block text-xs text-white/50 mb-1">API 엔드포인트</label>
-                  <input value={form.apiEndpoint || ''} onChange={e => set('apiEndpoint', e.target.value)}
-                    placeholder="https://api..."
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none focus:border-blue-500/50" />
-                </div>
-              )}
               {(form as any).apiType === 'naver' && (
                 <p className="text-xs text-blue-300/70 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
                   네이버 API 자격증명은 슈퍼어드민 → AI 설정 → 네이버 탭에서 설정합니다.
@@ -234,8 +224,16 @@ function SourceModal({
               )}
             </div>
           )}
-          {(form.type === 'scraping' || form.type === 'puppeteer') && (
-            <div className="grid grid-cols-2 gap-3">
+          {(form.type === 'scraping') && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-white/50 mb-1">로컬 스크래퍼 ID</label>
+                <input value={form.localScraperId || ''} onChange={e => set('localScraperId', e.target.value)}
+                  placeholder="예: thebell, marketinsight"
+                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
+                <p className="mt-1 text-[11px] text-white/35">기사 검색과 내부 분석 연결을 위해 외부 스크래핑 매체는 실제 수집 ID를 넣어두는 것이 안전합니다.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-white/50 mb-1">목록 셀렉터</label>
                 <input value={form.listSelector || ''} onChange={e => set('listSelector', e.target.value)}
@@ -256,6 +254,7 @@ function SourceModal({
                 <input value={form.dateSelector || ''} onChange={e => set('dateSelector', e.target.value)}
                   className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white outline-none" />
               </div>
+            </div>
             </div>
           )}
           {/* Meta */}
@@ -359,7 +358,8 @@ export default function MediaAdmin() {
     try {
       const q = query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'));
       const snap = await getDocs(q);
-      setSources(snap.docs.map(d => ({ id: d.id, ...d.data() } as GlobalSource)));
+      const loadedSources = snap.docs.map(d => ({ id: d.id, ...d.data() } as GlobalSource));
+      setSources(dedupeSourceCatalog(loadedSources));
     } catch (err) {
       console.error('Failed to load sources:', err);
     } finally {
@@ -478,7 +478,7 @@ export default function MediaAdmin() {
     active: sources.filter(s => s.status === 'active').length,
     rss: sources.filter(s => s.type === 'rss').length,
     api: sources.filter(s => s.type === 'api').length,
-    scraping: sources.filter(s => s.type === 'scraping' || s.type === 'puppeteer').length,
+    scraping: sources.filter(s => s.type === 'scraping').length,
     errors: sources.filter(s => s.status === 'error' || (s.lastTestResult && !s.lastTestResult.success)).length,
   };
 
@@ -510,6 +510,10 @@ export default function MediaAdmin() {
         >
           <Plus className="w-4 h-4" /> 매체 추가
         </button>
+      </div>
+
+      <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm text-blue-100">
+        여기서 관리하는 `globalSources`가 회사 사용자 `/media` 구독 화면과 직접 연결됩니다. 더벨, 마켓인사이트처럼 외부 스크래핑 매체는 `로컬 스크래퍼 ID`를 맞춰두어야 기사 검색과 분석에서 정확히 연결됩니다.
       </div>
 
       {/* Stats bar */}
@@ -630,6 +634,11 @@ export default function MediaAdmin() {
                               {source.pricingTier === 'paid' && (
                                 <span className="text-[9px] px-1 py-0 bg-red-500/20 text-red-400 rounded font-bold">유료</span>
                               )}
+                              {getSourceOriginLabel(source) && (
+                                <span className="text-[9px] px-1 py-0 bg-slate-500/20 text-slate-300 rounded font-bold">
+                                  {getSourceOriginLabel(source)}
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-white/30 truncate max-w-[180px]">{source.url}</div>
                           </button>
@@ -732,12 +741,6 @@ export default function MediaAdmin() {
                               <span className="text-white/30 block mb-0.5">중요도</span>
                               <span className="text-yellow-400">{'★'.repeat(source.relevanceScore || 3)}</span>
                             </div>
-                            {source.localScraperId && (
-                              <div>
-                                <span className="text-white/30 block mb-0.5">로컬 스크래퍼 ID</span>
-                                <span className="text-indigo-300">{source.localScraperId}</span>
-                              </div>
-                            )}
                             {source.notes && (
                               <div className="col-span-2">
                                 <span className="text-white/30 block mb-0.5">메모</span>

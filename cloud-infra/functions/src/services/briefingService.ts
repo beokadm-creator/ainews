@@ -10,6 +10,20 @@ interface OutputGenerationOptions {
   timezone?: string;
 }
 
+function stripMarkdownCodeFence(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed.startsWith('```')) {
+    return trimmed;
+  }
+
+  const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
+  if (!fenceMatch) {
+    return trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
+  }
+
+  return fenceMatch[1].trim();
+}
+
 function buildArticleDigest(articles: any[], includeArticleBody: boolean): string {
   return articles.map((article, index) => {
     const parts = [
@@ -364,7 +378,7 @@ ${articleDigest}`;
     options.companyId
   );
 
-  const htmlContent = response.content;
+  const htmlContent = stripMarkdownCodeFence(response.content);
 
   // 4. outputs 컬렉션에 저장
   const outputRef = db.collection('outputs').doc();

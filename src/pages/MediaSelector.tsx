@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Search, CheckCircle2, Rss, Code2, Cpu, Globe, Star, Loader2, Save, Filter } from 'lucide-react';
+import { Search, CheckCircle2, Rss, Code2, Globe, Star, Loader2, Save, Filter } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { functions, db } from '@/lib/firebase';
 import { collection, doc, getDoc, getDocs, orderBy, query } from 'firebase/firestore';
 import { useAuthStore } from '@/store/useAuthStore';
+import { dedupeSourceCatalog, getSourceOriginLabel } from '@/lib/sourceCatalog';
 
-type SourceType = 'rss' | 'scraping' | 'puppeteer' | 'api' | 'newsletter';
+type SourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
 type PricingTier = 'free' | 'paid' | 'requires_subscription';
 
 interface GlobalSource {
@@ -25,12 +26,12 @@ interface GlobalSource {
   notes?: string;
   loginRequired?: boolean;
   allowedCompanyIds?: string[];
+  localScraperId?: string;
 }
 
 const TYPE_ICON: Record<SourceType, any> = {
   rss: Rss,
   scraping: Code2,
-  puppeteer: Cpu,
   api: Globe,
   newsletter: Globe,
 };
@@ -38,7 +39,6 @@ const TYPE_ICON: Record<SourceType, any> = {
 const TYPE_COLOR: Record<SourceType, string> = {
   rss: 'text-orange-500',
   scraping: 'text-purple-500',
-  puppeteer: 'text-indigo-500',
   api: 'text-blue-500',
   newsletter: 'text-green-500',
 };
@@ -80,7 +80,8 @@ export default function MediaSelector() {
       // Load global sources
       const q = query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'));
       const snap = await getDocs(q);
-      setAllSources(snap.docs.map(d => ({ id: d.id, ...d.data() } as GlobalSource)));
+      const loadedSources = snap.docs.map(d => ({ id: d.id, ...d.data() } as GlobalSource));
+      setAllSources(dedupeSourceCatalog(loadedSources));
 
       // Load current subscriptions
       if (companyId) {
@@ -196,6 +197,10 @@ export default function MediaSelector() {
         )}
       </div>
 
+      <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-100">
+        회사 구독 목록은 슈퍼어드민 매체 관리와 동일한 `globalSources`를 사용합니다. 더벨, 마켓인사이트 같은 외부 스크래핑 매체도 여기서 같은 기준으로 연결됩니다.
+      </div>
+
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative">
@@ -229,7 +234,6 @@ export default function MediaSelector() {
           <option value="all">모든 방식</option>
           <option value="rss">RSS</option>
           <option value="scraping">Scraping</option>
-          <option value="puppeteer">Puppeteer</option>
           <option value="api">API</option>
         </select>
         <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
@@ -312,6 +316,11 @@ export default function MediaSelector() {
                             <TypeIcon className="w-3 h-3" />
                             {source.type.toUpperCase()}
                           </span>
+                          {getSourceOriginLabel(source) && (
+                            <span className="text-xs text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded-full">
+                              {getSourceOriginLabel(source)}
+                            </span>
+                          )}
                           {source.pricingTier === 'free' && (
                             <span className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-1.5 py-0.5 rounded-full">무료</span>
                           )}
