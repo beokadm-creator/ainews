@@ -6,6 +6,7 @@ import {
   Database,
   Image as ImageIcon,
   Loader2,
+  Mail,
   RefreshCw,
   Save,
   Sparkles,
@@ -36,6 +37,12 @@ export default function Settings() {
   const [externalPrompt, setExternalPrompt] = useState('외부 메일링용으로 간결하게 요약하되 핵심 사실과 시사점만 전달합니다.');
   const [publisherName, setPublisherName] = useState('이음프라이빗에쿼티');
   const [logoDataUrl, setLogoDataUrl] = useState('');
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState('587');
+  const [smtpSecure, setSmtpSecure] = useState(false);
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+  const [smtpFrom, setSmtpFrom] = useState('');
   const [usage, setUsage] = useState<any>(null);
 
   const loadAll = async () => {
@@ -54,6 +61,12 @@ export default function Settings() {
       setExternalPrompt(settings.reportPrompts?.external || externalPrompt);
       setPublisherName(settings.branding?.publisherName || settings.companyName || '이음프라이빗에쿼티');
       setLogoDataUrl(settings.branding?.logoDataUrl || '');
+      setSmtpHost(settings.smtp?.host || '');
+      setSmtpPort(`${settings.smtp?.port || 587}`);
+      setSmtpSecure(Boolean(settings.smtp?.secure));
+      setSmtpUser(settings.smtp?.user || '');
+      setSmtpPass(settings.smtp?.pass || '');
+      setSmtpFrom(settings.smtp?.from || '');
 
       const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
       setSources(
@@ -86,6 +99,14 @@ export default function Settings() {
         internalPrompt: internalPrompt.trim(),
         externalPrompt: externalPrompt.trim(),
         logoDataUrl: logoDataUrl || null,
+        smtp: {
+          host: smtpHost.trim(),
+          port: Number(smtpPort || 587),
+          secure: smtpSecure,
+          user: smtpUser.trim(),
+          pass: smtpPass.trim(),
+          from: smtpFrom.trim(),
+        },
       });
     } finally {
       setSaving(false);
@@ -220,6 +241,24 @@ export default function Settings() {
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             저장
           </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Mail className="h-4 w-4 text-[#1e3a5f]" />
+          SMTP / ?? ??
+        </div>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="SMTP Host" className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white" />
+          <input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="Port" className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white" />
+          <input value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="SMTP User" className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white" />
+          <input value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="SMTP Password" className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white" />
+          <input value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder='From (e.g. "EUM" <noreply@domain.com>)' className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white" />
+          <label className="md:col-span-2 inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+            <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} />
+            Use SMTPS (secure)
+          </label>
         </div>
       </div>
 

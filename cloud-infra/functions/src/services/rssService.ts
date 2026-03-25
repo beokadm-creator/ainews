@@ -2,14 +2,19 @@ import Parser from 'rss-parser';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { isDuplicateArticle, hashUrl } from './duplicateService';
+import { hashTitle } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { cleanHtmlContent, decodeBuffer } from '../utils/encodingUtils';
 import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
+import { mapWithConcurrency } from '../utils/asyncUtils';
+import { enrichArticleBody } from './articleContentFetchService';
 
 const REQUEST_TIMEOUT_MS = 45000;
 const RSS_FETCH_TIMEOUT_MS = 60000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
+const RSS_SOURCE_CONCURRENCY = 4;
+const RSS_BODY_ENRICH_CONCURRENCY = 3;
 
 const parser = new Parser({
   timeout: REQUEST_TIMEOUT_MS,
@@ -142,9 +147,7 @@ export async function processRssSources(options?: {
 
   console.log(`[RSS] Total sources to process: ${allSourcesToProcess.length}`);
 
-  let totalCollected = 0;
-
-  for (const { id: sourceId, data: source } of allSourcesToProcess) {
+  const results = await mapWithConcurrency(allSourcesToProcess, RSS_SOURCE_CONCURRENCY, async ({ id: sourceId, data: source }) => {
     const docRef = db.collection('globalSources').doc(sourceId);
 
     try {
@@ -161,24 +164,31 @@ export async function processRssSources(options?: {
         return true;
       });
 
-      if (validArticles.length === 0) {
+      const enrichedArticles = await mapWithConcurrency(
+        validArticles,
+        RSS_BODY_ENRICH_CONCURRENCY,
+        async (article) => enrichArticleBody(article),
+      );
+
+      if (enrichedArticles.length === 0) {
         console.log(`[RSS] ${source.name}: no articles in date range`);
         await docRef.update({
           lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
           lastStatus: 'success',
           errorMessage: null,
         });
-        continue;
+        return 0;
       }
 
       const batchSize = 500;
       let sourceCollected = 0;
 
-      for (let i = 0; i < validArticles.length; i += batchSize) {
-        const chunk = validArticles.slice(i, Math.min(i + batchSize, validArticles.length));
+      for (let i = 0; i < enrichedArticles.length; i += batchSize) {
+        const chunk = enrichedArticles.slice(i, Math.min(i + batchSize, enrichedArticles.length));
         const dupChecks = await Promise.all(
           chunk.map((article) => isDuplicateArticle(article, {
             companyId: source.companyId || options?.companyId,
+            fastMode: true,
           }))
         );
 
@@ -201,6 +211,7 @@ export async function processRssSources(options?: {
             collectedAt: admin.firestore.FieldValue.serverTimestamp(),
             status: 'pending',
             urlHash: hashUrl(article.url),
+            titleHash: hashTitle(article.title),
           });
           dedupWrites.push(recordArticleDedupEntry({
             id: articleRef.id,
@@ -226,12 +237,14 @@ export async function processRssSources(options?: {
       });
 
       console.log(`[RSS] ${source.name}: +${sourceCollected} articles`);
-      totalCollected += sourceCollected;
+      return sourceCollected;
     } catch (error: any) {
       await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
       console.error(`[RSS] ${source.name} error: ${error.message}`);
+      return 0;
     }
-  }
+  });
 
+  const totalCollected = results.reduce((sum, value) => sum + value, 0);
   return { success: true, totalCollected };
 }

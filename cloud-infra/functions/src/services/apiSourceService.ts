@@ -1,11 +1,24 @@
 import * as admin from 'firebase-admin';
-import axios from 'axios';
-import { isDuplicateArticle, hashUrl } from './duplicateService';
+import { isDuplicateArticle, hashTitle, hashUrl } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { sendErrorNotificationToAdmin } from './telegramService';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
 import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
+import { fetchNaverNews } from './naverApiService';
+import { mapWithConcurrency } from '../utils/asyncUtils';
+import { enrichArticleBody } from './articleContentFetchService';
+
+const API_SOURCE_CONCURRENCY = 2;
+const API_BODY_ENRICH_CONCURRENCY = 3;
+
+function isNaverApiSource(source: any) {
+  return (
+    source?.apiType === 'naver' ||
+    /openapi\.naver\.com/i.test(source?.apiEndpoint || source?.url || '') ||
+    /naver/i.test(source?.name || '')
+  );
+}
 
 export async function processApiSources(options?: {
   companyId?: string;
@@ -26,7 +39,7 @@ export async function processApiSources(options?: {
   });
 
   const filteredApiSources = allApiSources.filter(({ data }) => {
-    if (data.apiType !== 'naver') return true;
+    if (!isNaverApiSource(data)) return true;
 
     const keywordCount = Array.isArray(data.defaultKeywords) ? data.defaultKeywords.length : 0;
     const hasEndpoint = !!(data.url || data.apiEndpoint);
@@ -40,28 +53,25 @@ export async function processApiSources(options?: {
     return { success: true, totalCollected: 0, sourceResults: [] };
   }
 
-  let totalCollected = 0;
-  const sourceResults: Array<{ sourceId: string; name: string; collected: number; success: boolean; error?: string }> = [];
-
-  for (const { id: sourceId, data: source } of filteredApiSources) {
+  const sourceResults = await mapWithConcurrency(
+    filteredApiSources,
+    API_SOURCE_CONCURRENCY,
+    async ({ id: sourceId, data: source }) => {
     const docRef = db.collection('globalSources').doc(sourceId);
     try {
       let collected = 0;
 
-      if (source.apiType === 'naver') {
+      if (isNaverApiSource(source)) {
         collected = await collectFromNaverNews(source, sourceId, options, startDate, endDate);
       } else {
         console.log(`processApiSources: unsupported API source '${source.name}', skipping.`);
-        continue;
+        return {
+          sourceId,
+          name: source.name || sourceId,
+          collected: 0,
+          success: true,
+        };
       }
-
-      totalCollected += collected;
-      sourceResults.push({
-        sourceId,
-        name: source.name || sourceId,
-        collected,
-        success: true,
-      });
 
       await docRef.update({
         lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -70,22 +80,30 @@ export async function processApiSources(options?: {
       });
 
       console.log(`Processed ${collected} new API articles from ${source.name}`);
+      return {
+        sourceId,
+        name: source.name || sourceId,
+        collected,
+        success: true,
+      };
     } catch (error: any) {
-      sourceResults.push({
+      const result = {
         sourceId,
         name: source.name || sourceId,
         collected: 0,
         success: false,
         error: error.message || 'Unknown error',
-      });
+      };
       await docRef.update({
         lastStatus: 'error',
         errorMessage: error.message,
       }).catch(() => {});
       await sendErrorNotificationToAdmin('API collection failed', error.message, source.name);
+      return result;
     }
-  }
+  });
 
+  const totalCollected = sourceResults.reduce((sum, item) => sum + Number(item.collected || 0), 0);
   return { success: true, totalCollected, sourceResults };
 }
 
@@ -125,10 +143,13 @@ async function collectFromNaverNews(
 
   for (const kw of keywords.slice(0, 8)) {
     try {
-      const resp = await axios.get('https://openapi.naver.com/v1/search/news.json', {
-        headers: { 'X-Naver-Client-Id': clientId, 'X-Naver-Client-Secret': clientSecret },
-        params: { query: kw, display: 100, start: 1, sort: 'date' },
-        timeout: 10000,
+      const resp = await fetchNaverNews({
+        clientId,
+        clientSecret,
+        query: kw,
+        display: 100,
+        start: 1,
+        sort: 'date',
       });
       for (const item of resp.data.items || []) {
         if (!item.title) continue;
@@ -152,8 +173,14 @@ async function collectFromNaverNews(
   }
 
   let collected = 0;
-  for (const article of candidates) {
-    const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId });
+  const enrichedCandidates = await mapWithConcurrency(
+    candidates,
+    API_BODY_ENRICH_CONCURRENCY,
+    async (article) => enrichArticleBody(article),
+  );
+
+  for (const article of enrichedCandidates) {
+    const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId, fastMode: true });
     if (dupCheck.isDuplicate) continue;
 
     const articleRef = db.collection('articles').doc();
@@ -170,6 +197,7 @@ async function collectFromNaverNews(
       collectedAt: admin.firestore.FieldValue.serverTimestamp(),
       status: 'pending',
       urlHash: hashUrl(article.url),
+      titleHash: hashTitle(article.title),
     });
     await recordArticleDedupEntry({
       id: articleRef.id,

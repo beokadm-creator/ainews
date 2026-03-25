@@ -24,6 +24,7 @@ interface RecentArticle {
   source: string;
   category?: string;
   relevanceScore?: number;
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
   publishedAt?: any;
 }
 
@@ -273,7 +274,7 @@ export default function UserHome() {
                       </div>
                     </div>
                     <span className="text-sm font-bold text-[#1e3a5f] dark:text-[#d4af37]">
-                      {Number(article.relevanceScore || 0).toFixed(1)}
+                      {typeof article.relevanceScore === 'number' ? `${Math.round(article.relevanceScore)}점` : '-'}
                     </span>
                   </div>
                 </button>

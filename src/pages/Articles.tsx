@@ -22,6 +22,7 @@ import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
+import { formatArticleContentParagraphs } from '@/lib/articleContent';
 
 const DATE_PRESETS = [
   { label: '최근 24시간', hours: 24 },
@@ -126,7 +127,9 @@ interface ArticleItem {
   summary: string[];
   category: string;
   tags: string[];
-  relevanceScore: number;
+  relevanceScore?: number;
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
+  relevanceReason?: string;
   content: string;
   url: string;
 }
@@ -137,6 +140,8 @@ interface SourceItem {
   category?: string;
   localScraperId?: string;
 }
+
+const PAGE_SIZE = 50;
 
 export default function Articles() {
   const { user } = useAuthStore();
@@ -150,8 +155,11 @@ export default function Articles() {
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [articles, setArticles] = useState<ArticleItem[]>([]);
+  const [totalResults, setTotalResults] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [searched, setSearched] = useState(false);
   const [previewArticle, setPreviewArticle] = useState<ArticleItem | null>(null);
 
@@ -162,6 +170,8 @@ export default function Articles() {
     setStartDate(next.startDate);
     setEndDate(next.endDate);
     setArticles([]);
+    setTotalResults(0);
+    setHasMore(false);
     setSelectedIds(new Set());
     setSearched(false);
   }, []);
@@ -182,10 +192,13 @@ export default function Articles() {
     loadSources().catch(console.error);
   }, [companyId]);
 
-  const handleSearch = useCallback(async () => {
+  const runSearch = useCallback(async (offset = 0, append = false) => {
     if (!companyId) return;
-    setLoading(true);
-    setSearched(true);
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setSearched(true);
+    }
     try {
       const fn = httpsCallable(functions, 'searchArticles');
       const result = await fn({
@@ -195,15 +208,29 @@ export default function Articles() {
         endDate,
         sourceIds: selectedSourceIds.length > 0 ? selectedSourceIds : undefined,
         statuses: ['analyzed', 'published'],
-        limit: 300,
-        offset: 0,
+        limit: PAGE_SIZE,
+        offset,
       }) as any;
-      setArticles(result.data?.articles || []);
-      setSelectedIds(new Set());
+      const nextArticles = result.data?.articles || [];
+      setArticles((prev) => append ? [...prev, ...nextArticles] : nextArticles);
+      setTotalResults(Number(result.data?.total || 0));
+      setHasMore(Boolean(result.data?.hasMore));
+      if (!append) {
+        setSelectedIds(new Set());
+      }
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, [companyId, endDate, keywords, selectedSourceIds, startDate]);
+
+  const handleSearch = useCallback(async () => {
+    await runSearch(0, false);
+  }, [runSearch]);
+
+  const handleLoadMore = useCallback(async () => {
+    await runSearch(articles.length, true);
+  }, [articles.length, runSearch]);
 
   const applyDatePreset = (hours: number) => {
     const now = new Date();
@@ -241,6 +268,10 @@ export default function Articles() {
   const allSelected = useMemo(
     () => articles.length > 0 && selectedIds.size === articles.length,
     [articles.length, selectedIds.size],
+  );
+  const previewContentParagraphs = useMemo(
+    () => formatArticleContentParagraphs(previewArticle?.content || ''),
+    [previewArticle],
   );
 
   return (
@@ -363,6 +394,8 @@ export default function Articles() {
                 setStartDate(next.startDate);
                 setEndDate(next.endDate);
                 setArticles([]);
+                setTotalResults(0);
+                setHasMore(false);
                 setSelectedIds(new Set());
                 setSearched(false);
               }}
@@ -427,8 +460,8 @@ export default function Articles() {
                         {article.category && (
                           <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-700">{article.category}</span>
                         )}
-                        {article.relevanceScore > 0 && (
-                          <span className="text-green-600 dark:text-green-400">관련도 {Math.round(article.relevanceScore * 100)}%</span>
+                        {typeof article.relevanceScore === 'number' && (
+                          <span className="text-green-600 dark:text-green-400">관련도 {Math.round(article.relevanceScore)}/100</span>
                         )}
                         <span className="ml-auto">{formatPublishedAt(article.publishedAt)}</span>
                       </div>
@@ -463,6 +496,19 @@ export default function Articles() {
               })}
             </div>
           )}
+
+          {hasMore && (
+            <div className="border-t border-gray-100 px-5 py-4 dark:border-gray-700">
+              <button
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+              >
+                {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                ?? 50? ? ??
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -488,7 +534,9 @@ export default function Articles() {
               <div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                   <span>{previewArticle.source}</span>
-                  <span>{formatPublishedAt(previewArticle.publishedAt)}</span>
+                  {formatPublishedAt(previewArticle.publishedAt) && (
+                    <span>발행시각 {formatPublishedAt(previewArticle.publishedAt)}</span>
+                  )}
                 </div>
                 <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
@@ -509,9 +557,25 @@ export default function Articles() {
               )}
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-gray-300">
-                  {previewArticle.content || '원문 전문이 저장되지 않은 기사입니다.'}
-                </p>
+                {formatPublishedAt(previewArticle.publishedAt) && (
+                  <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                    <span className="font-semibold text-gray-800 dark:text-gray-100">발행시각</span>
+                    <span className="ml-2">{formatPublishedAt(previewArticle.publishedAt)}</span>
+                  </div>
+                )}
+                <div className="mt-3 space-y-4">
+                  {previewContentParagraphs.length > 0 ? (
+                    previewContentParagraphs.map((paragraph, index) => (
+                      <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">
+                        {paragraph}
+                      </p>
+                    ))
+                  ) : (
+                    <p className="text-sm leading-7 text-gray-700 dark:text-gray-300">
+                      원문 전문이 저장되지 않은 기사입니다.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">

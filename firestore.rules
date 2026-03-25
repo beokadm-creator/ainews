@@ -70,6 +70,11 @@ service cloud.firestore {
       allow write: if isSuperadmin();
     }
 
+    match /systemRuntime/{documentId} {
+      allow read: if isSuperadmin();
+      allow write: if false;
+    }
+
     match /companySettings/{companyId} {
       allow read: if isSuperadmin() || belongsToCompany(companyId);
       allow write: if isSuperadmin() || isCompanyAdmin(companyId);

@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { hashUrl, normalizeUrl } from './duplicateService';
+import { hashTitle, hashUrl, normalizeUrl } from './duplicateService';
 
 type ArticleLike = {
   id?: string;
@@ -42,6 +42,7 @@ export async function recordArticleDedupEntry(article: ArticleLike) {
     normalizedUrl: normalizeUrl(article.url),
     articleId: article.id || null,
     companyId: article.companyId ?? null,
+    titleHash: hashTitle(article.title || ''),
     sourceId: article.sourceId || null,
     globalSourceId: article.globalSourceId || article.sourceId || null,
     source: article.source || null,

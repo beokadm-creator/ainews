@@ -1,5 +1,6 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import * as admin from 'firebase-admin';
+import { randomBytes } from 'crypto';
 import { GLM_API_URL, OPENAI_API_URL, ANTHROPIC_API_URL } from '../config/constants';
 import { retryWithBackoff } from '../utils/errorHandling';
 import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils/secretManager';
@@ -23,6 +24,12 @@ export interface RelevanceResult {
   reason: string;
 }
 
+type RelevanceBasis =
+  | 'keyword_reject'
+  | 'ai'
+  | 'priority_source_override'
+  | 'priority_source_fallback';
+
 interface PromptExecutionContext {
   companyId?: string;
   pipelineRunId?: string;
@@ -33,6 +40,8 @@ interface PromptExecutionContext {
 interface ApiCallResult {
   content: string;
   usage: TokenUsage;
+  provider: AiProvider;
+  model: string;
 }
 
 interface SourcePriorityDecision {
@@ -40,6 +49,23 @@ interface SourcePriorityDecision {
   priority: number;
   reason: string | null;
   sourceMeta: Record<string, any> | null;
+}
+
+interface NormalizedAnalysisResult {
+  summary: string[];
+  category: string;
+  companies: {
+    acquiror: string | null;
+    target: string | null;
+    financialSponsor: string | null;
+  };
+  deal: {
+    type: string;
+    amount: string | null;
+    stake: string | null;
+  };
+  insights: string | null;
+  tags: string[];
 }
 
 const PRIORITY_SOURCE_NAME_PATTERNS = [
@@ -53,53 +79,66 @@ const PRIORITY_SOURCE_NAME_PATTERNS = [
 
 const sourceMetaCache = new Map<string, Record<string, any> | null>();
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Default Prompts
-// ─────────────────────────────────────────
-const DEFAULT_RELEVANCE_PROMPT = `당신은 M&A, 사모펀드(PEF), 벤처캐피털, 전략적 투자 분야의 전문 애널리스트입니다.
+// ?????????????????????????????????????????
+const DEFAULT_RELEVANCE_PROMPT = `You are a market intelligence analyst covering M&A, private equity, venture capital, strategic investments, IPO, block trades, restructuring, and major corporate transactions.
 
-아래 기사가 투자 모니터링 워크플로우에 관련된 기사인지 판단하세요.
+Decide whether the article is relevant to the investment monitoring pipeline.
 
-관련 있는 기사 예시:
-- 인수합병(M&A), 경영권 인수, 공개매수
-- 지분 매각, 사업부 분리매각(carve-out), 분할
-- 사모펀드(PEF) 딜, 바이아웃, 펀드 결성/청산
-- 벤처캐피털 투자유치, 시리즈 투자
-- 전략적 투자자(SI), 재무적 투자자(FI) 참여
-- IPO, 상장, 블록딜
-- 인수금융, 리파이낸싱, 구조조정, MBO
+Relevant examples:
+- mergers and acquisitions, sale processes, stake sales, tender offers
+- private equity buyouts, exits, fundraising, portfolio actions
+- venture capital fundraises and strategic investments
+- IPO, listing, delisting, block trades
+- recapitalization, refinancing, restructuring, carve-out, MBO
 
-출력 형식 (반드시 아래 형식 그대로 출력):
+Output format:
 RELEVANT: YES or NO
-CONFIDENCE: 0.0~1.0 사이의 숫자
-REASON: 한 문장으로 판단 근거 (한국어로 작성)`;
+CONFIDENCE: number from 0.0 to 1.0
+REASON: one short sentence in Korean`;
 
-const DEFAULT_ANALYSIS_PROMPT = `당신은 뉴스 기사에서 투자 정보를 구조화하여 추출하는 전문 애널리스트입니다.
+const DEFAULT_ANALYSIS_PROMPT = `You are an analyst extracting structured deal intelligence from news articles.
 
-모든 출력값(summary, category, insights, tags)은 반드시 자연스러운 한국어로 작성하세요.
-기업명·펀드명 등 고유명사는 한국어 표기를 우선하되, 필요 시 영문을 괄호로 병기하세요. (예: 카카오(Kakao))
+Rules:
+- Return only valid JSON.
+- Write summary, category, insights, and tags in Korean.
+- Company names and proper nouns may stay in their original language when appropriate.
+- If a field is unknown, return null.
 
-아래 JSON 형식만 반환하세요 (다른 텍스트 없이):
+Return this JSON shape exactly:
 {
   "companies": {
-    "acquiror": "인수자 (없으면 null)",
-    "target": "피인수 대상 (없으면 null)",
-    "financialSponsor": "재무적 투자자/PE (없으면 null)"
+    "acquiror": "acquirer or null",
+    "target": "target or null",
+    "financialSponsor": "private equity sponsor or null"
   },
   "deal": {
-    "type": "딜 유형 (예: 인수합병, 지분투자, IPO 등)",
-    "amount": "거래 금액 (예: 3,000억원, 미공개)",
-    "stake": "지분율 (없으면 null)"
+    "type": "deal type",
+    "amount": "deal value or null",
+    "stake": "stake or null"
   },
-  "summary": ["핵심 내용 1", "핵심 내용 2", "핵심 내용 3"],
-  "category": "카테고리 (예: M&A, 사모펀드, 벤처투자, IPO 등)",
-  "insights": "투자자 관점에서의 시사점 및 분석 (없으면 null)",
-  "tags": ["태그1", "태그2", "태그3"]
+  "summary": ["bullet 1", "bullet 2", "bullet 3"],
+  "category": "category",
+  "insights": "investment implication in Korean or null",
+  "tags": ["tag1", "tag2", "tag3"]
 }`;
 
-// ─────────────────────────────────────────
+const CORRUPTED_PROMPT_MARKERS = [
+  '?꾩닔',
+  '紐⑤뱺',
+  '諛섎뱶',
+  '?쒓뎅',
+  '怨좎쑀',
+  '蹂묎린',
+  '留덉꽭',
+  '湲곗뾽',
+  '吏€',
+];
+
+// ?????????????????????????????????????????
 // Token usage extraction per provider
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 function extractTokenUsage(responseData: any, provider: AiProvider): TokenUsage {
   switch (provider) {
     case 'glm':
@@ -135,9 +174,9 @@ function getCostPerKTokens(provider: AiProvider) {
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // AI Cost Tracking
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function trackAiCost(
   stage: string,
   usage: TokenUsage,
@@ -171,14 +210,17 @@ export async function trackAiCost(
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Rate-limit / error tracking
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 let recentErrorCount = 0;
 let lastErrorReset = Date.now();
-let aiThrottleUntil = 0;
+const aiThrottleUntilByProvider: Partial<Record<AiProvider, number>> = {};
 const ERROR_WINDOW_MS = 5 * 60 * 1000;
 const MAX_ERROR_RATE = 0.3;
+const WORKER_LEASE_MS = 10 * 60 * 1000;
+const MAX_RETRY_BACKOFF_MS = 60 * 60 * 1000;
+const STALE_STAGE_RECOVERY_LIMIT = 200;
 
 function getDynamicBatchSize(baseSize: number): number {
   const now = Date.now();
@@ -189,20 +231,71 @@ function getDynamicBatchSize(baseSize: number): number {
 
 function recordError(): void { recentErrorCount++; }
 
+function sanitizePromptOverride(prompt?: string | null): string | undefined {
+  if (!prompt || typeof prompt !== 'string') return undefined;
+
+  const lines = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      if (!line.trim()) return true;
+      if (line.includes('\uFFFD')) return false;
+      return !CORRUPTED_PROMPT_MARKERS.some((marker) => line.includes(marker));
+    });
+
+  const sanitized = lines.join('\n').trim();
+  return sanitized || undefined;
+}
+
+function normalizeNullableText(value: unknown, maxLength = 500): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function normalizeTextArray(value: unknown, limit: number, maxLength = 240): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeNullableText(item, maxLength))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, limit);
+}
+
+function normalizeAnalysisResult(raw: any): NormalizedAnalysisResult {
+  return {
+    summary: normalizeTextArray(raw?.summary, 5, 320),
+    category: normalizeNullableText(raw?.category, 120) || 'other',
+    companies: {
+      acquiror: normalizeNullableText(raw?.companies?.acquiror, 200),
+      target: normalizeNullableText(raw?.companies?.target, 200),
+      financialSponsor: normalizeNullableText(raw?.companies?.financialSponsor, 200),
+    },
+    deal: {
+      type: normalizeNullableText(raw?.deal?.type, 120) || 'other',
+      amount: normalizeNullableText(raw?.deal?.amount, 120),
+      stake: normalizeNullableText(raw?.deal?.stake, 120),
+    },
+    insights: normalizeNullableText(raw?.insights, 2000),
+    tags: normalizeTextArray(raw?.tags, 8, 80),
+  };
+}
+
 function getRateLimitDelay(attempt: number): number {
   return Math.min(5000, 500 * Math.pow(2, attempt));
 }
 
-async function waitForAiThrottleWindow(): Promise<void> {
-  const waitMs = aiThrottleUntil - Date.now();
+async function waitForAiThrottleWindow(provider: AiProvider): Promise<void> {
+  const waitMs = (aiThrottleUntilByProvider[provider] || 0) - Date.now();
   if (waitMs > 0) {
-    console.warn(`[AI-THROTTLE] Cooling down for ${waitMs}ms before next provider call.`);
+    console.warn(`[AI-THROTTLE] Cooling down ${provider} for ${waitMs}ms before next provider call.`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 }
 
-function registerAiRateLimit(error: any): void {
+function registerAiRateLimit(error: any, provider?: AiProvider): void {
   if (!axios.isAxiosError(error) || error.response?.status !== 429) return;
+  if (!provider) return;
 
   const retryAfterHeader = error.response?.headers?.['retry-after'];
   const retryAfterSeconds = Number(Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader);
@@ -210,7 +303,191 @@ function registerAiRateLimit(error: any): void {
     ? retryAfterSeconds * 1000
     : 15000;
 
-  aiThrottleUntil = Math.max(aiThrottleUntil, Date.now() + cooldownMs);
+  aiThrottleUntilByProvider[provider] = Math.max(aiThrottleUntilByProvider[provider] || 0, Date.now() + cooldownMs);
+}
+
+function getRetryDelayMs(attemptCount: number): number {
+  const safeAttempt = Math.max(1, attemptCount);
+  return Math.min(MAX_RETRY_BACKOFF_MS, 60_000 * Math.pow(2, safeAttempt - 1));
+}
+
+export function resolveAiConfigForStage(
+  aiConfig: RuntimeAiConfig,
+  stage: 'filtering' | 'analysis',
+): RuntimeAiConfig {
+  if (stage === 'filtering' && aiConfig.filteringModel) {
+    return {
+      ...aiConfig,
+      model: aiConfig.filteringModel,
+    };
+  }
+
+  return {
+    ...aiConfig,
+  };
+}
+
+function isReadyForRetry(article: any, now: Date): boolean {
+  const rawValue = article?.nextAiAttemptAt;
+  if (!rawValue) return true;
+
+  const retryAt = rawValue?.toDate
+    ? rawValue.toDate()
+    : new Date(rawValue);
+
+  if (Number.isNaN(retryAt.getTime())) return true;
+  return retryAt.getTime() <= now.getTime();
+}
+
+async function claimArticlesForStage(
+  docs: FirebaseFirestore.QueryDocumentSnapshot[],
+  stage: 'filtering' | 'analyzing',
+) {
+  const db = admin.firestore();
+  const now = Date.now();
+  const leaseUntil = admin.firestore.Timestamp.fromMillis(now + WORKER_LEASE_MS);
+  const claimed: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+  for (const doc of docs) {
+    try {
+      const wasClaimed = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(doc.ref);
+        if (!snap.exists) return false;
+
+        const data = snap.data() as any;
+        const currentStatus = data?.status;
+        const allowedStatuses = stage === 'filtering'
+          ? ['pending', 'ai_error']
+          : ['filtered', 'analysis_error'];
+
+        if (!allowedStatuses.includes(currentStatus)) return false;
+        if (!isReadyForRetry(data, new Date(now))) return false;
+
+        const existingLease = data?.workerLeaseUntil?.toDate
+          ? data.workerLeaseUntil.toDate()
+          : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+
+        if (existingLease && !Number.isNaN(existingLease.getTime()) && existingLease.getTime() > now) {
+          return false;
+        }
+
+        tx.update(doc.ref, {
+          status: stage,
+          workerStage: stage,
+          workerLeaseUntil: leaseUntil,
+          workerStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        return true;
+      });
+
+      if (wasClaimed) {
+        claimed.push(doc);
+      }
+    } catch (error) {
+      console.warn(`[AI-${stage}] Failed to claim article ${doc.id}:`, error);
+    }
+  }
+
+  return claimed;
+}
+
+async function recoverStaleArticlesForStage(stage: 'filtering' | 'analyzing') {
+  const db = admin.firestore();
+  const now = Date.now();
+  const recoveryStatus = stage === 'filtering' ? 'pending' : 'filtered';
+
+  const snapshot = await db.collection('articles')
+    .where('status', '==', stage)
+    .limit(STALE_STAGE_RECOVERY_LIMIT)
+    .get();
+
+  if (snapshot.empty) {
+    return 0;
+  }
+
+  let recovered = 0;
+  const batch = db.batch();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data() as any;
+    const existingLease = data?.workerLeaseUntil?.toDate
+      ? data.workerLeaseUntil.toDate()
+      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+
+    const leaseExpired = !existingLease || Number.isNaN(existingLease.getTime()) || existingLease.getTime() <= now;
+    if (!leaseExpired) {
+      continue;
+    }
+
+    batch.set(doc.ref, {
+      status: recoveryStatus,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...clearWorkerFields(),
+    }, { merge: true });
+    recovered += 1;
+  }
+
+  if (recovered > 0) {
+    await batch.commit();
+    console.warn(`[AI-${stage}] Recovered ${recovered} stale articles back to ${recoveryStatus}.`);
+  }
+
+  return recovered;
+}
+
+function clearWorkerFields() {
+  return {
+    nextAiAttemptAt: admin.firestore.FieldValue.delete(),
+    workerStage: admin.firestore.FieldValue.delete(),
+    workerLeaseUntil: admin.firestore.FieldValue.delete(),
+  };
+}
+
+function buildRetryUpdate(
+  status: 'ai_error' | 'analysis_error',
+  stage: 'relevance' | 'analysis',
+  attemptCount: number,
+  errorMessage: string,
+) {
+  return {
+    status,
+    ...(stage === 'relevance'
+      ? { relevanceAttemptCount: attemptCount }
+      : { analysisAttemptCount: attemptCount }),
+    lastAiErrorStage: stage,
+    lastAiError: errorMessage,
+    lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+    nextAiAttemptAt: admin.firestore.Timestamp.fromMillis(Date.now() + getRetryDelayMs(attemptCount)),
+    workerStage: admin.firestore.FieldValue.delete(),
+    workerLeaseUntil: admin.firestore.FieldValue.delete(),
+  };
+}
+
+async function loadClaimableArticlesForStage(
+  queryRef: FirebaseFirestore.Query,
+  stage: 'filtering' | 'analyzing',
+  baseBatchSize: number,
+  emptyLog: string,
+  unclaimableLog: string,
+) {
+  const snapshot = await queryRef.limit(Math.max(baseBatchSize * 3, baseBatchSize)).get();
+  if (snapshot.empty) {
+    console.log(emptyLog);
+    return [];
+  }
+
+  const claimCandidates = snapshot.docs
+    .filter((doc) => isReadyForRetry(doc.data(), new Date()))
+    .slice(0, baseBatchSize);
+
+  const claimed = await claimArticlesForStage(claimCandidates, stage);
+  if (claimed.length === 0) {
+    console.log(unclaimableLog);
+  }
+
+  return claimed;
 }
 
 function normalizeSourceName(name?: string): string {
@@ -287,13 +564,13 @@ async function getSourcePriorityDecision(article: any): Promise<SourcePriorityDe
   };
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Provider-specific API callers
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Promise<string> {
   const db = admin.firestore();
 
-  // 1차: systemSettings/aiConfig.apiKeys.{provider}
+  // 1李? systemSettings/aiConfig.apiKeys.{provider}
   // Note: saveAiApiKey stores the key as a literal dot-notation field name ("apiKeys.glm"),
   // so we must check both the nested path and the literal field name.
   try {
@@ -305,7 +582,7 @@ async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Pro
     console.warn('resolveApiKey: systemSettings load failed:', err);
   }
 
-  // 2차: companySettings fallback (companyId 지정 또는 첫 활성 회사)
+  // 2李? companySettings fallback (companyId 吏???먮뒗 泥??쒖꽦 ?뚯궗)
   try {
     let targetId = companyId;
     if (!targetId) {
@@ -316,7 +593,7 @@ async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Pro
       const compDoc = await db.collection('companySettings').doc(targetId).get();
       const compKey = compDoc.data()?.apiKeys?.[aiConfig.provider];
       if (compKey) {
-        // systemSettings에 동기화 (다음 호출 최적화)
+        // systemSettings???숆린??(?ㅼ쓬 ?몄텧 理쒖쟻??
         db.collection('systemSettings').doc('aiConfig').set(
           { [`apiKeys.${aiConfig.provider}`]: compKey }, { merge: true }
         ).catch(() => {});
@@ -336,7 +613,122 @@ function isRetryableForFallback(error: any): boolean {
   return status === 429 || (status !== undefined && status >= 500) || status === undefined;
 }
 
-type ApiCallOptions = { temperature?: number; maxTokens?: number; maxRetries?: number };
+export function resolveFallbackAiConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig | null {
+  if (!aiConfig.fallbackProvider || aiConfig.fallbackProvider === aiConfig.provider) {
+    return null;
+  }
+
+  const defaults = PROVIDER_DEFAULTS[aiConfig.fallbackProvider];
+  return {
+    ...aiConfig,
+    provider: aiConfig.fallbackProvider,
+    model: aiConfig.fallbackModel || defaults.model,
+    baseUrl: undefined,
+    apiKeyEnvKey: defaults.apiKeyEnvKey,
+  };
+}
+
+export type AiTaskProfile =
+  | 'connection'
+  | 'relevance'
+  | 'analysis'
+  | 'dedup'
+  | 'article-list-summary'
+  | 'daily-briefing'
+  | 'custom-report';
+
+type ApiCallOptions = {
+  temperature?: number;
+  maxTokens?: number;
+  maxRetries?: number;
+  topP?: number;
+  doSample?: boolean;
+  structuredJson?: boolean;
+  thinkingType?: 'enabled' | 'disabled';
+  clearThinking?: boolean;
+  taskProfile?: AiTaskProfile;
+};
+
+export function resolveAiCallOptions(
+  provider: AiProvider,
+  taskProfile: AiTaskProfile,
+  overrides?: Omit<ApiCallOptions, 'taskProfile'>,
+): ApiCallOptions {
+  const base: ApiCallOptions = { ...(overrides || {}), taskProfile };
+
+  if (provider !== 'glm') {
+    return base;
+  }
+
+  const glmDefaults: Record<AiTaskProfile, ApiCallOptions> = {
+    connection: {
+      temperature: 0,
+      maxTokens: 10,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+    },
+    relevance: {
+      temperature: 0,
+      maxTokens: 120,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
+    },
+    analysis: {
+      temperature: 0,
+      maxTokens: 1400,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
+    },
+    dedup: {
+      temperature: 0,
+      maxTokens: 40,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
+    },
+    'article-list-summary': {
+      temperature: 0.2,
+      maxTokens: 1200,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
+    },
+    'daily-briefing': {
+      temperature: 0.2,
+      maxTokens: 2400,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
+    },
+    'custom-report': {
+      temperature: 0.2,
+      maxTokens: 8000,
+      thinkingType: 'disabled',
+      clearThinking: true,
+    },
+  };
+
+  return {
+    ...glmDefaults[taskProfile],
+    ...base,
+  };
+}
+
+function requireNonEmptyAiContent(content: unknown, provider: AiProvider, model: string): string {
+  const normalized = typeof content === 'string' ? content.trim() : '';
+  if (!normalized) {
+    throw new Error(`Provider ${provider} model ${model} returned empty content.`);
+  }
+  return normalized;
+}
 
 async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiConfig, options?: ApiCallOptions): Promise<ApiCallResult> {
   return retryWithBackoff(async () => {
@@ -344,14 +736,27 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
     if (url.endsWith('/')) url = url.slice(0, -1);
     if (!url.endsWith('/chat/completions')) url += '/chat/completions';
     console.log(`[AI-START] Calling ${aiConfig.provider} (${aiConfig.model}) at ${url}...`);
+    const requestBody: Record<string, any> = {
+      model: aiConfig.model,
+      request_id: randomBytes(8).toString('hex'),
+      messages: [{ role: 'user', content: prompt }],
+      ...(options?.temperature !== undefined ? { temperature: options.temperature } : { temperature: 0.2 }),
+      ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+      ...(options?.doSample !== undefined ? { do_sample: options.doSample } : {}),
+      ...(options?.thinkingType
+        ? {
+            thinking: {
+              type: options.thinkingType,
+              clear_thinking: options.clearThinking ?? true,
+            },
+          }
+        : {}),
+      ...(options?.structuredJson ? { response_format: { type: 'json_object' } } : {}),
+    };
     const response = await axios.post(
       url,
-      {
-        model: aiConfig.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: options?.temperature ?? 0.2,
-        ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      },
+      requestBody,
       {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         timeout: 240000,
@@ -363,7 +768,12 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
       console.error('GLM empty content. finish_reason:', finishReason, 'full response:', JSON.stringify(response.data).substring(0, 500));
       throw new Error(`Model returned empty content. finish_reason: ${finishReason || 'unknown'}. Check model name "${aiConfig.model}" and endpoint.`);
     }
-    return { content: rawContent.trim(), usage: extractTokenUsage(response.data, 'glm') };
+    return {
+      content: requireNonEmptyAiContent(rawContent, 'glm', aiConfig.model),
+      usage: extractTokenUsage(response.data, 'glm'),
+      provider: 'glm',
+      model: aiConfig.model,
+    };
   }, options?.maxRetries);
 }
 
@@ -380,7 +790,12 @@ async function callOpenAiApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
       },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
     );
-    return { content: response.data.choices[0].message.content.trim(), usage: extractTokenUsage(response.data, 'openai') };
+    return {
+      content: requireNonEmptyAiContent(response.data.choices?.[0]?.message?.content, 'openai', aiConfig.model),
+      usage: extractTokenUsage(response.data, 'openai'),
+      provider: 'openai',
+      model: aiConfig.model,
+    };
   }, options?.maxRetries);
 }
 
@@ -398,8 +813,13 @@ async function callGeminiApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
       },
       { headers: { 'Content-Type': 'application/json' } }
     );
-    const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return { content: content.trim(), usage: extractTokenUsage(response.data, 'gemini') };
+    const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return {
+      content: requireNonEmptyAiContent(content, 'gemini', aiConfig.model),
+      usage: extractTokenUsage(response.data, 'gemini'),
+      provider: 'gemini',
+      model: aiConfig.model,
+    };
   }, options?.maxRetries);
 }
 
@@ -421,8 +841,13 @@ async function callClaudeApi(prompt: string, apiKey: string, aiConfig: RuntimeAi
         },
       }
     );
-    const content = response.data.content?.[0]?.text || '';
-    return { content: content.trim(), usage: extractTokenUsage(response.data, 'claude') };
+    const content = response.data.content?.[0]?.text;
+    return {
+      content: requireNonEmptyAiContent(content, 'claude', aiConfig.model),
+      usage: extractTokenUsage(response.data, 'claude'),
+      provider: 'claude',
+      model: aiConfig.model,
+    };
   }, options?.maxRetries);
 }
 
@@ -435,50 +860,51 @@ function routeToProvider(provider: string, prompt: string, apiKey: string, confi
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Unified API caller (routes by provider + fallback)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function callAiProvider(
   prompt: string,
   aiConfig: RuntimeAiConfig,
-  options?: { temperature?: number; maxTokens?: number },
+  options?: ApiCallOptions,
   companyId?: string
 ): Promise<ApiCallResult> {
-  await waitForAiThrottleWindow();
+  await waitForAiThrottleWindow(aiConfig.provider);
   const apiKey = await resolveApiKey(aiConfig, companyId);
   validateApiKey(apiKey, aiConfig.provider);
 
-  // fallback 설정 시 재시도 횟수를 줄여 빠르게 전환 (기본 4회 → 2회)
+  // Fallback is meant to fail over quickly rather than spend a long time stuck on the primary provider.
   const primaryOpts: ApiCallOptions = { ...options, maxRetries: aiConfig.fallbackProvider ? 2 : undefined };
 
   try {
     return await routeToProvider(aiConfig.provider, prompt, apiKey, aiConfig, primaryOpts);
   } catch (primaryError: any) {
-    // 429 / timeout / 5xx 이고 fallback이 설정된 경우 전환
-    if (aiConfig.fallbackProvider && isRetryableForFallback(primaryError)) {
-      const defaults = PROVIDER_DEFAULTS[aiConfig.fallbackProvider];
-      const fallbackConfig: RuntimeAiConfig = {
-        ...aiConfig,
-        provider: aiConfig.fallbackProvider,
-        model: aiConfig.fallbackModel || defaults.model,
-        baseUrl: undefined, // fallback provider 기본 URL 사용
-        apiKeyEnvKey: defaults.apiKeyEnvKey,
-      };
+    registerAiRateLimit(primaryError, aiConfig.provider);
+
+    const fallbackConfig = resolveFallbackAiConfig(aiConfig);
+    if (fallbackConfig && isRetryableForFallback(primaryError)) {
+      const fallbackOpts: ApiCallOptions = { ...options, maxRetries: 2 };
       console.warn(
-        `[AI-FALLBACK] ${aiConfig.provider}(${aiConfig.model}) 실패: ${primaryError.message?.substring(0, 80)}` +
-        ` → ${fallbackConfig.provider}(${fallbackConfig.model}) 로 전환`
+        `[AI-FALLBACK] ${aiConfig.provider}(${aiConfig.model}) failed: ${primaryError.message?.substring(0, 120)}` +
+        ` -> ${fallbackConfig.provider}(${fallbackConfig.model})`
       );
+      await waitForAiThrottleWindow(fallbackConfig.provider);
       const fallbackKey = await resolveApiKey(fallbackConfig, companyId);
       validateApiKey(fallbackKey, fallbackConfig.provider);
-      return routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, options);
+      try {
+        return await routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, fallbackOpts);
+      } catch (fallbackError) {
+        registerAiRateLimit(fallbackError, fallbackConfig.provider);
+        throw fallbackError;
+      }
     }
     throw primaryError;
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Test AI connection (for Settings UI)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function testAiProviderConnection(
   aiConfig: RuntimeAiConfig,
   companyId?: string
@@ -488,13 +914,13 @@ export async function testAiProviderConnection(
     const result = await callAiProvider(
       'Reply with exactly: OK',
       aiConfig,
-      { temperature: 0.0, maxTokens: 10 },
+      resolveAiCallOptions(aiConfig.provider, 'connection'),
       companyId
     );
     const latencyMs = Date.now() - startMs;
     return {
       success: true,
-      message: `Connection successful (${latencyMs}ms)${result.content ? ` — "${result.content.substring(0, 40)}"` : ''}`,
+      message: `Connection successful (${latencyMs}ms)${result.content ? ` ??"${result.content.substring(0, 40)}"` : ''}`,
       model: aiConfig.model,
       provider: aiConfig.provider,
       latencyMs,
@@ -511,9 +937,9 @@ export async function testAiProviderConnection(
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // JSON cleanup
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 function cleanupJsonResponse(content: string): string {
   const jsonMatch = content.match(/\{[\s\S]*\}/);
   if (jsonMatch) return jsonMatch[0];
@@ -524,9 +950,24 @@ function cleanupJsonResponse(content: string): string {
   return cleaned.trim();
 }
 
-// ─────────────────────────────────────────
+function parseJsonObject<T = Record<string, any>>(content: string): T {
+  return JSON.parse(cleanupJsonResponse(content)) as T;
+}
+
+function clampConfidence(confidence?: number | null): number | null {
+  if (typeof confidence !== 'number' || Number.isNaN(confidence)) return null;
+  return Math.min(1, Math.max(0, confidence));
+}
+
+function toRelevancePoints(confidence?: number | null): number | null {
+  const normalized = clampConfidence(confidence);
+  if (normalized == null) return null;
+  return Math.round(normalized * 100);
+}
+
+// ?????????????????????????????????????????
 // Prompt Logging
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function logPromptExecution(
   stage: 'relevance-check' | 'deep-analysis' | 'daily-briefing' | 'dedup-check' | 'custom-output' | 'article-list-summary',
   input: Record<string, any>,
@@ -552,9 +993,9 @@ export async function logPromptExecution(
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Relevance Check
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function checkRelevance(
   article: { title: string; content: string; source: string },
   aiConfig: RuntimeAiConfig,
@@ -565,16 +1006,16 @@ export async function checkRelevance(
   if (filters) {
     const include = filters.includeKeywords || [];
     const exclude = filters.excludeKeywords || [];
-    extraGuidelines += `\n애매하지만 거래, 투자, 매각, 상장 준비와 연결될 가능성이 있으면 RELEVANT: YES로 판단하세요.`;
+    extraGuidelines += '\nIf the article materially relates to a deal, investment, fundraising, exit, listing, restructuring, or a likely transaction path, classify it as RELEVANT: YES.';
     if (include.length > 0) {
-      extraGuidelines += `\n다음 키워드 중 하나라도 포함되어 있으면 관련 기사로 판단하세요: ${include.join(', ')}.`;
+      extraGuidelines += `\nTreat the following keywords as positive relevance hints: ${include.join(', ')}.`;
     }
     if (exclude.length > 0) {
-      extraGuidelines += `\n다음 주제에 주로 해당하는 기사는 관련 없음으로 판단하세요: ${exclude.join(', ')}.`;
+      extraGuidelines += `\nIf the article is mainly about the following excluded topics, mark it as not relevant: ${exclude.join(', ')}.`;
     }
   }
 
-  const prompt = `${aiConfig.relevancePrompt || DEFAULT_RELEVANCE_PROMPT}
+  const prompt = `${sanitizePromptOverride(aiConfig.relevancePrompt) || DEFAULT_RELEVANCE_PROMPT}
 
 ${extraGuidelines}
 
@@ -582,44 +1023,52 @@ Title: ${article.title}
 Content: ${article.content.substring(0, 2000)}
 Source: ${article.source}
 
-Decision:`;
+Return only valid JSON:
+{
+  "relevant": true,
+  "confidence": 0.0,
+  "reason": "short Korean reason"
+}`;
 
   try {
-    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.0, maxTokens: 1000 }, context?.companyId);
+    const result = await callAiProvider(
+      prompt,
+      aiConfig,
+      resolveAiCallOptions(aiConfig.provider, 'relevance'),
+      context?.companyId,
+    );
 
-    const relevantMatch = result.content.match(/RELEVANT:\s*(YES|NO)/i);
-    const confidenceMatch = result.content.match(/CONFIDENCE:\s*(\d+\.?\d*)/i);
-    const reasonMatch = result.content.match(/REASON:\s*(.+)/i);
-
-    const isRelevant = relevantMatch ? relevantMatch[1].toUpperCase() === 'YES' : false;
-    const confidence = confidenceMatch ? parseFloat(confidenceMatch[1]) : (isRelevant ? 0.5 : 0);
-    const reason = reasonMatch ? reasonMatch[1].trim() : (isRelevant ? 'Relevant' : 'Not relevant');
+    const parsed = parseJsonObject<{ relevant?: boolean; confidence?: number; reason?: string }>(result.content);
+    const isRelevant = Boolean(parsed.relevant);
+    const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : (isRelevant ? 0.5 : 0);
+    const reason = `${parsed.reason || (isRelevant ? 'Relevant' : 'Not relevant')}`.trim();
     const normalizedConfidence = Math.min(1, Math.max(0, confidence));
 
-    await logPromptExecution('relevance-check', { title: article.title, source: article.source }, result.content, aiConfig.model, { ...context, prompt });
-    trackAiCost('relevance-check', result.usage, aiConfig.model, aiConfig.provider, context?.companyId, context?.pipelineRunId).catch(() => {});
+    await logPromptExecution('relevance-check', { title: article.title, source: article.source }, result.content, result.model, { ...context, prompt });
+    trackAiCost('relevance-check', result.usage, result.model, result.provider, context?.companyId, context?.pipelineRunId).catch(() => {});
 
     return { isRelevant, confidence: normalizedConfidence, reason };
   } catch (error) {
-    // API 오류는 re-throw — "관련 없음"으로 처리하면 안 됨 (기사가 wrongly rejected됨)
+    // API ?ㅻ쪟??re-throw ??"愿???놁쓬"?쇰줈 泥섎━?섎㈃ ????(湲곗궗媛 wrongly rejected??
     console.error('Error calling AI API for relevance check:', error);
     throw error;
   }
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Article Analysis
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function analyzeArticle(
   article: { title: string; content: string; source: string; url: string; publishedAt: string },
   aiConfig: RuntimeAiConfig,
   context?: PromptExecutionContext
 ) {
-  const prompt = `${aiConfig.analysisPrompt || DEFAULT_ANALYSIS_PROMPT}
+  const prompt = `${sanitizePromptOverride(aiConfig.analysisPrompt) || DEFAULT_ANALYSIS_PROMPT}
 
-[필수 지시사항]
-모든 출력(summary, category, insights, tags)은 반드시 자연스러운 한국어로 작성하세요.
-영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.
+Additional rules:
+- summary, category, insights, and tags must be written in Korean.
+- Do not output explanatory text outside JSON.
+- Keep company names, brands, and legal entity names in their natural form when needed.
 
 Article title: ${article.title}
 Source: ${article.source}
@@ -628,88 +1077,89 @@ URL: ${article.url}
 Article body:
 ${article.content}`;
 
-  const result = await callAiProvider(prompt, aiConfig, { temperature: 0.3 }, context?.companyId);
+  const result = await callAiProvider(
+    prompt,
+    aiConfig,
+    resolveAiCallOptions(aiConfig.provider, 'analysis'),
+    context?.companyId,
+  );
   const content = cleanupJsonResponse(result.content);
 
-  await logPromptExecution('deep-analysis', { title: article.title, source: article.source, url: article.url }, content, aiConfig.model, { ...context, prompt });
-  trackAiCost('deep-analysis', result.usage, aiConfig.model, aiConfig.provider, context?.companyId, context?.pipelineRunId).catch(() => {});
+  await logPromptExecution('deep-analysis', { title: article.title, source: article.source, url: article.url }, content, result.model, { ...context, prompt });
+  trackAiCost('deep-analysis', result.usage, result.model, result.provider, context?.companyId, context?.pipelineRunId).catch(() => {});
 
   return JSON.parse(content);
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Batch: Relevance Filtering
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function processRelevanceFiltering(options?: {
   companyId?: string;
   pipelineRunId?: string;
   aiConfig: RuntimeAiConfig;
   filters?: any; // RuntimeFilters
   abortChecker?: () => Promise<boolean>;
-  includeGlobalArticles?: boolean; // PC 스크래퍼 글로벌 기사 포함
 }) {
   const db = admin.firestore();
-  const baseBatchSize = options?.aiConfig.maxPendingBatch || 200;
+  const baseBatchSize = Math.max(20, options?.aiConfig.maxPendingBatch || 60);
 
-  // ── 쿼리: pipelineRunId 기사 + 글로벌 기사(companyId=null) 포함
-  let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'pending');
+  await recoverStaleArticlesForStage('filtering');
 
-  if (options?.pipelineRunId) {
-    // 일반: pipelineRunId 기사만
-    queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
-  } else if (options?.includeGlobalArticles && options?.companyId) {
-    // 글로벌 기사도 포함: companyId=null (PC 스크래퍼) 또는 companyId 일치
-    // Note: Firestore는 OR 쿼리를 직접 지원하지 않으므로, 먼저 글로벌 기사를 별도로 조회 후 합침
-  }
+  let queryRef: FirebaseFirestore.Query = db.collection('articles')
+    .where('status', 'in', ['pending', 'ai_error']);
+  if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
 
   const filters = options?.filters;
+  const articles = await loadClaimableArticlesForStage(
+    queryRef,
+    'filtering',
+    baseBatchSize,
+    '[RelevanceFilter] No pending or retryable articles found.',
+    '[RelevanceFilter] No claimable articles found after lease/retry checks.',
+  );
 
-  const pendingArticlesSnapshot = await queryRef.limit(baseBatchSize).get();
-  if (pendingArticlesSnapshot.empty) {
-    console.log('[RelevanceFilter] No pending articles found.');
+  if (articles.length === 0) {
     return { success: true, processed: 0, passed: 0 };
   }
-  console.log(`[RelevanceFilter] Found ${pendingArticlesSnapshot.size} pending articles to process.`);
+
+  console.log(`[RelevanceFilter] Claimed ${articles.length} articles to process.`);
 
   let processed = 0;
   let passed = 0;
   let failed = 0;
 
-  // ── 병렬 처리: 10개씩 동시 AI 호출 (안정성 우선) ──
   const parallelLimit = Math.max(3, Math.min(6, getDynamicBatchSize(Math.min(6, options?.aiConfig.maxPendingBatch || 6))));
-  const articles = pendingArticlesSnapshot.docs;
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
-    // ── 중단 체크 (배치 사이) ──
     if (options?.abortChecker && await options.abortChecker()) {
       console.log(`[RelevanceFilter] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
       break;
     }
+
     const chunk = articles.slice(i, i + parallelLimit);
-    const promises = chunk.map(async (doc) => {
+    const results = await Promise.all(chunk.map(async (doc) => {
       const article = doc.data() as any;
       try {
         const priorityDecision = await getSourcePriorityDecision(article);
-        // 사전 필터링
         let fastRejectReason: string | null = null;
+
         if (!priorityDecision.isPriority) {
           const mustKeywords = filters?.mustIncludeKeywords || [];
           if (mustKeywords.length > 0) {
-          const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
-          const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
-            kw.trim() && textToSearch.includes(kw.trim().toLowerCase())
-          );
-          for (const kw of mustKeywords) {
-            if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
-              if (hasAnyMustKeyword) {
+            const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+            const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
+              kw.trim() && textToSearch.includes(kw.trim().toLowerCase())
+            );
+            for (const kw of mustKeywords) {
+              if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
+                if (hasAnyMustKeyword) break;
+                fastRejectReason = `Missing required keyword: ${kw}`;
                 break;
               }
-              fastRejectReason = `Missing required keyword: ${kw}`;
-              break;
-            }
             }
           }
-        
+
           const excludeKeywords = filters?.excludeKeywords || [];
           if (!fastRejectReason && excludeKeywords.length > 0) {
             const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
@@ -724,15 +1174,14 @@ export async function processRelevanceFiltering(options?: {
 
         let result: RelevanceResult;
         let aiRelevanceResult: RelevanceResult | null = null;
+        const filteringAiConfig = resolveAiConfigForStage(options!.aiConfig, 'filtering');
+
         if (fastRejectReason) {
           result = { isRelevant: false, confidence: 0, reason: fastRejectReason };
         } else {
           try {
             const resolvedCompanyId = article.companyId || options?.companyId;
-            // filteringModel이 설정된 경우 해당 모델로 교체 (빠른 판단 전용)
-            const filteringAiConfig = options!.aiConfig.filteringModel
-              ? { ...options!.aiConfig, model: options!.aiConfig.filteringModel }
-              : options!.aiConfig;
+
             aiRelevanceResult = await checkRelevance(
               { title: article.title, content: article.content || article.title, source: article.source },
               filteringAiConfig,
@@ -752,12 +1201,13 @@ export async function processRelevanceFiltering(options?: {
             registerAiRateLimit(aiError);
             console.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {
               title: article.title?.substring(0, 50),
-              provider: options?.aiConfig.provider,
-              model: options?.aiConfig.model,
+              provider: filteringAiConfig.provider,
+              model: filteringAiConfig.model,
               error: aiError.message,
               status: aiError.response?.status,
               responseData: aiError.response?.data ? JSON.stringify(aiError.response.data).substring(0, 300) : undefined,
             });
+
             if (priorityDecision.isPriority) {
               result = {
                 isRelevant: true,
@@ -777,22 +1227,42 @@ export async function processRelevanceFiltering(options?: {
         recordError();
         return { doc, result: null, aiRelevanceResult: null, priorityDecision: null, error };
       }
-    });
+    }));
 
-    const results = await Promise.all(promises);
-
-    // 결과를 일괄 업데이트
     const batch = db.batch();
     const rejectedDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
     for (const { doc, result, aiRelevanceResult, priorityDecision, error } of results) {
       if (result) {
+        const aiConfidence = clampConfidence(aiRelevanceResult?.confidence ?? null);
+        let relevanceBasis: RelevanceBasis = 'ai';
+
+        if (!aiRelevanceResult && !result.isRelevant && result.confidence === 0) {
+          relevanceBasis = 'keyword_reject';
+        } else if (priorityDecision?.isPriority && aiRelevanceResult) {
+          relevanceBasis = 'priority_source_override';
+        } else if (priorityDecision?.isPriority && !aiRelevanceResult) {
+          relevanceBasis = 'priority_source_fallback';
+        }
+
+        const finalConfidence = relevanceBasis === 'priority_source_fallback'
+          ? null
+          : clampConfidence(aiRelevanceResult?.confidence ?? result.confidence);
+        const finalScore = relevanceBasis === 'priority_source_fallback'
+          ? null
+          : toRelevancePoints(aiRelevanceResult?.confidence ?? result.confidence);
+
         batch.update(doc.ref, {
           status: result.isRelevant ? 'filtered' : 'rejected',
           filteredAt: admin.firestore.FieldValue.serverTimestamp(),
-          relevanceScore: result.confidence,
+          relevanceScore: finalScore,
+          relevanceScoreMax: 100,
+          relevanceConfidence: finalConfidence,
+          relevanceBasis,
           relevanceReason: result.reason,
           aiRelevanceDecision: aiRelevanceResult?.isRelevant ?? result.isRelevant,
-          aiRelevanceScore: aiRelevanceResult?.confidence ?? result.confidence,
+          aiRelevanceScore: toRelevancePoints(aiConfidence),
+          aiRelevanceConfidence: aiConfidence,
           aiRelevanceReason: aiRelevanceResult?.reason ?? result.reason,
           priorityAnalysis: priorityDecision?.isPriority || false,
           analysisPriority: priorityDecision?.priority || 0,
@@ -802,36 +1272,26 @@ export async function processRelevanceFiltering(options?: {
           lastAiErrorStage: admin.firestore.FieldValue.delete(),
           lastAiError: admin.firestore.FieldValue.delete(),
           lastAiErrorAt: admin.firestore.FieldValue.delete(),
+          ...clearWorkerFields(),
         });
         processed++;
         if (result.isRelevant) passed++;
-        else {
-          rejectedDocs.push(doc);
-        }
+        else rejectedDocs.push(doc);
       } else if (error) {
         const currentAttempts = Number(doc.data()?.relevanceAttemptCount || 0);
         const nextAttempts = currentAttempts + 1;
-        const shouldEscalate = nextAttempts >= 3;
-        batch.update(doc.ref, {
-          status: shouldEscalate ? 'ai_error' : 'pending',
-          relevanceAttemptCount: nextAttempts,
-          lastAiErrorStage: 'relevance',
-          lastAiError: error.message || 'Unknown relevance error',
-          lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        batch.update(doc.ref, buildRetryUpdate(
+          'ai_error',
+          'relevance',
+          nextAttempts,
+          error.message || 'Unknown relevance error',
+        ));
         failed++;
       }
     }
-    if (results.some(r => r.result)) {
-      await batch.commit();
-    } else if (results.some(r => r.error)) {
-      await batch.commit();
-    }
-    if (rejectedDocs.length > 0) {
-      await syncArticlesToDedup(rejectedDocs, 'rejected');
-    }
 
-    // 에러가 많으면 잠시 대기, 정상 상태면 즉시 다음 배치 처리
+    if (results.length > 0) await batch.commit();
+    if (rejectedDocs.length > 0) await syncArticlesToDedup(rejectedDocs, 'rejected');
     if (i + parallelLimit < articles.length && recentErrorCount > 0) {
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -840,9 +1300,9 @@ export async function processRelevanceFiltering(options?: {
   return { success: true, processed, passed, failed };
 }
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Batch: Deep Analysis
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export async function processDeepAnalysis(options?: {
   companyId?: string;
   pipelineRunId?: string;
@@ -850,77 +1310,80 @@ export async function processDeepAnalysis(options?: {
   abortChecker?: () => Promise<boolean>;
 }) {
   const db = admin.firestore();
-  const baseBatchSize = options?.aiConfig.maxAnalysisBatch || 100;
+  const baseBatchSize = Math.max(10, options?.aiConfig.maxAnalysisBatch || 24);
 
-  let queryRef: FirebaseFirestore.Query = db.collection('articles').where('status', '==', 'filtered');
+  await recoverStaleArticlesForStage('analyzing');
+
+  let queryRef: FirebaseFirestore.Query = db.collection('articles')
+    .where('status', 'in', ['filtered', 'analysis_error']);
   if (options?.pipelineRunId) queryRef = queryRef.where('pipelineRunId', '==', options.pipelineRunId);
 
-  const filteredArticlesSnapshot = await queryRef.limit(baseBatchSize).get();
-  if (filteredArticlesSnapshot.empty) {
-    console.log('[DeepAnalysis] No filtered articles found.');
+  const claimedArticles = await loadClaimableArticlesForStage(
+    queryRef,
+    'analyzing',
+    baseBatchSize,
+    '[DeepAnalysis] No filtered or retryable analysis articles found.',
+    '[DeepAnalysis] No claimable articles found after lease/retry checks.',
+  );
+
+  if (claimedArticles.length === 0) {
     return { success: true, processed: 0 };
   }
-  console.log(`[DeepAnalysis] Found ${filteredArticlesSnapshot.size} filtered articles to analyze.`);
+
+  console.log(`[DeepAnalysis] Claimed ${claimedArticles.length} articles to analyze.`);
 
   let processed = 0;
   let failed = 0;
 
-  // ── 병렬 처리: 5개씩 동시 분석 (안정성 우선) ──
   const parallelLimit = Math.max(2, Math.min(4, getDynamicBatchSize(Math.min(4, options?.aiConfig.maxAnalysisBatch || 4))));
-  const articles = (await Promise.all(filteredArticlesSnapshot.docs.map(async (doc) => {
+  const articles = (await Promise.all(claimedArticles.map(async (doc) => {
     const article = doc.data() as any;
     const priorityDecision = await getSourcePriorityDecision(article);
     return { doc, article, priorityDecision };
   }))).sort((a, b) => (b.priorityDecision.priority || 0) - (a.priorityDecision.priority || 0));
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
-    // ── 중단 체크 (배치 사이) ──
     if (options?.abortChecker && await options.abortChecker()) {
       console.log(`[DeepAnalysis] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
       break;
     }
+
     const chunk = articles.slice(i, i + parallelLimit);
-    const promises = chunk.map(async ({ doc, article, priorityDecision }) => {
+    const results = await Promise.all(chunk.map(async ({ doc, article, priorityDecision }) => {
       try {
         const publishedAtStr = article.publishedAt
           ? (article.publishedAt.toDate ? article.publishedAt.toDate().toISOString() : new Date(article.publishedAt).toISOString())
           : new Date().toISOString();
+        const analysisAiConfig = resolveAiConfigForStage(options!.aiConfig, 'analysis');
 
         const analysisResult = await analyzeArticle(
           { title: article.title, content: article.content, source: article.source, url: article.url, publishedAt: publishedAtStr },
-          options!.aiConfig,
+          analysisAiConfig,
           { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId }
         );
 
-        return {
-          doc,
-          analysisResult,
-          priorityDecision,
-          error: null,
-        };
+        return { doc, analysisResult, priorityDecision, error: null };
       } catch (error) {
         registerAiRateLimit(error);
         console.error(`Failed to analyze article ${doc.id}:`, error);
         recordError();
         return { doc, analysisResult: null, priorityDecision, error };
       }
-    });
+    }));
 
-    const results = await Promise.all(promises);
-
-    // 결과 일괄 업데이트
     const batch = db.batch();
     for (const { doc, analysisResult, priorityDecision, error } of results) {
       if (analysisResult) {
+        const normalized = normalizeAnalysisResult(analysisResult);
         batch.update(doc.ref, {
           status: 'analyzed',
           analyzedAt: admin.firestore.FieldValue.serverTimestamp(),
-          summary: analysisResult.summary || [],
-          category: analysisResult.category || 'other',
-          companies: analysisResult.companies || { acquiror: null, target: null, financialSponsor: null },
-          deal: analysisResult.deal || { type: 'other', amount: 'undisclosed', stake: null },
-          insights: analysisResult.insights || null,
-          tags: analysisResult.tags || [],
+          summary: normalized.summary,
+          category: normalized.category,
+          companies: normalized.companies,
+          deal: normalized.deal,
+          insights: normalized.insights,
+          tags: normalized.tags,
           priorityAnalysis: priorityDecision?.isPriority || false,
           analysisPriority: priorityDecision?.priority || 0,
           priorityAnalysisReason: priorityDecision?.reason || null,
@@ -928,29 +1391,23 @@ export async function processDeepAnalysis(options?: {
           lastAiErrorStage: admin.firestore.FieldValue.delete(),
           lastAiError: admin.firestore.FieldValue.delete(),
           lastAiErrorAt: admin.firestore.FieldValue.delete(),
+          ...clearWorkerFields(),
         });
         processed++;
       } else if (error) {
         const currentAttempts = Number(doc.data()?.analysisAttemptCount || 0);
         const nextAttempts = currentAttempts + 1;
-        const shouldEscalate = nextAttempts >= 3;
-        batch.update(doc.ref, {
-          status: shouldEscalate ? 'analysis_error' : 'filtered',
-          analysisAttemptCount: nextAttempts,
-          lastAiErrorStage: 'analysis',
-          lastAiError: (error as any)?.message || 'Unknown analysis error',
-          lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        batch.update(doc.ref, buildRetryUpdate(
+          'analysis_error',
+          'analysis',
+          nextAttempts,
+          (error as any)?.message || 'Unknown analysis error',
+        ));
         failed++;
       }
     }
-    if (results.some(r => r.analysisResult)) {
-      await batch.commit();
-    } else if (results.some(r => r.error)) {
-      await batch.commit();
-    }
 
-    // 에러가 많으면 잠시 대기, 정상 상태면 즉시 다음 배치 처리
+    if (results.length > 0) await batch.commit();
     if (i + parallelLimit < articles.length && recentErrorCount > 0) {
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -958,3 +1415,4 @@ export async function processDeepAnalysis(options?: {
 
   return { success: true, processed, failed };
 }
+

@@ -1,588 +1,442 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Rss, Globe, Code2, RefreshCw, CheckCircle,
-  XCircle, Clock, AlertTriangle, Loader2,
-  TrendingUp, Activity, Newspaper, ChevronDown, ChevronUp, Power
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  Globe,
+  Layers3,
+  Loader2,
+  Newspaper,
+  RefreshCw,
+  Rss,
+  SearchX,
+  Sparkles,
 } from 'lucide-react';
-import { db, functions } from '@/lib/firebase';
-import { httpsCallable } from 'firebase/functions';
 import {
-  collection, query, where, orderBy, limit,
-  getDocs, onSnapshot, doc, getCountFromServer, getDoc, setDoc, updateDoc, serverTimestamp
+  collection,
+  doc,
+  getCountFromServer,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
 } from 'firebase/firestore';
-import { format, subDays, startOfDay } from 'date-fns';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { httpsCallable } from 'firebase/functions';
+import { formatDistanceToNow } from 'date-fns';
+import { db, functions } from '@/lib/firebase';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
 
-// ─── 수집 방식 정의 ───────────────────────────────────────
-const SOURCE_TYPES = [
-  {
-    id: 'rss',
-    label: 'RSS',
-    icon: Rss,
-    color: 'text-orange-400',
-    bg: 'bg-orange-500/10 border-orange-500/20',
-    activeBg: 'bg-orange-500/20 border-orange-500/40',
-    desc: '뉴스 피드 자동 수집',
-  },
-  {
-    id: 'api',
-    label: 'API',
-    icon: Globe,
-    color: 'text-blue-400',
-    bg: 'bg-blue-500/10 border-blue-500/20',
-    activeBg: 'bg-blue-500/20 border-blue-500/40',
-    desc: '외부 뉴스 API 연동',
-  },
-  {
-    id: 'scraping',
-    label: '스크래핑',
-    icon: Code2,
-    color: 'text-purple-400',
-    bg: 'bg-purple-500/10 border-purple-500/20',
-    activeBg: 'bg-purple-500/20 border-purple-500/40',
-    desc: 'Cheerio 웹 스크래핑',
-  },
-];
+type WorkerStatus = 'idle' | 'running' | 'error' | string;
+type ArticleStatus =
+  | 'pending'
+  | 'filtering'
+  | 'filtered'
+  | 'analyzing'
+  | 'analyzed'
+  | 'published'
+  | 'rejected'
+  | 'ai_error'
+  | 'analysis_error'
+  | string;
 
-interface SourceStat {
-  sourceId: string;
+interface RuntimeDoc {
+  status?: WorkerStatus;
+  lastSuccessAt?: any;
+  lastErrorAt?: any;
+  lastError?: string;
+  totalCollected?: number;
+  totalFiltered?: number;
+  totalAnalyzed?: number;
+  updatedAt?: any;
+  articleCounts?: Record<string, number>;
+}
+
+interface SourceRow {
+  id: string;
   name: string;
   type: string;
-  todayCount: number;
-  lastCollectedAt: any;
-  lastStatus: 'success' | 'error' | 'idle';
-  errorMessage?: string;
+  status: string;
+  pricingTier?: string | null;
+  lastStatus?: string | null;
+  errorMessage?: string | null;
 }
 
-interface CompanyStat {
-  companyId: string;
+interface SourceHealthRow {
+  id: string;
   name: string;
-  total: number;
-  analyzed: number;
-  today: number;
+  type: string;
+  pricingTier?: string | null;
+  collected24h: number;
+  analyzed24h: number;
+  rejected24h: number;
+  lastCollectedAt: Date | null;
+  lastStatus?: string | null;
+  errorMessage?: string | null;
 }
 
-function normalizeSourceKey(value?: string) {
-  return `${value || ''}`.trim().toLowerCase().replace(/[\s_-]+/g, '');
+const COLLECTED_STATUSES: ArticleStatus[] = ['pending', 'filtering', 'filtered', 'analyzing', 'ai_error', 'analysis_error'];
+const EXCLUDED_STATUSES: ArticleStatus[] = ['rejected'];
+const ANALYZED_STATUSES: ArticleStatus[] = ['analyzed', 'published'];
+
+function toDate(value: any): Date | null {
+  if (!value) return null;
+  if (typeof value?.toDate === 'function') return value.toDate();
+  if (typeof value?._seconds === 'number') return new Date(value._seconds * 1000);
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function buildSourcePool(source: any) {
-  const pool = new Set<string>();
-  [source?.id, source?.localScraperId, source?.name, source?.url].forEach((value) => {
-    const key = normalizeSourceKey(value);
-    if (!key) return;
-    pool.add(key);
-    if (key.includes('thebell')) pool.add('thebell');
-    if (key.includes('marketinsight')) pool.add('marketinsight');
-  });
-  return pool;
+function formatRelative(value: any) {
+  const date = toDate(value);
+  if (!date) return '-';
+  return formatDistanceToNow(date, { addSuffix: true });
 }
 
-function buildArticlePool(article: any) {
-  const pool = new Set<string>();
-  [article?.globalSourceId, article?.sourceId, article?.source].forEach((value) => {
-    const key = normalizeSourceKey(value);
-    if (!key) return;
-    pool.add(key);
-    if (key.includes('thebell')) pool.add('thebell');
-    if (key.includes('marketinsight')) pool.add('marketinsight');
-  });
-  return pool;
+function getWorkerTone(status?: WorkerStatus) {
+  if (status === 'running') return 'text-blue-300 border-blue-500/30 bg-blue-500/10';
+  if (status === 'error') return 'text-red-300 border-red-500/30 bg-red-500/10';
+  return 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10';
 }
 
-function articleMatchesSource(article: any, source: any) {
-  const sourcePool = buildSourcePool(source);
-  const articlePool = buildArticlePool(article);
-  for (const key of articlePool) {
-    if (sourcePool.has(key)) return true;
-  }
-  return false;
+function getSourceTypeIcon(type?: string) {
+  if (type === 'rss') return Rss;
+  if (type === 'api') return Globe;
+  return Layers3;
+}
+
+function StatCard({
+  title,
+  value,
+  hint,
+  icon: Icon,
+  tone,
+}: {
+  title: string;
+  value: string | number;
+  hint: string;
+  icon: typeof Activity;
+  tone: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#0f1728] p-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-white/35">{title}</p>
+          <p className={`mt-3 text-3xl font-semibold ${tone}`}>{value}</p>
+          <p className="mt-2 text-sm text-white/45">{hint}</p>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
+          <Icon className={`h-5 w-5 ${tone}`} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function AdminDashboard() {
-  const [activeType, setActiveType] = useState<string>('all');
-  const [sources, setSources] = useState<any[]>([]);
-  const [sourceStats, setSourceStats] = useState<SourceStat[]>([]);
-  const [trendData, setTrendData] = useState<any[]>([]);
-  const [globalStats, setGlobalStats] = useState({
-    totalToday: 0,
-    totalPending: 0,
-    totalAnalyzed: 0,
-    totalSources: 0,
-    errorSources: 0,
-  });
   const [loading, setLoading] = useState(true);
-  // 파이프라인 제어
-  const [recentRuns, setRecentRuns] = useState<any[]>([]);
-  const [expandedRun, setExpandedRun] = useState<string | null>(null);
-  const [pipelineControl, setPipelineControl] = useState<any>({});
-  const [togglingPipeline, setTogglingPipeline] = useState(false);
-  const unsubRef = useRef<(() => void) | null>(null);
-  const unsubRunsRef = useRef<(() => void) | null>(null);
+  const [sources, setSources] = useState<SourceRow[]>([]);
+  const [sourceHealth, setSourceHealth] = useState<SourceHealthRow[]>([]);
+  const [collectionWorker, setCollectionWorker] = useState<RuntimeDoc>({});
+  const [analysisWorker, setAnalysisWorker] = useState<RuntimeDoc>({});
+  const [continuousRuntime, setContinuousRuntime] = useState<RuntimeDoc>({});
+  const [counts, setCounts] = useState({
+    collected: 0,
+    excluded: 0,
+    analyzed: 0,
+    errors: 0,
+    activeSources: 0,
+  });
+  const [runningAction, setRunningAction] = useState<'collection' | 'premiumCollection' | 'analysis' | null>(null);
 
-  useEffect(() => {
-    loadAll();
-    // 파이프라인 제어 상태 실시간 구독
-    const unsub = onSnapshot(doc(db, 'systemSettings', 'pipelineControl'), (snap) => {
-      setPipelineControl(snap.exists() ? snap.data() : {});
-    });
-    unsubRef.current = unsub;
-    // 파이프라인 이력 실시간 구독
-    const unsubRuns = onSnapshot(
-      query(collection(db, 'bulkAiJobs'), orderBy('startedAt', 'desc'), limit(10)),
-      (snap) => setRecentRuns(snap.docs.map(d => ({ id: d.id, ...d.data() as any })))
-    );
-    unsubRunsRef.current = unsubRuns;
-    return () => { unsub(); unsubRuns(); };
-  }, []);
-
-  const loadAll = async () => {
+  const loadDashboard = async () => {
     setLoading(true);
     try {
-      await Promise.all([
-        loadGlobalSources(),
-        loadGlobalStats(),
-        loadTrendData(),
-        loadRecentRuns(),
+      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const [
+        globalSourcesSnap,
+        collectedSnap,
+        excludedSnap,
+        analyzedSnap,
+        errorsSnap,
+        recentArticlesSnap,
+      ] = await Promise.all([
+        getDocs(query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'))),
+        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', COLLECTED_STATUSES))),
+        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', EXCLUDED_STATUSES))),
+        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ANALYZED_STATUSES))),
+        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
+        getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(500))),
       ]);
+
+      const dedupedSources = dedupeSourceCatalog(
+        globalSourcesSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) })),
+      ) as SourceRow[];
+
+      const articleRows = recentArticlesSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) }));
+      const healthRows = dedupedSources
+        .filter((source) => source.status === 'active')
+        .map((source) => {
+          const related = articleRows.filter((article) => article.globalSourceId === source.id || article.sourceId === source.id);
+          return {
+            id: source.id,
+            name: source.name,
+            type: source.type,
+            pricingTier: source.pricingTier,
+            collected24h: related.filter((article) => COLLECTED_STATUSES.includes(article.status)).length,
+            analyzed24h: related.filter((article) => ANALYZED_STATUSES.includes(article.status)).length,
+            rejected24h: related.filter((article) => EXCLUDED_STATUSES.includes(article.status)).length,
+            lastCollectedAt: related.length > 0 ? toDate(related[0]?.collectedAt) : null,
+            lastStatus: source.lastStatus,
+            errorMessage: source.errorMessage,
+          };
+        })
+        .sort((a, b) => (b.collected24h + b.analyzed24h) - (a.collected24h + a.analyzed24h));
+
+      setSources(dedupedSources);
+      setSourceHealth(healthRows);
+      setCounts({
+        collected: collectedSnap.data().count,
+        excluded: excludedSnap.data().count,
+        analyzed: analyzedSnap.data().count,
+        errors: errorsSnap.data().count,
+        activeSources: dedupedSources.filter((source) => source.status === 'active').length,
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const loadGlobalSources = async () => {
-    const snap = await getDocs(collection(db, 'globalSources'));
-    const srcs = dedupeSourceCatalog(snap.docs.map(d => ({ id: d.id, ...d.data() as any })));
-    setSources(srcs);
-    const today = startOfDay(new Date());
-    const articleSnap = await getDocs(query(
-      collection(db, 'articles'),
-      where('collectedAt', '>=', today),
-      orderBy('collectedAt', 'desc'),
-      limit(2000)
-    ));
-    const todaysArticles = articleSnap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
-    const stats: SourceStat[] = srcs.map((src) => ({
-      sourceId: src.id,
-      name: src.name,
-      type: src.type,
-      todayCount: todaysArticles.filter((article) => articleMatchesSource(article, src)).length,
-      lastCollectedAt: src.lastScrapedAt || null,
-      lastStatus: src.lastStatus || 'idle',
-      errorMessage: src.errorMessage,
-    }));
-    setSourceStats(stats);
-  };
+  useEffect(() => {
+    loadDashboard().catch(console.error);
 
-  const loadGlobalStats = async () => {
-    const today = startOfDay(new Date());
-    const [todaySnap, pendingSnap, analyzedSnap, sourcesSnap] = await Promise.all([
-      getCountFromServer(query(collection(db, 'articles'), where('collectedAt', '>=', today))),
-      getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'pending'))),
-      getCountFromServer(query(collection(db, 'articles'), where('status', '==', 'analyzed'))),
-      getCountFromServer(collection(db, 'globalSources')),
-    ]);
-    const errorSrc = (await getDocs(query(
-      collection(db, 'globalSources'), where('lastStatus', '==', 'error')
-    ))).size;
-    setGlobalStats({
-      totalToday: todaySnap.data().count,
-      totalPending: pendingSnap.data().count,
-      totalAnalyzed: analyzedSnap.data().count,
-      totalSources: sourcesSnap.data().count,
-      errorSources: errorSrc,
+    const unsubCollection = onSnapshot(doc(db, 'systemRuntime', 'worker_continuous-collection'), (snap) => {
+      setCollectionWorker((snap.data() || {}) as RuntimeDoc);
     });
-  };
+    const unsubAnalysis = onSnapshot(doc(db, 'systemRuntime', 'worker_continuous-analysis'), (snap) => {
+      setAnalysisWorker((snap.data() || {}) as RuntimeDoc);
+    });
+    const unsubContinuous = onSnapshot(doc(db, 'systemRuntime', 'continuousPipeline'), (snap) => {
+      setContinuousRuntime((snap.data() || {}) as RuntimeDoc);
+    });
 
-  const loadTrendData = async () => {
-    const today = new Date();
-    const trend = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = subDays(today, i);
-      const s = startOfDay(d);
-      const e = startOfDay(subDays(today, i - 1));
-      const dQ = query(collection(db, 'articles'), where('collectedAt', '>=', s), where('collectedAt', '<', e));
-      const dSnap = await getCountFromServer(dQ);
-      trend.push({ name: format(d, 'MM/dd'), articles: dSnap.data().count });
-    }
-    setTrendData(trend);
-  };
+    return () => {
+      unsubCollection();
+      unsubAnalysis();
+      unsubContinuous();
+    };
+  }, []);
 
-  const loadRecentRuns = async () => {
-    const snap = await getDocs(query(
-      collection(db, 'bulkAiJobs'),
-      orderBy('startedAt', 'desc'),
-      limit(10)
-    ));
-    setRecentRuns(snap.docs.map(d => ({ id: d.id, ...d.data() as any })));
-  };
-
-  const handleTogglePipeline = async () => {
-    const newEnabled = !pipelineControl.pipelineEnabled;
-    setTogglingPipeline(true);
+  const triggerWorker = async (type: 'collection' | 'premiumCollection' | 'analysis') => {
+    setRunningAction(type);
     try {
-      const fn = httpsCallable(functions, 'setPipelineControl');
-      await fn({ type: 'pipeline', enabled: newEnabled });
-      await loadRecentRuns();
-    } catch (err: any) {
-      alert('파이프라인 제어 실패: ' + err.message);
-    } finally {
-      setTogglingPipeline(false);
-    }
-  };
-
-  const handleStopAll = async () => {
-    setTogglingPipeline(true);
-    try {
-      // 1. Cloud Function으로 pipelineControl 상태 업데이트 시도
-      try {
-        const fn = httpsCallable(functions, 'setPipelineControl');
-        await fn({ type: 'stopall', enabled: false });
-      } catch {
-        // 함수 호출 실패 시 Firestore 직접 업데이트
-        await setDoc(doc(db, 'systemSettings', 'pipelineControl'), {
-          pipelineEnabled: false, pipelineRunning: false,
-          aiOnlyEnabled: false, aiOnlyRunning: false,
-          currentStep: null,
-        }, { merge: true });
-      }
-      // 2. bulkAiJobs 중 pending/running 상태 직접 aborted 처리
-      const stuckJobs = await getDocs(
-        query(collection(db, 'bulkAiJobs'), where('status', 'in', ['pending', 'running']))
+      const fn = httpsCallable(
+        functions,
+        type === 'collection'
+          ? 'triggerContinuousCollectionNow'
+          : type === 'premiumCollection'
+          ? 'triggerContinuousPremiumCollectionNow'
+          : 'triggerContinuousAnalysisNow',
       );
-      await Promise.all(stuckJobs.docs.map(d =>
-        updateDoc(d.ref, {
-          status: 'aborted',
-          abortedAt: serverTimestamp(),
-          completedAt: serverTimestamp(),
-        })
-      ));
-    } catch (err: any) {
-      alert('강제 종료 실패: ' + err.message);
+      await fn({ resetLease: true });
+      await loadDashboard();
     } finally {
-      setTogglingPipeline(false);
+      setRunningAction(null);
     }
   };
 
-  const filteredSources = activeType === 'all'
-    ? sources
-    : sources.filter(s => s.type === activeType);
+  const workerCards = useMemo(() => ([
+    {
+      key: 'collection',
+      title: 'Collection Worker',
+      status: collectionWorker.status || 'idle',
+      runtime: collectionWorker,
+      description: collectionWorker.status === 'running'
+        ? '현재 기사 수집 워커가 실행 중입니다.'
+        : '현재 수집 워커는 대기 상태입니다.',
+    },
+    {
+      key: 'analysis',
+      title: 'Analysis Worker',
+      status: analysisWorker.status || 'idle',
+      runtime: analysisWorker,
+      description: analysisWorker.status === 'running'
+        ? '현재 AI 분류/분석 워커가 실행 중입니다.'
+        : '현재 분석 워커는 대기 상태입니다.',
+    },
+  ]), [analysisWorker, collectionWorker]);
 
-  const filteredStats = activeType === 'all'
-    ? sourceStats
-    : sourceStats.filter(s => s.type === activeType);
-
-  const formatTs = (ts: any) => {
-    if (!ts) return '-';
-    try {
-      const d = ts?.toDate ? ts.toDate() : new Date(ts._seconds * 1000);
-      return format(d, 'MM/dd HH:mm');
-    } catch { return '-'; }
-  };
-
-  const runDuration = (run: any) => {
-    if (!run.startedAt || !run.completedAt) return null;
-    try {
-      const s = run.startedAt?.toDate ? run.startedAt.toDate() : new Date(run.startedAt._seconds * 1000);
-      const e = run.completedAt?.toDate ? run.completedAt.toDate() : new Date(run.completedAt._seconds * 1000);
-      const sec = Math.round((e.getTime() - s.getTime()) / 1000);
-      return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`;
-    } catch { return null; }
-  };
+  const topSourceRows = sourceHealth.slice(0, 8);
+  const warningSources = sourceHealth.filter((source) => source.lastStatus === 'error' || source.errorMessage).slice(0, 6);
+  const runtimeCounts = continuousRuntime.articleCounts || {};
 
   return (
     <div className="space-y-6 pb-10">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-white">수집 현황 대시보드</h1>
-          <p className="text-sm text-white/40 mt-0.5">각 수집 방식별 실시간 상태와 기사 수집 현황을 모니터링합니다.</p>
+      <div className="flex flex-col gap-4 rounded-[28px] border border-[#23304a] bg-[linear-gradient(135deg,#0f1728_0%,#13203a_100%)] px-6 py-6 text-white shadow-[0_28px_90px_rgba(0,0,0,0.25)] lg:flex-row lg:items-end lg:justify-between">
+        <div className="max-w-3xl">
+          <p className="text-xs uppercase tracking-[0.24em] text-cyan-300/80">Superadmin Control Room</p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight">실시간 수집, 제외, 분석 운영 대시보드</h1>
         </div>
-        <button onClick={loadAll} disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-white/50 hover:text-white border border-white/10 hover:border-white/30 rounded-lg transition-colors disabled:opacity-40">
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />새로고침
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => loadDashboard().catch(console.error)}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10"
+          >
+            <RefreshCw className="h-4 w-4" />
+            새로고침
+          </button>
+          <button
+            onClick={() => triggerWorker('collection').catch(console.error)}
+            disabled={runningAction !== null}
+            className="inline-flex items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            {runningAction === 'collection' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            수집 즉시 실행
+          </button>
+          <button
+            onClick={() => triggerWorker('premiumCollection').catch(console.error)}
+            disabled={runningAction !== null}
+            className="inline-flex items-center gap-2 rounded-xl border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-200 transition hover:bg-violet-500/20 disabled:opacity-50"
+          >
+            {runningAction === 'premiumCollection' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            유료 매체 수집
+          </button>
+          <button
+            onClick={() => triggerWorker('analysis').catch(console.error)}
+            disabled={runningAction !== null}
+            className="inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
+          >
+            {runningAction === 'analysis' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            분석 즉시 실행
+          </button>
+        </div>
       </div>
 
-      {/* 전체 통계 카드 */}
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-7 h-7 animate-spin text-white/20" />
+        <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-white/10 bg-[#0f1728]">
+          <Loader2 className="h-8 w-8 animate-spin text-cyan-300" />
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {[
-              { label: '오늘 수집', value: globalStats.totalToday, icon: Newspaper, color: 'text-blue-400' },
-              { label: 'AI 필터링 대기', value: globalStats.totalPending, icon: Clock, color: 'text-yellow-400' },
-              { label: '분석 완료 (전체)', value: globalStats.totalAnalyzed.toLocaleString(), icon: CheckCircle, color: 'text-green-400' },
-              { label: '오류 매체', value: globalStats.errorSources, icon: AlertTriangle, color: globalStats.errorSources > 0 ? 'text-red-400' : 'text-white/30' },
-            ].map(card => (
-              <div key={card.label} className="bg-gray-900 border border-white/5 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs text-white/40">{card.label}</p>
-                  <card.icon className={`w-4 h-4 ${card.color}`} />
-                </div>
-                <p className={`text-2xl font-bold ${card.color}`}>{card.value}</p>
-              </div>
-            ))}
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <StatCard title="Collected Queue" value={counts.collected} hint="수집 후 처리 대기 기사" icon={Newspaper} tone="text-cyan-300" />
+            <StatCard title="Excluded" value={counts.excluded} hint="제외 처리된 기사" icon={SearchX} tone="text-rose-300" />
+            <StatCard title="Analyzed" value={counts.analyzed} hint="분석 완료 기사" icon={Sparkles} tone="text-emerald-300" />
+            <StatCard title="AI Errors" value={counts.errors} hint="AI 재시도 대기 오류 기사" icon={AlertTriangle} tone="text-amber-300" />
+            <StatCard title="Active Sources" value={counts.activeSources} hint="현재 활성 매체 수" icon={Globe} tone="text-violet-300" />
           </div>
 
-          {/* 7일 추이 + 파이프라인 실행 */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            {/* 차트 */}
-            <div className="lg:col-span-3 bg-gray-900 border border-white/5 rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-white/30" />최근 7일 수집 추이
-              </h2>
-              <div className="h-40" style={{ minHeight: 160 }}>
-                <ResponsiveContainer width="100%" height={160}>
-                  <BarChart data={trendData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ffffff08" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#ffffff40' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#ffffff40' }} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid #ffffff10', borderRadius: '8px', color: '#fff' }} />
-                    <Bar dataKey="articles" fill="#d4af37" radius={[4, 4, 0, 0]} barSize={20} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* 파이프라인 ON/OFF */}
-            <div className="lg:col-span-2 bg-gray-900 border border-white/5 rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-white/70 mb-4 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-white/30" />수집 파이프라인
-              </h2>
-              <div className="space-y-3">
-                {/* 현재 상태 표시 */}
-                <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border ${
-                  pipelineControl.pipelineRunning
-                    ? 'bg-blue-500/10 border-blue-500/30'
-                    : pipelineControl.pipelineEnabled
-                    ? 'bg-green-500/10 border-green-500/30'
-                    : 'bg-white/5 border-white/10'
-                }`}>
-                  {pipelineControl.pipelineRunning ? (
-                    <><Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400 flex-shrink-0" />
-                    <p className="text-xs text-blue-400 font-medium">{pipelineControl.currentStep || '수집 실행 중...'}</p></>
-                  ) : pipelineControl.pipelineEnabled ? (
-                    <><Power className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
-                    <p className="text-xs text-green-400 font-medium">ON — 다음 수집 대기 중</p></>
-                  ) : (
-                    <><Power className="w-3.5 h-3.5 text-white/30 flex-shrink-0" />
-                    <p className="text-xs text-white/40">OFF — 수집 자동 반복 중지됨</p></>
-                  )}
+          <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+            <div className="rounded-3xl border border-white/10 bg-[#0f1728] p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/35">Workers</p>
+                  <h2 className="mt-2 text-xl font-semibold text-white">현재 워커 상태</h2>
                 </div>
-
-                {/* ON / OFF 버튼 */}
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => !pipelineControl.pipelineEnabled && handleTogglePipeline()}
-                    disabled={togglingPipeline || pipelineControl.pipelineEnabled}
-                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border transition-all ${
-                      pipelineControl.pipelineEnabled
-                        ? 'bg-green-500 border-green-400 text-white cursor-default'
-                        : 'bg-white/5 border-white/15 text-white/40 hover:bg-green-500/20 hover:border-green-500/40 hover:text-green-400 disabled:opacity-40'
-                    }`}
-                  >
-                    <Power className="w-3.5 h-3.5" />
-                    ON
-                  </button>
-                  <button
-                    onClick={() => pipelineControl.pipelineEnabled && handleTogglePipeline()}
-                    disabled={togglingPipeline || !pipelineControl.pipelineEnabled}
-                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border transition-all ${
-                      !pipelineControl.pipelineEnabled
-                        ? 'bg-red-500/80 border-red-400/80 text-white cursor-default'
-                        : 'bg-white/5 border-white/15 text-white/40 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-400 disabled:opacity-40'
-                    }`}
-                  >
-                    <Power className="w-3.5 h-3.5" />
-                    OFF
-                  </button>
+                <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-right">
+                  <p className="text-xs text-white/35">마지막 사이클 결과</p>
+                  <p className="mt-1 text-sm font-medium text-white">
+                    수집 {continuousRuntime.totalCollected || 0}건 · 분류 {continuousRuntime.totalFiltered || 0}건 · 분석 {continuousRuntime.totalAnalyzed || 0}건
+                  </p>
                 </div>
-
-                {/* 강제 종료 버튼 (실행 중일 때만 표시) */}
-                {(pipelineControl.pipelineRunning || pipelineControl.aiOnlyRunning) && (
-                  <button
-                    onClick={handleStopAll}
-                    disabled={togglingPipeline}
-                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
-                  >
-                    <XCircle className="w-3.5 h-3.5" />
-                    강제 종료
-                  </button>
-                )}
               </div>
-            </div>
-          </div>
 
-
-          {/* 수집 방식 탭 + 매체 목록 */}
-          <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">
-            {/* 방식 탭 */}
-            <div className="px-5 py-3.5 border-b border-white/5">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-white/70 mr-2">매체별 수집 현황</h2>
-                <button
-                  onClick={() => setActiveType('all')}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${activeType === 'all' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'}`}
-                >전체 ({sources.length})</button>
-                {SOURCE_TYPES.map(t => {
-                  const cnt = sources.filter(s => s.type === t.id).length;
-                  if (cnt === 0) return null;
-                  return (
-                    <button
-                      key={t.id}
-                      onClick={() => setActiveType(t.id)}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border transition-colors ${
-                        activeType === t.id ? t.activeBg + ' ' + t.color : 'border-transparent text-white/40 hover:text-white/70'
-                      }`}
-                    >
-                      <t.icon className="w-3 h-3" />
-                      {t.label} ({cnt})
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 방식 카드 (필터된 소스가 없을 때) */}
-            {filteredSources.length === 0 ? (
-              <div className="py-10 text-center text-white/25 text-sm">해당 방식의 매체가 없습니다.</div>
-            ) : (
-              <div className="divide-y divide-white/5">
-                {filteredSources.slice(0, 30).map(src => {
-                  const stat = filteredStats.find(s => s.sourceId === src.id);
-                  const typeMeta = SOURCE_TYPES.find(t => t.id === src.type);
-                  return (
-                    <div key={src.id} className="px-5 py-3 flex items-center gap-4 hover:bg-white/[0.02] transition-colors">
-                      {/* 아이콘 */}
-                      {typeMeta && (
-                        <div className={`w-7 h-7 rounded-lg border flex items-center justify-center flex-shrink-0 ${typeMeta.bg}`}>
-                          <typeMeta.icon className={`w-3.5 h-3.5 ${typeMeta.color}`} />
-                        </div>
-                      )}
-                      {/* 이름 */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white/80 truncate">{src.name}</p>
-                        <p className="text-[10px] text-white/30 truncate">{src.url || src.rssUrl || ''}</p>
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                {workerCards.map((worker) => (
+                  <div key={worker.key} className={`rounded-2xl border p-4 ${getWorkerTone(worker.status)}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em]">{worker.title}</p>
+                        <p className="mt-2 text-lg font-semibold capitalize">{worker.status}</p>
                       </div>
-                      {/* 상태 */}
-                      <div className="flex items-center gap-4 flex-shrink-0">
-                        <div className="text-right">
-                          <p className="text-[10px] text-white/25">오늘 수집</p>
-                          <p className="text-sm font-bold text-blue-400">{stat?.todayCount ?? '-'}</p>
-                        </div>
-                        <div className="text-right hidden sm:block">
-                          <p className="text-[10px] text-white/25">마지막 수집</p>
-                          <p className="text-xs text-white/40">{formatTs(src.lastScrapedAt)}</p>
-                        </div>
-                        {/* 상태 뱃지 */}
-                        {src.lastStatus === 'error' ? (
-                          <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
-                            <XCircle className="w-3 h-3" />오류
-                          </span>
-                        ) : src.lastStatus === 'success' ? (
-                          <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
-                            <CheckCircle className="w-3 h-3" />정상
-                          </span>
-                        ) : src.status === 'active' ? (
-                          <span className="flex items-center gap-1 text-[10px] text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
-                            <CheckCircle className="w-3 h-3" />활성
-                          </span>
-                        ) : src.status === 'inactive' ? (
-                          <span className="text-[10px] text-white/25 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full">비활성</span>
-                        ) : (
-                          <span className="text-[10px] text-white/20 bg-white/5 px-2 py-0.5 rounded-full">대기</span>
-                        )}
-                      </div>
+                      {worker.status === 'running' ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* 최근 파이프라인 실행 이력 */}
-          <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-white/5 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-white/70 flex items-center gap-2">
-                <Clock className="w-4 h-4 text-white/30" />최근 파이프라인 실행 이력
-              </h2>
-            </div>
-            <div className="divide-y divide-white/5">
-              {recentRuns.length === 0 ? (
-                <div className="py-8 text-center text-white/25 text-sm">실행 이력이 없습니다.</div>
-              ) : recentRuns.map(run => {
-                const isExpanded = expandedRun === run.id;
-                const dur = runDuration(run);
-                const isRunning = run.status === 'running';
-                return (
-                  <div key={run.id}>
-                    <div
-                      className="px-5 py-3 flex items-center gap-4 cursor-pointer hover:bg-white/[0.02] transition-colors"
-                      onClick={() => setExpandedRun(isExpanded ? null : run.id)}
-                    >
-                      {/* 상태 아이콘 */}
-                      <div className="flex-shrink-0">
-                        {isRunning ? <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-                          : run.status === 'completed' ? <CheckCircle className="w-4 h-4 text-green-400" />
-                          : run.status === 'failed' ? <XCircle className="w-4 h-4 text-red-400" />
-                          : run.status === 'aborted' ? <XCircle className="w-4 h-4 text-orange-400" />
-                          : <Clock className="w-4 h-4 text-white/30" />}
-                      </div>
-                      {/* 정보 */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-white/80">
-                            {run.currentStep || '전체 파이프라인'}
-                          </p>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                            run.status === 'completed' ? 'bg-green-500/10 text-green-400' :
-                            run.status === 'failed' ? 'bg-red-500/10 text-red-400' :
-                            run.status === 'running' ? 'bg-blue-500/10 text-blue-400' :
-                            run.status === 'aborted' ? 'bg-orange-500/10 text-orange-400' :
-                            'bg-white/5 text-white/30'
-                          }`}>{run.status === 'aborted' ? '종료됨' : run.status}</span>
-                          {dur && <span className="text-[10px] text-white/25">{dur}</span>}
-                        </div>
-                        <p className="text-[10px] text-white/30 mt-0.5">
-                          {formatTs(run.startedAt)}
-                          {run.result?.totalCollected != null && <> · 수집 {run.result.totalCollected}건</>}
-                          {run.result?.totalFiltered != null && <> · 분류 {run.result.totalFiltered}건</>}
-                          {run.result?.totalAnalyzed != null && <> · 분석 {run.result.totalAnalyzed}건</>}
-                        </p>
-                      </div>
-                      {isExpanded ? <ChevronUp className="w-4 h-4 text-white/20" /> : <ChevronDown className="w-4 h-4 text-white/20" />}
+                    <p className="mt-3 text-sm leading-6 text-white/75">{worker.description}</p>
+                    <div className="mt-4 space-y-1.5 text-xs text-white/60">
+                      <p>Last success: {formatRelative(worker.runtime.lastSuccessAt)}</p>
+                      <p>Last update: {formatRelative(worker.runtime.updatedAt)}</p>
+                      <p>
+                        Queue: pending {runtimeCounts.pending || 0} · filtering {runtimeCounts.filtering || 0} · filtered {runtimeCounts.filtered || 0} · analyzing {runtimeCounts.analyzing || 0}
+                      </p>
+                      {worker.runtime.lastError ? <p className="text-rose-200">Error: {worker.runtime.lastError}</p> : null}
                     </div>
-
-                    {/* 상세 결과 */}
-                    {isExpanded && (
-                      <div className="px-5 pb-4 pt-1">
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { label: '수집', value: run.result?.totalCollected, color: 'text-blue-400' },
-                            { label: 'AI 분류', value: run.result?.totalFiltered, color: 'text-yellow-400' },
-                            { label: 'AI 분석', value: run.result?.totalAnalyzed, color: 'text-green-400' },
-                          ].map(item => (
-                            <div key={item.label} className="p-2.5 rounded-lg border bg-white/5 border-white/10 text-center">
-                              <p className="text-[10px] text-white/40 mb-1">{item.label}</p>
-                              <p className={`text-lg font-bold ${item.color}`}>{item.value ?? '-'}</p>
-                            </div>
-                          ))}
-                        </div>
-                        {run.error && (
-                          <div className="mt-2 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400 font-mono overflow-auto max-h-16">
-                            {run.error}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
-                );
-              })}
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
+            <div className="rounded-3xl border border-white/10 bg-[#0f1728] p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/35">Source Health</p>
+                  <h2 className="mt-2 text-xl font-semibold text-white">매체별 수집과 분석 현황</h2>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/55">
+                  <BarChart3 className="h-3.5 w-3.5" />
+                  최근 24시간 기준
+                </div>
+              </div>
+
+              <div className="mt-5 overflow-hidden rounded-2xl border border-white/10">
+                <table className="w-full text-left">
+                  <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.18em] text-white/35">
+                    <tr>
+                      <th className="px-4 py-3">Source</th>
+                      <th className="px-4 py-3">Collected</th>
+                      <th className="px-4 py-3">Excluded</th>
+                      <th className="px-4 py-3">Analyzed</th>
+                      <th className="px-4 py-3">Last Seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topSourceRows.map((source) => {
+                      const Icon = getSourceTypeIcon(source.type);
+                      return (
+                        <tr key={source.id} className="border-t border-white/10 text-sm text-white/75">
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <div className="rounded-xl border border-white/10 bg-white/5 p-2">
+                                <Icon className="h-4 w-4 text-white/55" />
+                              </div>
+                              <div>
+                                <p className="font-medium text-white">{source.name}</p>
+                                <p className="text-xs text-white/35">{source.type}{source.pricingTier ? ` · ${source.pricingTier}` : ''}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-cyan-300">{source.collected24h}</td>
+                          <td className="px-4 py-3 text-rose-300">{source.rejected24h}</td>
+                          <td className="px-4 py-3 text-emerald-300">{source.analyzed24h}</td>
+                          <td className="px-4 py-3 text-white/45">{source.lastCollectedAt ? formatDistanceToNow(source.lastCollectedAt, { addSuffix: true }) : '-'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-[#0f1728] p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-white/35">Last Source Errors</p>
+              <h2 className="mt-2 text-xl font-semibold text-white">마지막 소스 오류 기록</h2>
+              <div className="mt-5 space-y-3">
+                {warningSources.length === 0 ? (
+                  <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-8 text-center text-sm text-emerald-200">
+                    저장된 소스 오류가 없습니다.
+                  </div>
+                ) : warningSources.map((source) => (
+                  <div key={source.id} className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-4">
+                    <p className="font-medium text-white">{source.name}</p>
+                    <p className="mt-1 text-xs text-white/50">{source.type}{source.pricingTier ? ` · ${source.pricingTier}` : ''}</p>
+                    <p className="mt-3 text-sm text-white/70">{source.errorMessage || '마지막 오류 메시지가 없습니다.'}</p>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </>

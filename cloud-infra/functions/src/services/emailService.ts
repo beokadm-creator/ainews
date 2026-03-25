@@ -3,7 +3,17 @@ import * as admin from 'firebase-admin';
 import { retryWithBackoff } from '../utils/errorHandling';
 import { buildOutputAssetBundle, generateEmailHtml, resolveOutputDate } from './reportAssetService';
 
-async function getEmailConfig() {
+async function getEmailConfig(companyId?: string | null) {
+  let companySmtp: any = null;
+  if (companyId) {
+    try {
+      const settingsDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
+      companySmtp = (settingsDoc.data() as any)?.smtp || null;
+    } catch {
+      companySmtp = null;
+    }
+  }
+
   return {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: parseInt(process.env.SMTP_PORT || '587'),
@@ -13,6 +23,7 @@ async function getEmailConfig() {
       pass: process.env.SMTP_PASS,
     },
     from: process.env.SMTP_FROM || '"EUM Private Equity" <noreply@eumpe.com>',
+    companySmtp,
   };
 }
 
@@ -32,22 +43,35 @@ export async function sendOutputEmails(
   const db = admin.firestore();
 
   try {
-    const config = await getEmailConfig();
-    if (!config.auth.user || !config.auth.pass) {
-      throw new Error('SMTP credentials not configured');
-    }
-
-    const transporter = nodemailer.createTransport(config);
     const outputDoc = await db.collection('outputs').doc(outputId).get();
     if (!outputDoc.exists) {
       throw new Error(`Output ${outputId} not found`);
     }
-
     const output = outputDoc.data()!;
+    const companyId = output.companyId;
+
+    const config = await getEmailConfig(companyId);
+    const smtp = config.companySmtp || {};
+    const host = smtp.host || config.host;
+    const port = Number(smtp.port || config.port);
+    const secure = typeof smtp.secure === 'boolean' ? smtp.secure : config.secure;
+    const user = smtp.user || config.auth.user;
+    const pass = smtp.pass || config.auth.pass;
+    const from = smtp.from || config.from;
+
+    if (!user || !pass) {
+      throw new Error('SMTP credentials not configured');
+    }
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
+    });
     const assetBundle = await buildOutputAssetBundle(outputId);
     const html = await generateEmailHtml(assetBundle.output, assetBundle.articles);
 
-    const companyId = output.companyId;
     let subscriberEmails: string[] = [];
 
     if (companyId) {
@@ -71,7 +95,7 @@ export async function sendOutputEmails(
     }
 
     const info = await retryWithBackoff(() => transporter.sendMail({
-      from: config.from,
+      from,
       bcc: subscriberEmails,
       subject: `${options?.subjectPrefix || '[EUM PE]'} ${output.title || 'AI News Report'} (${resolveOutputDate(output)})`,
       html,

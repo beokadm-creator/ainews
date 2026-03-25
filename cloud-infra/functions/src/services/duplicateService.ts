@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { logPromptExecution, callAiProvider } from './aiService';
+import { logPromptExecution, callAiProvider, resolveAiCallOptions } from './aiService';
 import { RuntimeAiConfig } from '../types/runtime';
 
 export function normalizeUrl(url: string): string {
@@ -73,9 +73,11 @@ export function calculateTokenSimilarity(str1: string, str2: string): number {
 
 async function checkSemanticDuplicateWithAI(article1: any, article2: any, aiConfig: RuntimeAiConfig): Promise<boolean> {
   const prompt = `Determine if these two articles describe the same event or deal.
-Answer with:
-DUPLICATE: YES or NO
-REASON: short reason
+Return only valid JSON:
+{
+  "duplicate": true,
+  "reason": "short reason"
+}
 
 Article A
 Title: ${article1.title}
@@ -86,10 +88,10 @@ Title: ${article2.title}
 Content: ${(article2.content || '').substring(0, 300)}`;
 
   try {
-    const result = await callAiProvider(prompt, aiConfig, { temperature: 0.1, maxTokens: 30 });
-    const duplicateMatch = result.content.match(/DUPLICATE:\s*(YES|NO)/i) || result.content.match(/^(YES|NO)\b/i);
-    await logPromptExecution('dedup-check', { title_a: article1.title, title_b: article2.title }, result.content, aiConfig.model);
-    return duplicateMatch ? duplicateMatch[1].toUpperCase() === 'YES' : false;
+    const result = await callAiProvider(prompt, aiConfig, resolveAiCallOptions(aiConfig.provider, 'dedup'), undefined);
+    const parsed = JSON.parse(result.content.match(/\{[\s\S]*\}/)?.[0] || result.content);
+    await logPromptExecution('dedup-check', { title_a: article1.title, title_b: article2.title }, result.content, result.model);
+    return Boolean(parsed?.duplicate);
   } catch (error) {
     console.error('AI duplicate check failed:', error);
     return false;
@@ -98,7 +100,7 @@ Content: ${(article2.content || '').substring(0, 300)}`;
 
 export async function isDuplicateArticle(
   newArticle: any,
-  options?: { companyId?: string; aiConfig?: RuntimeAiConfig }
+  options?: { companyId?: string; aiConfig?: RuntimeAiConfig; fastMode?: boolean }
 ): Promise<{ isDuplicate: boolean; reason?: string; duplicateOf?: string }> {
   const db = admin.firestore();
   const normalizedUrl = normalizeUrl(newArticle.url);
@@ -142,24 +144,29 @@ export async function isDuplicateArticle(
     }
   }
 
-  const oneDayAgo = new Date();
-  oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-
   let recentQuery: FirebaseFirestore.Query = db.collection('articles')
-    .where('collectedAt', '>=', admin.firestore.Timestamp.fromDate(oneDayAgo));
-  if (options?.companyId) {
-    recentQuery = recentQuery.where('companyId', '==', options.companyId);
-  }
-  const recentArticlesSnapshot = await recentQuery.get();
+    .where('titleHash', '==', titleHash);
+  const recentArticlesSnapshot = await recentQuery.limit(options?.fastMode ? 20 : 50).get();
+
+  const oneDayAgoMs = Date.now() - (24 * 60 * 60 * 1000);
 
   for (const doc of recentArticlesSnapshot.docs) {
     const existingArticle = doc.data();
-    if (hashTitle(existingArticle.title) !== titleHash) continue;
-
+    if (options?.companyId && existingArticle.companyId && existingArticle.companyId !== options.companyId) {
+      continue;
+    }
+    const collectedAt = existingArticle.collectedAt?.toDate
+      ? existingArticle.collectedAt.toDate().getTime()
+      : new Date(existingArticle.collectedAt || 0).getTime();
+    if (!Number.isFinite(collectedAt) || collectedAt < oneDayAgoMs) {
+      continue;
+    }
     const titleSim = calculateTokenSimilarity(newArticle.title, existingArticle.title);
     if (titleSim > 0.92) {
       return { isDuplicate: true, reason: 'High title similarity', duplicateOf: doc.id };
     }
+
+    if (options?.fastMode) continue;
 
     if (options?.aiConfig && (titleSim > 0.65 || calculateSimilarity(newArticle.title, existingArticle.title) > 0.75)) {
       const isSemanticDup = await checkSemanticDuplicateWithAI(newArticle, existingArticle, options.aiConfig);

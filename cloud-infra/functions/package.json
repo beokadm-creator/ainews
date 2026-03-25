@@ -4,7 +4,8 @@
   "description": "",
   "main": "lib/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run build && node test/ai-model-selection.test.js",
+    "test:glm-tuning": "node test/glm-tuning-benchmark.js",
     "build": "tsc",
     "check": "tsc --noEmit"
   },

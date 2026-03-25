@@ -60,16 +60,20 @@ function parseLines(value: string) {
 
 function sanitizeReportHtml(raw: string) {
   const trimmed = (raw || '').trim();
-  if (!trimmed.startsWith('```')) {
-    return trimmed;
+  let cleaned = trimmed;
+
+  if (trimmed.startsWith('```')) {
+    const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
+    cleaned = fenceMatch
+      ? fenceMatch[1].trim()
+      : trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
   }
 
-  const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
-  if (!fenceMatch) {
-    return trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
-  }
-
-  return fenceMatch[1].trim();
+  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
+  if (doctypeIdx >= 0) return cleaned.slice(doctypeIdx).trim();
+  const htmlIdx = cleaned.search(/<html[\s>]/i);
+  if (htmlIdx >= 0) return cleaned.slice(htmlIdx).trim();
+  return cleaned;
 }
 
 export default function DeliveryCenter() {

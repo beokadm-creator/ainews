@@ -32,6 +32,15 @@ function stripMarkdownCodeFence(raw: string) {
   return fenceMatch[1].trim();
 }
 
+function extractHtmlPayload(raw: string) {
+  const cleaned = stripMarkdownCodeFence(raw || '').trim();
+  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
+  if (doctypeIdx >= 0) return cleaned.slice(doctypeIdx).trim();
+  const htmlIdx = cleaned.search(/<html[\s>]/i);
+  if (htmlIdx >= 0) return cleaned.slice(htmlIdx).trim();
+  return cleaned;
+}
+
 function sanitizeText(value: string) {
   return fixEncodingIssues(cleanHtmlContent(value || ''))
     .replace(/\u00a0/g, ' ')
@@ -56,6 +65,161 @@ function escapeHtml(value: string) {
     .replace(/'/g, '&#39;');
 }
 
+function normalizeArticleContent(value: string) {
+  const noiseLinePatterns = [
+    /^다른기사\s*보기$/i,
+    /^지금\s*인기\s*있는\s*기사$/i,
+    /^Pin'?s\s*Pick$/i,
+    /^저작권자\s*[©\s]/i,
+    /^무단전재\s*및\s*재배포\s*금지/i,
+    /^기사제보/i,
+    /^바로가기$/i,
+    /^\d+\s*$/,
+  ];
+  const inlineCutoffPatterns = [
+    /저작권자\s*[©\s]/i,
+    /무단전재\s*및\s*재배포\s*금지/i,
+    /지금\s*인기\s*있는\s*기사/i,
+    /Pin'?s\s*Pick/i,
+    /다른기사\s*보기/i,
+  ];
+  const normalizeLine = (line: string) => line.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+  const normalized = `${value || ''}`
+    .replace(/\r/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (!normalized) return '';
+
+  const cutoffIndex = inlineCutoffPatterns
+    .map((pattern) => normalized.search(pattern))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+
+  const sliced = typeof cutoffIndex === 'number' ? normalized.slice(0, cutoffIndex) : normalized;
+
+  return sliced
+    .split(/\n{1,2}/)
+    .map(normalizeLine)
+    .filter((line) => line && !noiseLinePatterns.some((pattern) => pattern.test(line)))
+    .join('\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function splitLongParagraph(paragraph: string) {
+  const compact = paragraph.replace(/\s+/g, ' ').trim();
+  if (compact.length <= 220) return [compact];
+
+  const sentences = compact.split(/(?<=[.!?]|[다요죠]\.|니다\.|입니다\.|했다\.|했다\!|했다\?)\s+/);
+  if (sentences.length <= 1) return [compact];
+
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    const next = current ? `${current} ${sentence}` : sentence;
+    if (next.length > 220 && current) {
+      chunks.push(current);
+      current = sentence;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function formatArticleContentParagraphs(value: string) {
+  const normalized = normalizeArticleContent(value);
+  if (!normalized) return [];
+
+  return normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .flatMap(splitLongParagraph);
+}
+
+function buildArticleModalPayload(article: any, index: number) {
+  return {
+    index: index + 1,
+    id: article.id || '',
+    title: sanitizeText(article.title || '제목 없음'),
+    source: sanitizeText(article.source || ''),
+    publishedAt: (() => {
+      try {
+        if (article.publishedAt?.toDate) return article.publishedAt.toDate().toLocaleString('ko-KR');
+        if (article.publishedAt?.seconds) return new Date(article.publishedAt.seconds * 1000).toLocaleString('ko-KR');
+        if (article.publishedAt) return new Date(article.publishedAt).toLocaleString('ko-KR');
+      } catch {
+        return '';
+      }
+      return '';
+    })(),
+    summary: Array.isArray(article.summary) ? article.summary.map((line: string) => sanitizeText(line)).filter(Boolean) : [],
+    contentParagraphs: formatArticleContentParagraphs(article.content || ''),
+    url: article.url || '',
+  };
+}
+
+function injectReferenceLinks(bodyHtml: string, articleCount: number) {
+  if (!bodyHtml || articleCount <= 0) return bodyHtml;
+
+  return bodyHtml.replace(/\[(\d{1,3})\]/g, (match, rawIndex) => {
+    const refIndex = Number(rawIndex);
+    if (!Number.isInteger(refIndex) || refIndex < 1 || refIndex > articleCount) return match;
+    return `<button type="button" class="article-ref-trigger" data-article-ref="${refIndex - 1}" aria-label="참고 기사 ${refIndex}번 보기">[${refIndex}]</button>`;
+  });
+}
+
+function escapeJsonForHtml(value: unknown) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
+function sanitizeGeneratedReportBody(bodyHtml: string) {
+  if (!bodyHtml) return '';
+
+  const $ = load(bodyHtml);
+
+  $('p, div, span, li').each((_, element) => {
+    const text = sanitizeText($(element).text());
+    if (!text) return;
+
+    if (
+      /분석기관\s*:/.test(text) ||
+      /이 문서는 .* 발행한 분석 리포트/.test(text) ||
+      /선택된 매체와 키워드를 기준/.test(text) ||
+      /^선택 매체$/.test(text) ||
+      /^실제 반영 매체$/.test(text) ||
+      /^키워드$/.test(text) ||
+      /기사\s*\d+건/.test(text)
+    ) {
+      $(element).remove();
+    }
+  });
+
+  $('section, article, div').each((_, element) => {
+    const heading = $(element).find('h1,h2,h3,h4').first();
+    const headingText = sanitizeText(heading.text()).toLowerCase();
+    if (!headingText) return;
+
+    if (
+      /투자 기회|기회 요인|제언|권고|추천|next steps|opportunities|recommendations|outlook/.test(headingText)
+    ) {
+      $(element).remove();
+    }
+  });
+
+  return $('body').length > 0 ? ($('body').html() || '') : $.root().html() || '';
+}
+
 export function resolveOutputDate(output: any): string {
   try {
     if (output.createdAt?.toDate) return output.createdAt.toDate().toLocaleDateString('ko-KR');
@@ -78,8 +242,17 @@ async function loadCompanyBranding(companyId?: string | null): Promise<ReportBra
   try {
     const settingsDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
     const settings = settingsDoc.data() as any;
+    if (settings?.branding?.publisherName || settings?.companyName) {
+      return {
+        publisherName: settings?.branding?.publisherName || settings?.companyName || '이음프라이빗에쿼티',
+        logoDataUrl: settings?.branding?.logoDataUrl || null,
+      };
+    }
+
+    const companyDoc = await admin.firestore().collection('companies').doc(companyId).get();
+    const companyData = companyDoc.data() as any;
     return {
-      publisherName: settings?.branding?.publisherName || settings?.companyName || '이음프라이빗에쿼티',
+      publisherName: companyData?.name || companyData?.displayName || '이음프라이빗에쿼티',
       logoDataUrl: settings?.branding?.logoDataUrl || null,
     };
   } catch {
@@ -232,7 +405,7 @@ function buildBrandedShell({
   const serviceLabel = output.serviceMode === 'external' ? 'EXTERNAL DISTRIBUTION' : 'INTERNAL INTELLIGENCE';
   const renderChips = (items: string[], tone: 'gold' | 'slate' = 'slate') => items.length > 0
     ? `<div class="chip-row">${items.map((item) => `<span class="meta-chip meta-chip-${tone}">${escapeHtml(item)}</span>`).join('')}</div>`
-    : '<div class="meta-empty">설정되지 않음</div>';
+    : '';
   const coverageHtml = sourceCoverage.length > 0
     ? `<div class="coverage-grid">${sourceCoverage.map((item: any) => `
         <div class="coverage-card">
@@ -639,22 +812,351 @@ function buildBrandedShell({
   </html>`;
 }
 
+function buildInteractiveArticleReferenceSection(articles: any[]) {
+  if (!Array.isArray(articles) || articles.length === 0) return '';
+
+  return `
+  <section class="report-section report-reference-section">
+    <h2>참고 기사 원문</h2>
+    <div class="reference-list">
+      ${articles.map((article: any, index: number) => `
+        <article class="reference-card">
+          <h3>[${index + 1}] ${escapeHtml(article.title || '')}</h3>
+          <div class="reference-meta">${escapeHtml(article.source || '')}</div>
+          <div class="reference-actions">
+            <button type="button" class="reference-link reference-link-primary article-ref-trigger" data-article-ref="${index}">원문 보기</button>
+            ${article.url ? `<a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="reference-link reference-link-secondary">원문 링크</a>` : ''}
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  </section>`;
+}
+
+function buildInteractiveBrandedShell({
+  output,
+  bodyHtml,
+  headStyles,
+  branding,
+  articles,
+}: {
+  output: any;
+  bodyHtml: string;
+  headStyles: string;
+  branding: ReportBranding;
+  articles: any[];
+}) {
+  const dateLabel = resolveOutputDate(output);
+  const serviceLabel = output.serviceMode === 'external' ? 'EXTERNAL DISTRIBUTION' : 'INTERNAL INTELLIGENCE';
+  const logoHtml = branding.logoDataUrl
+    ? `<img src="${branding.logoDataUrl}" alt="${branding.publisherName}" class="brand-logo" />`
+    : `<div class="brand-badge">${escapeHtml(branding.publisherName.slice(0, 1))}</div>`;
+  const modalPayload = escapeJsonForHtml(articles.map(buildArticleModalPayload));
+
+  return `<!DOCTYPE html>
+  <html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(output.title || '이음프라이빗에쿼티 리포트')}</title>
+    <style>${headStyles}</style>
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 0; background: #eef2f7; color: #0f172a; font-family: "Noto Sans KR Variable", "Malgun Gothic", sans-serif; font-size: 14px; }
+      body[data-theme="dark"] { background: #0b1220; color: #e5e7eb; }
+      body[data-font-size="xs"] { font-size: 14px; }
+      body[data-font-size="sm"] { font-size: 15px; }
+      body[data-font-size="md"] { font-size: 16px; }
+      .reader-toolbar { position: sticky; top: 0; z-index: 40; display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; background: rgba(248,250,252,0.95); border-bottom: 1px solid rgba(148,163,184,0.18); backdrop-filter: blur(14px); }
+      body[data-theme="dark"] .reader-toolbar { background: rgba(11,18,32,0.95); border-bottom-color: rgba(148,163,184,0.14); }
+      .toolbar-group { display: flex; flex-wrap: wrap; gap: 8px; }
+      .toolbar-button { appearance: none; border: 1px solid #dbe5ef; background: #ffffff; color: #16324f; border-radius: 999px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+      body[data-theme="dark"] .toolbar-button { border-color: rgba(148,163,184,0.22); background: rgba(30,41,59,0.88); color: #f8fafc; }
+      .brand-page { max-width: 980px; margin: 0 auto; background: #f8fbff; min-height: calc(100vh - 52px); }
+      body[data-theme="dark"] .brand-page { background: #0f172a; }
+      .brand-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 18px 18px; background: linear-gradient(135deg, #10263d 0%, #183c5f 58%, #8f6a1f 140%); }
+      .brand-id { display: flex; align-items: center; gap: 14px; min-width: 0; }
+      .brand-logo { width: 44px; height: 44px; object-fit: contain; border-radius: 12px; background: rgba(255,255,255,0.96); padding: 6px; }
+      .brand-badge { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 12px; background: rgba(255,255,255,0.16); color: #ffffff; font-size: 20px; font-weight: 700; border: 1px solid rgba(255,255,255,0.24); }
+      .brand-name { font-size: 17px; font-weight: 700; color: #ffffff; letter-spacing: -0.02em; }
+      .report-meta { text-align: right; padding: 12px 14px; border-radius: 16px; background: rgba(6,13,24,0.22); border: 1px solid rgba(255,255,255,0.16); backdrop-filter: blur(8px); }
+      .report-title { font-size: 15px; font-weight: 700; color: #ffffff; letter-spacing: -0.01em; }
+      .report-date { margin-top: 4px; font-size: 12px; color: rgba(255,255,255,0.78); }
+      .report-body { padding: 16px 14px 0; }
+      .report-body > *:first-child { margin-top: 0 !important; }
+      .report-body .container, .report-body .report-shell { max-width: none; margin: 0; box-shadow: none; }
+      .report-body article.report-content, .report-body .report-shell { background: transparent !important; }
+      .report-body .hero { border-radius: 20px; overflow: hidden; margin-bottom: 16px; box-shadow: 0 10px 24px rgba(22,50,79,0.10); }
+      .report-body .hero h1, .report-body .hero h2, .report-body .hero h3, .report-body .hero p, .report-body .hero span, .report-body .hero li, .report-body .hero div { color: #ffffff !important; }
+      .report-body .report-section, .report-body section { border-radius: 18px; background: #ffffff; border: 1px solid #dbe5ef; box-shadow: 0 8px 18px rgba(15,23,42,0.04); margin-bottom: 14px; }
+      body[data-theme="dark"] .report-body .report-section, body[data-theme="dark"] .report-body section { background: #111827; border-color: rgba(148,163,184,0.16); box-shadow: none; }
+      .report-body h1, .report-body h2, .report-body h3 { letter-spacing: -0.02em; }
+      .report-body p, .report-body li { line-height: 1.62; color: #334155; }
+      body[data-theme="dark"] .report-body p, body[data-theme="dark"] .report-body li, body[data-theme="dark"] .report-body h1, body[data-theme="dark"] .report-body h2, body[data-theme="dark"] .report-body h3 { color: #e5e7eb !important; }
+      body[data-theme="dark"] .report-body *, body[data-theme="dark"] .report-body a, body[data-theme="dark"] .report-body strong, body[data-theme="dark"] .report-body span { color: #e5e7eb !important; }
+      body[data-theme="dark"] .report-body div:not(.hero):not(.brand-header):not(.brand-id):not(.report-meta),
+      body[data-theme="dark"] .report-body article,
+      body[data-theme="dark"] .report-body aside,
+      body[data-theme="dark"] .report-body blockquote,
+      body[data-theme="dark"] .report-body ul,
+      body[data-theme="dark"] .report-body ol { background-color: transparent; }
+      body[data-theme="dark"] .report-body [style*="background"], body[data-theme="dark"] .report-body [style*="background-color"] { background: #111827 !important; color: #e5e7eb !important; }
+      body[data-theme="dark"] .report-body [style*="border"] { border-color: rgba(148,163,184,0.18) !important; }
+      .report-body ul, .report-body ol { padding-left: 1.25rem; }
+      .report-body table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 16px; font-size: 14px; }
+      .report-body th, .report-body td { border: 1px solid #e5e7eb; padding: 10px 12px; vertical-align: top; }
+      .report-body th { background: #f8fafc; color: #16324f; }
+      body[data-theme="dark"] .report-body th { background: #1f2937; color: #f8fafc; }
+      body[data-theme="dark"] .report-body th, body[data-theme="dark"] .report-body td { border-color: rgba(148,163,184,0.14); }
+      .article-ref-trigger { appearance: none; border: none; background: rgba(22,50,79,0.10); color: #16324f; border-radius: 999px; padding: 2px 8px; font: inherit; font-weight: 700; cursor: pointer; }
+      body[data-theme="dark"] .article-ref-trigger { background: rgba(226,232,240,0.12); color: #f8fafc; }
+      .reference-list { display: grid; gap: 10px; }
+      .reference-card { border: 1px solid #dbe5ef; border-radius: 16px; background: linear-gradient(180deg, #fbfdff 0%, #f6f9fc 100%); padding: 12px 14px; }
+      body[data-theme="dark"] .reference-card { background: #0f172a; border-color: rgba(148,163,184,0.16); }
+      .reference-card h3 { margin: 0; font-size: 16px; color: #0f172a; }
+      body[data-theme="dark"] .reference-card h3 { color: #f8fafc; }
+      .reference-meta { margin-top: 4px; font-size: 12px; color: #64748b; line-height: 1.4; }
+      .reference-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      .reference-link { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 999px; padding: 8px 12px; font-size: 12px; font-weight: 700; text-decoration: none; cursor: pointer; }
+      .reference-link-primary { background: #16324f; color: #ffffff; }
+      .reference-link-secondary { background: #eef4f9; color: #16324f; }
+      body[data-theme="dark"] .reference-link-secondary { background: rgba(226,232,240,0.10); color: #f8fafc; }
+      .brand-footer { padding: 18px 38px 32px; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; background: linear-gradient(180deg, #fbfcfe 0%, #f3f6fa 100%); }
+      body[data-theme="dark"] .brand-footer { background: #0f172a; border-top-color: rgba(148,163,184,0.14); color: #94a3b8; }
+      .article-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(15,23,42,0.62); }
+      .article-modal.is-open { display: flex; }
+      .article-modal-dialog { width: min(760px, 100%); max-height: min(84vh, 900px); overflow: hidden; display: flex; flex-direction: column; border-radius: 20px; background: #ffffff; box-shadow: 0 30px 60px rgba(15,23,42,0.24); }
+      body[data-theme="dark"] .article-modal-dialog { background: #111827; color: #e5e7eb; }
+      .article-modal-header, .article-modal-footer { padding: 18px 22px; border-bottom: 1px solid #e5e7eb; }
+      .article-modal-footer { border-top: 1px solid #e5e7eb; border-bottom: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+      body[data-theme="dark"] .article-modal-header, body[data-theme="dark"] .article-modal-footer { border-color: rgba(148,163,184,0.14); }
+      .article-modal-body { padding: 22px; overflow-y: auto; }
+      .article-modal-meta { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; color: #64748b; }
+      .article-modal-title { margin: 10px 0 0; font-size: 22px; line-height: 1.4; color: #0f172a; }
+      body[data-theme="dark"] .article-modal-title { color: #f8fafc; }
+      .article-modal-section + .article-modal-section { margin-top: 24px; }
+      .article-modal-label { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #94a3b8; }
+      .article-modal-summary { margin: 12px 0 0; padding-left: 18px; color: #334155; line-height: 1.8; }
+      body[data-theme="dark"] .article-modal-summary { color: #cbd5e1; }
+      .article-modal-content { margin-top: 12px; display: grid; gap: 14px; }
+      .article-modal-content p { margin: 0; font-size: 14px; line-height: 1.68; color: #334155; }
+      body[data-theme="dark"] .article-modal-content p { color: #e5e7eb; }
+      .article-modal-close { appearance: none; border: none; background: #eef4f9; color: #16324f; font-size: 24px; line-height: 1; cursor: pointer; width: 42px; height: 42px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; }
+      body[data-theme="dark"] .article-modal-close { background: rgba(226,232,240,0.12); color: #f8fafc; }
+      .article-modal-open-link { color: #16324f; font-weight: 700; text-decoration: none; }
+      body[data-theme="dark"] .article-modal-open-link { color: #f8fafc; }
+      @media (min-width: 769px) {
+        .brand-page { margin: 24px auto; border-radius: 28px; border: 1px solid rgba(22,50,79,0.08); box-shadow: 0 24px 54px rgba(15,23,42,0.08); }
+        .brand-header { padding: 28px 30px 24px; }
+        .report-body { padding: 24px 28px 0; }
+        .report-meta { min-width: 210px; }
+      }
+      @media (max-width: 768px) {
+        body { background: #ffffff; }
+        body[data-theme="dark"] { background: #111827; }
+        .reader-toolbar { padding: 10px 12px; }
+        .toolbar-button { padding: 7px 10px; font-size: 11px; }
+        .brand-page { max-width: 100%; min-height: auto; box-shadow: none; margin: 0; border-radius: 0; border: none; }
+        .brand-header { display: block; padding: 22px 18px 18px; }
+        .brand-logo, .brand-badge { width: 44px; height: 44px; border-radius: 12px; }
+        .brand-name { font-size: 17px; }
+        .report-meta { margin-top: 14px; text-align: left; }
+        .report-body { padding: 18px 18px 0; }
+        .brand-footer { padding: 14px 18px 24px; }
+        .article-modal { padding: 14px; align-items: center; }
+        .article-modal-dialog { width: min(100%, 720px); max-height: 82vh; height: auto; border-radius: 24px; }
+        .article-modal-header, .article-modal-body, .article-modal-footer { padding-left: 16px; padding-right: 16px; }
+        .article-modal-title { font-size: 18px; }
+      }
+      @page { size: A4; margin: 18mm 14mm 18mm; }
+    </style>
+  </head>
+  <body>
+    <div class="reader-toolbar">
+      <div class="toolbar-group">
+        <button type="button" class="toolbar-button" data-font-size="xs">A</button>
+        <button type="button" class="toolbar-button" data-font-size="sm">A+</button>
+        <button type="button" class="toolbar-button" data-font-size="md">A++</button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="toolbar-button" data-theme-toggle>다크모드</button>
+      </div>
+    </div>
+    <div class="brand-page">
+      <header class="brand-header">
+        <div class="brand-id">
+          ${logoHtml}
+          <div>
+            <div class="brand-name">${escapeHtml(branding.publisherName)}</div>
+          </div>
+        </div>
+        <div class="report-meta">
+          <div class="report-title">${escapeHtml(output.title || 'AI 리포트')}</div>
+          <div class="report-date">${dateLabel}</div>
+        </div>
+      </header>
+      <main class="report-body">
+        ${bodyHtml}
+      </main>
+      <footer class="brand-footer">Issued by ${escapeHtml(branding.publisherName)}</footer>
+    </div>
+    <div class="article-modal" id="article-modal" aria-hidden="true">
+      <div class="article-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="article-modal-title">
+        <div class="article-modal-header">
+          <div class="article-modal-meta" id="article-modal-meta"></div>
+          <h2 class="article-modal-title" id="article-modal-title"></h2>
+        </div>
+        <div class="article-modal-body">
+          <section class="article-modal-section" id="article-modal-published-section" hidden>
+            <div class="article-modal-label">발행시각</div>
+            <div class="article-modal-content" id="article-modal-published"></div>
+          </section>
+          <section class="article-modal-section" id="article-modal-summary-section" hidden>
+            <div class="article-modal-label">AI 요약</div>
+            <ul class="article-modal-summary" id="article-modal-summary"></ul>
+          </section>
+          <section class="article-modal-section">
+            <div class="article-modal-label">기사 원문</div>
+            <div class="article-modal-content" id="article-modal-content"></div>
+          </section>
+        </div>
+        <div class="article-modal-footer">
+          <a id="article-modal-link" class="article-modal-open-link" target="_blank" rel="noopener noreferrer" hidden>원문 링크 열기</a>
+          <button type="button" class="article-modal-close" data-close-modal aria-label="닫기">×</button>
+        </div>
+      </div>
+    </div>
+    <script id="article-modal-payload" type="application/json">${modalPayload}</script>
+    <script>
+      (function () {
+        var payloadEl = document.getElementById('article-modal-payload');
+        var payload = [];
+        try { payload = JSON.parse(payloadEl ? payloadEl.textContent || '[]' : '[]'); } catch (error) { payload = []; }
+        var modal = document.getElementById('article-modal');
+        var metaEl = document.getElementById('article-modal-meta');
+        var titleEl = document.getElementById('article-modal-title');
+        var publishedSectionEl = document.getElementById('article-modal-published-section');
+        var publishedEl = document.getElementById('article-modal-published');
+        var summarySectionEl = document.getElementById('article-modal-summary-section');
+        var summaryEl = document.getElementById('article-modal-summary');
+        var contentEl = document.getElementById('article-modal-content');
+        var linkEl = document.getElementById('article-modal-link');
+        var title = document.querySelector('.report-title');
+        if (title) document.title = title.textContent || document.title;
+
+        function setFontSize(size) {
+          document.body.setAttribute('data-font-size', size);
+          try { localStorage.setItem('shared-report-font-size', size); } catch (error) {}
+        }
+        function setTheme(theme) {
+          document.body.setAttribute('data-theme', theme);
+          try { localStorage.setItem('shared-report-theme', theme); } catch (error) {}
+        }
+        function closeModal() {
+          if (!modal) return;
+          modal.classList.remove('is-open');
+          modal.setAttribute('aria-hidden', 'true');
+        }
+        function openModal(index) {
+          var article = payload[index];
+          if (!article || !modal || !metaEl || !titleEl || !publishedSectionEl || !publishedEl || !summarySectionEl || !summaryEl || !contentEl || !linkEl) return;
+          metaEl.innerHTML = '<span>' + (article.source || '') + '</span>' + (article.publishedAt ? '<span>' + article.publishedAt + '</span>' : '');
+          titleEl.textContent = article.title || '제목 없음';
+          publishedEl.innerHTML = '';
+          if (article.publishedAt) {
+            publishedSectionEl.hidden = false;
+            var publishedP = document.createElement('p');
+            publishedP.textContent = article.publishedAt;
+            publishedEl.appendChild(publishedP);
+          } else {
+            publishedSectionEl.hidden = true;
+          }
+          summaryEl.innerHTML = '';
+          (article.summary || []).forEach(function (line) {
+            var li = document.createElement('li');
+            li.textContent = line;
+            summaryEl.appendChild(li);
+          });
+          summarySectionEl.hidden = (article.summary || []).length === 0;
+          contentEl.innerHTML = '';
+          var paragraphs = (article.contentParagraphs || []);
+          if (!paragraphs.length) paragraphs = ['원문 전문이 저장되지 않은 기사입니다.'];
+          paragraphs.forEach(function (paragraph) {
+            var p = document.createElement('p');
+            p.textContent = paragraph;
+            contentEl.appendChild(p);
+          });
+          if (article.url) {
+            linkEl.hidden = false;
+            linkEl.href = article.url;
+          } else {
+            linkEl.hidden = true;
+            linkEl.removeAttribute('href');
+          }
+          modal.classList.add('is-open');
+          modal.setAttribute('aria-hidden', 'false');
+        }
+
+        document.querySelectorAll('[data-font-size]').forEach(function (button) {
+          button.addEventListener('click', function () { setFontSize(button.getAttribute('data-font-size') || 'xs'); });
+        });
+        var themeToggle = document.querySelector('[data-theme-toggle]');
+        if (themeToggle) {
+          themeToggle.addEventListener('click', function () {
+            var nextTheme = document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            setTheme(nextTheme);
+          });
+        }
+        document.addEventListener('click', function (event) {
+          var target = event.target;
+          if (!target || !target.closest) return;
+          var trigger = target.closest('[data-article-ref]');
+          if (trigger) {
+            event.preventDefault();
+            openModal(Number(trigger.getAttribute('data-article-ref')));
+          }
+        });
+        if (modal) {
+          modal.addEventListener('click', function (event) {
+            if (event.target === modal || event.target.closest('[data-close-modal]')) closeModal();
+          });
+        }
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape') closeModal();
+        });
+        try {
+          setFontSize(localStorage.getItem('shared-report-font-size') || 'xs');
+          setTheme(localStorage.getItem('shared-report-theme') || 'light');
+        } catch (error) {
+          setFontSize('xs');
+          setTheme('light');
+        }
+      })();
+    </script>
+  </body>
+  </html>`;
+}
+
 export async function getOutputHtmlDocument(output: any, articles?: any[]) {
   const loadedArticles = articles || await loadOutputArticles(output);
   const branding = await loadCompanyBranding(output.companyId);
-  const rawHtml = stripMarkdownCodeFence(output.htmlContent || output.rawOutput || '');
+  const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
   const fallbackHtml = buildFallbackReportHtml(output, loadedArticles);
   const sourceHtml = rawHtml || fallbackHtml;
 
   const $ = load(sourceHtml);
   const bodyHtml = $('body').length > 0 ? $('body').html() || '' : sourceHtml;
+  const sanitizedBodyHtml = sanitizeGeneratedReportBody(bodyHtml);
+  const linkedBodyHtml = injectReferenceLinks(sanitizedBodyHtml, loadedArticles.length);
+  const bodyHtmlWithReferences = `${linkedBodyHtml}${buildInteractiveArticleReferenceSection(loadedArticles)}`;
   const headStyles = $('style').toArray().map((element) => $.html(element)).join('\n');
 
-  return buildBrandedShell({
+  return buildInteractiveBrandedShell({
     output,
-    bodyHtml,
+    bodyHtml: bodyHtmlWithReferences,
     headStyles,
     branding,
+    articles: loadedArticles,
   });
 }
 

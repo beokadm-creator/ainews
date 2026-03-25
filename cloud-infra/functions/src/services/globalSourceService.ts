@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { testScrapingSource } from './scrapingSourceService';
+import { fetchNaverNews } from './naverApiService';
 
 export type GlobalSourceType = 'rss' | 'scraping' | 'api' | 'newsletter';
 export type SourceStatus = 'active' | 'inactive' | 'error' | 'testing';
@@ -453,58 +454,60 @@ async function testRssSource(source: GlobalSource, startMs: number) {
 }
 
 async function testApiSource(source: GlobalSource & { apiType?: string }, startMs: number) {
-  const NAVER_ENDPOINT = 'https://openapi.naver.com/v1/search/news.json';
+  const isNaverSource =
+    (source as any).apiType === 'naver' ||
+    /openapi\.naver\.com/i.test(source.apiEndpoint || source.url || '') ||
+    /naver/i.test(source.name || '');
 
-  // ── 네이버 뉴스 API 테스트 ──────────────────────────────
-  if ((source as any).apiType === 'naver') {
+  if (isNaverSource) {
     const db = admin.firestore();
     const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
     const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
     if (!cfg.clientId || !cfg.clientSecret) {
       return {
         success: false,
-        message: '네이버 API 자격증명 미설정 — 슈퍼어드민 > AI 설정 > 네이버 탭에서 저장하세요.',
+        message: 'Naver API credentials are missing. Configure systemSettings/naverConfig first.',
         latencyMs: Date.now() - startMs,
       };
     }
-    const kw = (source.defaultKeywords || ['M&A'])[0];
-    const resp = await axios.get(NAVER_ENDPOINT, {
-      headers: {
-        'X-Naver-Client-Id': cfg.clientId,
-        'X-Naver-Client-Secret': cfg.clientSecret,
-      },
-      params: { query: kw, display: 5, start: 1, sort: 'date' },
-      timeout: 10000,
+
+    const kw = (Array.isArray(source.defaultKeywords) && source.defaultKeywords[0]) ? source.defaultKeywords[0] : 'M&A';
+    const resp = await fetchNaverNews({
+      clientId: cfg.clientId,
+      clientSecret: cfg.clientSecret,
+      query: kw,
+      display: 5,
+      start: 1,
+      sort: 'date',
+      timeoutMs: 7000,
     });
     const latencyMs = Date.now() - startMs;
     const items = resp.data?.items || [];
     const sampleTitles = items.slice(0, 3).map((i: any) =>
       (i.title || '').replace(/<\/?b>/gi, '').replace(/&[a-z]+;/gi, ' ').trim()
     );
+
     return {
       success: items.length > 0,
       message: items.length > 0
-        ? `OK — 키워드 "${kw}" 검색 결과 ${items.length}건`
-        : '검색 결과 없음',
+        ? `Naver OK (${items.length} items for "${kw}")`
+        : 'Naver API reachable but no items returned for the keyword.',
       articlesFound: items.length,
       latencyMs,
       sampleTitles,
     };
   }
 
-  // ── 일반 API 엔드포인트 테스트 ──────────────────────────
   if (!source.apiEndpoint) {
     return { success: false, message: 'No API endpoint configured' };
   }
 
-  // Simple connectivity check; actual API auth not required for test
   const response = await axios.get(source.apiEndpoint, {
     timeout: 10000,
     validateStatus: (status) => status < 500,
   });
 
   const latencyMs = Date.now() - startMs;
-
   return {
     success: response.status === 200 || response.status === 401 || response.status === 403,
     message: response.status === 200

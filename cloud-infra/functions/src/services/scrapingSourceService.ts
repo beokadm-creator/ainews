@@ -1,16 +1,18 @@
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { isDuplicateArticle, hashUrl } from './duplicateService';
+import { isDuplicateArticle, hashTitle, hashUrl } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { decodeBuffer, cleanHtmlContent } from '../utils/encodingUtils';
 import { extractTextFromHtml } from '../utils/textUtils';
 import { RuntimeAiConfig, RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
+import { mapWithConcurrency } from '../utils/asyncUtils';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
 const MAX_SCRAPING_ITEMS = 30;
+const SCRAPING_SOURCE_CONCURRENCY = 2;
 
 interface ScrapedArticle {
   title: string;
@@ -138,9 +140,7 @@ export async function processScrapingSources(options?: {
     return { success: true, totalCollected: 0 };
   }
 
-  let totalCollected = 0;
-
-  for (const { id: sourceId, data } of allScrapingSources) {
+  const results = await mapWithConcurrency(allScrapingSources, SCRAPING_SOURCE_CONCURRENCY, async ({ id: sourceId, data }) => {
     const source = data as ScrapingSource & { category?: string };
     const docRef = db.collection('globalSources').doc(sourceId);
 
@@ -157,6 +157,7 @@ export async function processScrapingSources(options?: {
         const dupCheck = await isDuplicateArticle(article, {
           companyId: options?.companyId,
           aiConfig: options?.aiConfig,
+          fastMode: true,
         });
         if (dupCheck.isDuplicate) continue;
 
@@ -174,6 +175,7 @@ export async function processScrapingSources(options?: {
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
           status: 'pending',
           urlHash: hashUrl(article.url),
+          titleHash: hashTitle(article.title),
         });
         await recordArticleDedupEntry({
           id: articleRef.id,
@@ -188,7 +190,6 @@ export async function processScrapingSources(options?: {
         sourceCollected++;
       }
 
-      totalCollected += sourceCollected;
       await docRef.update({
         lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
         lastStatus: 'success',
@@ -196,15 +197,18 @@ export async function processScrapingSources(options?: {
       });
 
       console.log(`[Scraping] ${source.name}: +${sourceCollected} articles`);
+      return sourceCollected;
     } catch (error: any) {
       await docRef.update({
         lastStatus: 'error',
         errorMessage: error.message,
       }).catch(() => {});
       console.error(`[Scraping] ${source.name} error: ${error.message}`);
+      return 0;
     }
-  }
+  });
 
+  const totalCollected = results.reduce((sum, value) => sum + value, 0);
   return { success: true, totalCollected };
 }
 

@@ -25,8 +25,8 @@ const DEFAULT_AI_CONFIG: RuntimeAiConfig = {
   provider: 'glm',
   model: 'glm-4.7',
   apiKeyEnvKey: 'GLM_API_KEY',
-  maxPendingBatch: 20,
-  maxAnalysisBatch: 10,
+  maxPendingBatch: 60,
+  maxAnalysisBatch: 24,
 };
 
 const DEFAULT_OUTPUT_CONFIG: RuntimeOutputConfig = {

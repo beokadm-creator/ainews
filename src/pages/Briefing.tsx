@@ -21,19 +21,24 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { formatArticleContentParagraphs } from '@/lib/articleContent';
 
 function sanitizeReportHtml(raw: string) {
   const trimmed = (raw || '').trim();
-  if (!trimmed.startsWith('```')) {
-    return trimmed;
+  let cleaned = trimmed;
+
+  if (trimmed.startsWith('```')) {
+    const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
+    cleaned = fenceMatch
+      ? fenceMatch[1].trim()
+      : trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
   }
 
-  const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
-  if (!fenceMatch) {
-    return trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
-  }
-
-  return fenceMatch[1].trim();
+  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
+  if (doctypeIdx >= 0) return cleaned.slice(doctypeIdx).trim();
+  const htmlIdx = cleaned.search(/<html[\s>]/i);
+  if (htmlIdx >= 0) return cleaned.slice(htmlIdx).trim();
+  return cleaned;
 }
 
 function formatArticleDate(value: any) {
@@ -245,6 +250,7 @@ export default function Briefing() {
   const renderHtml = sanitizeReportHtml(
     selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
   );
+  const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-12">
@@ -499,7 +505,9 @@ export default function Briefing() {
               <div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                   <span>{previewArticle.source}</span>
-                  <span>{formatArticleDate(previewArticle.publishedAt)}</span>
+                  {formatArticleDate(previewArticle.publishedAt) && (
+                    <span>발행시각 {formatArticleDate(previewArticle.publishedAt)}</span>
+                  )}
                 </div>
                 <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
@@ -520,9 +528,25 @@ export default function Briefing() {
               )}
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-gray-700 dark:text-gray-300">
-                  {previewArticle.content || '원문 전문이 저장되지 않은 기사입니다.'}
-                </p>
+                {formatArticleDate(previewArticle.publishedAt) && (
+                  <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                    <span className="font-semibold text-gray-800 dark:text-gray-100">발행시각</span>
+                    <span className="ml-2">{formatArticleDate(previewArticle.publishedAt)}</span>
+                  </div>
+                )}
+                <div className="mt-3 space-y-4">
+                  {previewContentParagraphs.length > 0 ? (
+                    previewContentParagraphs.map((paragraph: string, index: number) => (
+                      <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">
+                        {paragraph}
+                      </p>
+                    ))
+                  ) : (
+                    <p className="text-sm leading-7 text-gray-700 dark:text-gray-300">
+                      원문 전문이 저장되지 않은 기사입니다.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">

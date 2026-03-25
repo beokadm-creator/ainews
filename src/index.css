@@ -12,3 +12,9 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+select option,
+select optgroup {
+  color: #111827;
+  background-color: #ffffff;
+}

@@ -1,4 +1,4 @@
-import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+﻿import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { logger } from 'firebase-functions';
@@ -22,17 +22,18 @@ import { buildOutputAssetBundle, buildOutputHtmlAsset } from './services/reportA
 import { sendBriefingToTelegram } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
+import { processPuppeteerSources } from './services/puppeteerSourceService';
 import { purgeRejectedArticlesPreservingDedupe, syncArticlesToDedup } from './services/articleDedupService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
 import { assertCompanyAccess, getCompanyRuntimeConfig } from './services/runtimeConfigService';
-import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from './types/runtime';
+import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS, RuntimePipelineConfig } from './types/runtime';
 import { saveApiKeyForCompany } from './utils/secretManager';
-import { seedGlobalSources, testGlobalSource } from './services/globalSourceService';
+import { seedGlobalSources, testGlobalSource as runGlobalSourceTest } from './services/globalSourceService';
 admin.initializeApp();
 admin.firestore().settings({ ignoreUndefinedProperties: true });
-// Seeding (필요 시 수동 실행 또는 별도 트리거로 이동 권장)
+// Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
 // ensureCollectionsExist().catch(console.error);
 // seedPromptTemplates().catch(err => {
 //   console.warn('Failed to seed prompt templates:', err);
@@ -40,9 +41,9 @@ admin.firestore().settings({ ignoreUndefinedProperties: true });
 // seedGlobalSources().catch(err => {
 //   console.warn('Failed to seed global sources:', err);
 // });
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Helpers
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 async function getPrimaryCompanyId(uid: string): Promise<string> {
   const userDoc = await admin.firestore().collection('users').doc(uid).get();
   if (!userDoc.exists) {
@@ -162,17 +163,17 @@ function getSourceIdentityAliases(value?: string) {
 
   if (normalized === '3syjizr4ih9bluozttba') {
     aliases.add('thebell');
-    aliases.add('더벨');
+    aliases.add('?붾꺼');
   }
 
-  if (normalized.includes('thebell') || normalized.includes('더벨')) {
+  if (normalized.includes('thebell') || normalized.includes('?붾꺼')) {
     aliases.add('thebell');
-    aliases.add('더벨');
+    aliases.add('?붾꺼');
   }
 
-  if (normalized.includes('marketinsight') || normalized.includes('마켓인사이트')) {
+  if (normalized.includes('marketinsight') || normalized.includes('留덉폆?몄궗?댄듃')) {
     aliases.add('marketinsight');
-    aliases.add('마켓인사이트');
+    aliases.add('留덉폆?몄궗?댄듃');
   }
 
   if (normalized.includes('navernews') || normalized.includes('네이버뉴스')) {
@@ -245,6 +246,458 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
   }
 
   return { totalFiltered, totalAnalyzed };
+}
+
+const CONTINUOUS_COLLECTION_LOCK_MS = 12 * 60 * 1000;
+const CONTINUOUS_ANALYSIS_LOCK_MS = 12 * 60 * 1000;
+const CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS = 15 * 60 * 1000;
+
+async function withWorkerLease<T>(
+  workerId: string,
+  leaseMs: number,
+  fn: () => Promise<T>,
+): Promise<{ executed: boolean; result?: T }> {
+  const db = admin.firestore();
+  const leaseRef = db.collection('systemRuntime').doc(`worker_${workerId}`);
+  const now = Date.now();
+  const leaseUntil = admin.firestore.Timestamp.fromMillis(now + leaseMs);
+
+  const claimed = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(leaseRef);
+    const data = snap.data() as any;
+    const activeLease = data?.leaseUntil?.toDate
+      ? data.leaseUntil.toDate()
+      : (data?.leaseUntil ? new Date(data.leaseUntil) : null);
+
+    if (activeLease && !Number.isNaN(activeLease.getTime()) && activeLease.getTime() > now) {
+      return false;
+    }
+
+    tx.set(leaseRef, {
+      workerId,
+      status: 'running',
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil,
+    }, { merge: true });
+
+    return true;
+  });
+
+  if (!claimed) {
+    return { executed: false };
+  }
+
+  try {
+    const result = await fn();
+    await leaseRef.set({
+      workerId,
+      status: 'idle',
+      lastSuccessAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    return { executed: true, result };
+  } catch (error: any) {
+    await leaseRef.set({
+      workerId,
+      status: 'error',
+      lastErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastError: error?.message || 'Unknown worker error',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil: admin.firestore.FieldValue.delete(),
+    }, { merge: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function getContinuousCollectionContext(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const db = admin.firestore();
+  const activeSourceIds = (await db.collection('globalSources').where('status', '==', 'active').get())
+    .docs
+    .map((doc) => doc.id);
+
+  return {
+    companyId,
+    aiConfig,
+    filters: {
+      sourceIds: activeSourceIds,
+      dateRange: { mode: 'relative_days' as const, days: 2 },
+    },
+  };
+}
+
+async function runContinuousCollectionCycle(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const context = await getContinuousCollectionContext(aiConfig, companyId);
+  const [rssResult, apiResult, scrapingResult] = await Promise.allSettled([
+    processRssSources(context),
+    processApiSources(context),
+    processScrapingSources(context),
+  ]);
+
+  const totalCollected =
+    (rssResult.status === 'fulfilled' ? (rssResult.value as any)?.totalCollected || 0 : 0) +
+    (apiResult.status === 'fulfilled' ? (apiResult.value as any)?.totalCollected || 0 : 0) +
+    (scrapingResult.status === 'fulfilled' ? (scrapingResult.value as any)?.totalCollected || 0 : 0);
+
+  if (rssResult.status === 'rejected') console.error('[ContinuousCollection] RSS error:', rssResult.reason);
+  if (apiResult.status === 'rejected') console.error('[ContinuousCollection] API error:', apiResult.reason);
+  if (scrapingResult.status === 'rejected') console.error('[ContinuousCollection] Scraping error:', scrapingResult.reason);
+
+  return { totalCollected };
+}
+
+async function runContinuousPremiumCollectionCycle(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const context = await getContinuousCollectionContext(aiConfig, companyId);
+  try {
+    const result = await processPuppeteerSources(context);
+    return { totalCollected: Number(result?.totalCollected || 0) };
+  } catch (error) {
+    console.error('[ContinuousPremiumCollection] Puppeteer error:', error);
+    throw error;
+  }
+}
+
+async function runContinuousAnalysisCycle(aiConfig: RuntimeAiConfig, companyId?: string) {
+  return drainAiAnalysisQueue(aiConfig, companyId);
+}
+
+async function runContinuousCollectionWorker(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const lease = await withWorkerLease('continuous-collection', CONTINUOUS_COLLECTION_LOCK_MS, async () => {
+    return runContinuousCollectionCycle(aiConfig, companyId);
+  });
+
+  if (!lease.executed) {
+    return { skipped: true, totalCollected: 0 };
+  }
+
+  return {
+    skipped: false,
+    ...(lease.result || { totalCollected: 0 }),
+  };
+}
+
+async function runContinuousAnalysisWorker(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const lease = await withWorkerLease('continuous-analysis', CONTINUOUS_ANALYSIS_LOCK_MS, async () => {
+    return runContinuousAnalysisCycle(aiConfig, companyId);
+  });
+
+  if (!lease.executed) {
+    return { skipped: true, totalFiltered: 0, totalAnalyzed: 0 };
+  }
+
+  return {
+    skipped: false,
+    ...(lease.result || { totalFiltered: 0, totalAnalyzed: 0 }),
+  };
+}
+
+async function runContinuousPremiumCollectionWorker(aiConfig: RuntimeAiConfig, companyId?: string) {
+  const lease = await withWorkerLease('continuous-premium-collection', CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS, async () => {
+    return runContinuousPremiumCollectionCycle(aiConfig, companyId);
+  });
+
+  if (!lease.executed) {
+    return { skipped: true, totalCollected: 0 };
+  }
+
+  return {
+    skipped: false,
+    ...(lease.result || { totalCollected: 0 }),
+  };
+}
+
+async function getArticlePipelineCounts() {
+  const db = admin.firestore();
+  const [pending, filtering, filtered, analyzing, analyzed, published, rejected, aiError, analysisError] = await Promise.all([
+    db.collection('articles').where('status', '==', 'pending').count().get(),
+    db.collection('articles').where('status', '==', 'filtering').count().get(),
+    db.collection('articles').where('status', '==', 'filtered').count().get(),
+    db.collection('articles').where('status', '==', 'analyzing').count().get(),
+    db.collection('articles').where('status', '==', 'analyzed').count().get(),
+    db.collection('articles').where('status', '==', 'published').count().get(),
+    db.collection('articles').where('status', '==', 'rejected').count().get(),
+    db.collection('articles').where('status', '==', 'ai_error').count().get(),
+    db.collection('articles').where('status', '==', 'analysis_error').count().get(),
+  ]);
+
+  return {
+    pending: pending.data().count,
+    filtering: filtering.data().count,
+    filtered: filtered.data().count,
+    analyzing: analyzing.data().count,
+    analyzed: analyzed.data().count,
+    published: published.data().count,
+    rejected: rejected.data().count,
+    aiError: aiError.data().count,
+    analysisError: analysisError.data().count,
+  };
+}
+
+async function updateContinuousPipelineRuntime(payload: Record<string, any>) {
+  const counts = await getArticlePipelineCounts();
+  await admin.firestore().collection('systemRuntime').doc('continuousPipeline').set({
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    articleCounts: counts,
+    ...payload,
+  }, { merge: true });
+  return counts;
+}
+
+async function recoverStaleAiStageArticles() {
+  const db = admin.firestore();
+  const now = Date.now();
+  let recoveredFiltering = 0;
+  let recoveredAnalyzing = 0;
+
+  const [filteringSnap, analyzingSnap] = await Promise.all([
+    db.collection('articles').where('status', '==', 'filtering').limit(200).get(),
+    db.collection('articles').where('status', '==', 'analyzing').limit(200).get(),
+  ]);
+
+  const batch = db.batch();
+
+  for (const doc of filteringSnap.docs) {
+    const data = doc.data() as any;
+    const leaseUntil = data?.workerLeaseUntil?.toDate
+      ? data.workerLeaseUntil.toDate()
+      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+    const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
+    if (!isExpired) continue;
+    batch.set(doc.ref, {
+      status: 'pending',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      workerStage: admin.firestore.FieldValue.delete(),
+      workerLeaseUntil: admin.firestore.FieldValue.delete(),
+      nextAiAttemptAt: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    recoveredFiltering += 1;
+  }
+
+  for (const doc of analyzingSnap.docs) {
+    const data = doc.data() as any;
+    const leaseUntil = data?.workerLeaseUntil?.toDate
+      ? data.workerLeaseUntil.toDate()
+      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+    const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
+    if (!isExpired) continue;
+    batch.set(doc.ref, {
+      status: 'filtered',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      workerStage: admin.firestore.FieldValue.delete(),
+      workerLeaseUntil: admin.firestore.FieldValue.delete(),
+      nextAiAttemptAt: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    recoveredAnalyzing += 1;
+  }
+
+  if (recoveredFiltering > 0 || recoveredAnalyzing > 0) {
+    await batch.commit();
+  }
+
+  return { recoveredFiltering, recoveredAnalyzing };
+}
+
+async function requireSuperadminUid(uid: string) {
+  const userDoc = await admin.firestore().collection('users').doc(uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+}
+
+async function runContinuousPipelineCycle() {
+  const { aiConfig, companyId } = await getSystemAiConfig();
+  const collection = await runContinuousCollectionWorker(aiConfig, companyId);
+  const analysis = await runContinuousAnalysisWorker(aiConfig, companyId);
+
+  const counts = await updateContinuousPipelineRuntime({
+    lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
+    totalCollected: collection.totalCollected,
+    totalFiltered: analysis.totalFiltered,
+    totalAnalyzed: analysis.totalAnalyzed,
+    collectionSkipped: collection.skipped,
+    analysisSkipped: analysis.skipped,
+  });
+
+  return {
+    ...collection,
+    ...analysis,
+    articleCounts: counts,
+    companyId,
+    provider: aiConfig.provider,
+    model: aiConfig.model,
+  };
+}
+
+type PipelineStepStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'aborted';
+
+async function updatePipelineStep(
+  pipelineRef: FirebaseFirestore.DocumentReference | null,
+  step: 'collection' | 'filtering' | 'analysis' | 'output',
+  status: PipelineStepStatus,
+  result?: any,
+) {
+  if (!pipelineRef) return;
+
+  await pipelineRef.set({
+    steps: {
+      [step]: {
+        status,
+        completedAt: status === 'running' ? null : admin.firestore.FieldValue.serverTimestamp(),
+        ...(result ? { result } : {}),
+      },
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function collectArticlesOnce(options: {
+  companyId?: string;
+  pipelineRunId?: string;
+  filters: any;
+  aiConfig: RuntimeAiConfig;
+  logPrefix?: string;
+}) {
+  const context = {
+    companyId: options.companyId,
+    pipelineRunId: options.pipelineRunId,
+    filters: options.filters,
+    aiConfig: options.aiConfig,
+  };
+
+  const [rssResult, apiResult, scrapingResult, puppeteerResult] = await Promise.allSettled([
+    processRssSources(context),
+    processApiSources(context),
+    processScrapingSources(context),
+    processPuppeteerSources(context),
+  ]);
+
+  const totalCollected =
+    (rssResult.status === 'fulfilled' ? (rssResult.value as any)?.totalCollected || 0 : 0) +
+    (apiResult.status === 'fulfilled' ? (apiResult.value as any)?.totalCollected || 0 : 0) +
+    (scrapingResult.status === 'fulfilled' ? (scrapingResult.value as any)?.totalCollected || 0 : 0) +
+    (puppeteerResult.status === 'fulfilled' ? (puppeteerResult.value as any)?.totalCollected || 0 : 0);
+
+  const logPrefix = options.logPrefix || '[Pipeline]';
+  if (rssResult.status === 'rejected') console.error(`${logPrefix} RSS error:`, rssResult.reason);
+  if (apiResult.status === 'rejected') console.error(`${logPrefix} API error:`, apiResult.reason);
+  if (scrapingResult.status === 'rejected') console.error(`${logPrefix} Scraping error:`, scrapingResult.reason);
+  if (puppeteerResult.status === 'rejected') console.error(`${logPrefix} Puppeteer error:`, puppeteerResult.reason);
+
+  return {
+    totalCollected,
+    rss: rssResult.status === 'fulfilled' ? rssResult.value : null,
+    api: apiResult.status === 'fulfilled' ? apiResult.value : null,
+    scraping: scrapingResult.status === 'fulfilled' ? scrapingResult.value : null,
+    puppeteer: puppeteerResult.status === 'fulfilled' ? puppeteerResult.value : null,
+  };
+}
+
+async function executePipelineRun(options: {
+  runtime: RuntimePipelineConfig;
+  pipelineRef?: FirebaseFirestore.DocumentReference | null;
+  pipelineRunId?: string;
+  includeOutput?: boolean;
+}) {
+  const pipelineRef = options.pipelineRef || null;
+  const runtime = options.runtime;
+
+  if (pipelineRef) {
+    await pipelineRef.set({
+      status: 'running',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+
+  try {
+    await updatePipelineStep(pipelineRef, 'collection', 'running');
+    const collectionStartedAt = Date.now();
+    const collection = await collectArticlesOnce({
+      companyId: runtime.companyId,
+      pipelineRunId: options.pipelineRunId,
+      filters: runtime.filters,
+      aiConfig: runtime.ai,
+      logPrefix: '[PipelineRun]',
+    });
+    await updatePipelineStep(pipelineRef, 'collection', 'completed', {
+      duration: Date.now() - collectionStartedAt,
+      ...collection,
+    });
+
+    await updatePipelineStep(pipelineRef, 'filtering', 'running');
+    const filteringStartedAt = Date.now();
+    const filteringResult = await processRelevanceFiltering({
+      companyId: runtime.companyId,
+      pipelineRunId: options.pipelineRunId,
+      aiConfig: runtime.ai,
+      filters: runtime.filters,
+    });
+    await updatePipelineStep(pipelineRef, 'filtering', 'completed', {
+      duration: Date.now() - filteringStartedAt,
+      ...(filteringResult || {}),
+    });
+
+    await updatePipelineStep(pipelineRef, 'analysis', 'running');
+    const analysisStartedAt = Date.now();
+    const analysisResult = await processDeepAnalysis({
+      companyId: runtime.companyId,
+      pipelineRunId: options.pipelineRunId,
+      aiConfig: runtime.ai,
+    });
+    await updatePipelineStep(pipelineRef, 'analysis', 'completed', {
+      duration: Date.now() - analysisStartedAt,
+      ...(analysisResult || {}),
+    });
+
+    let outputResult: any = null;
+    if (options.includeOutput !== false) {
+      await updatePipelineStep(pipelineRef, 'output', 'running');
+      const outputStartedAt = Date.now();
+      outputResult = await createDailyBriefing({
+        companyId: runtime.companyId,
+        pipelineRunId: options.pipelineRunId,
+        aiConfig: runtime.ai,
+        outputConfig: runtime.output,
+        timezone: runtime.timezone,
+      });
+      await updatePipelineStep(pipelineRef, 'output', outputResult.success ? 'completed' : 'failed', {
+        duration: Date.now() - outputStartedAt,
+        ...outputResult,
+      });
+    } else {
+      await updatePipelineStep(pipelineRef, 'output', 'skipped', {
+        reason: 'Continuous pipeline does not generate outputs in this cycle.',
+      });
+    }
+
+    const result = {
+      totalCollected: collection.totalCollected,
+      totalFiltered: Number(filteringResult?.processed || 0),
+      totalAnalyzed: Number(analysisResult?.processed || 0),
+      output: outputResult,
+    };
+
+    if (pipelineRef) {
+      await pipelineRef.set({
+        status: outputResult && outputResult.success === false ? 'failed' : 'completed',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        result,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    return result;
+  } catch (error: any) {
+    if (pipelineRef) {
+      await pipelineRef.set({
+        status: 'failed',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        error: error.message || String(error),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 async function loadAccessibleArticlesForManagedReport(
@@ -386,44 +839,44 @@ function buildManagedReportPrompt(
   keywords: string[] = [],
 ) {
   const sourceText = sourceNames.length > 0
-    ? `대상 매체: ${sourceNames.join(', ')}`
-    : '대상 매체: 구독 중인 전체 선택 매체';
+    ? `???留ㅼ껜: ${sourceNames.join(', ')}`
+    : '???留ㅼ껜: 援щ룆 以묒씤 ?꾩껜 ?좏깮 留ㅼ껜';
   const keywordText = keywords.length > 0
-    ? `핵심 키워드: ${keywords.join(', ')}`
-    : '핵심 키워드: 별도 지정 없음';
+    ? `?듭떖 ?ㅼ썙?? ${keywords.join(', ')}`
+    : '?듭떖 ?ㅼ썙?? 蹂꾨룄 吏???놁쓬';
 
   const sharedRules = [
-    '모든 문장은 한국어로 작성합니다.',
-    '팩트 기반으로만 요약하고 분석합니다.',
-    'AI의 의견, 투자 조언, 추가 제언, 낙관적/비관적 전망은 넣지 않습니다.',
-    '중복 기사는 묶고, 서로 상충하는 팩트는 구분해서 적습니다.',
-    '기사에서 반드시 챙겨봐야 할 포인트, 놓치기 쉬운 수치, 이해관계자 변화만 정리합니다.',
+    '紐⑤뱺 臾몄옣? ?쒓뎅?대줈 ?묒꽦?⑸땲??',
+    '?⑺듃 湲곕컲?쇰줈留??붿빟?섍퀬 遺꾩꽍?⑸땲??',
+    'AI???섍껄, ?ъ옄 議곗뼵, 異붽? ?쒖뼵, ?숆???鍮꾧????꾨쭩? ?ｌ? ?딆뒿?덈떎.',
+    '以묐났 湲곗궗??臾띔퀬, ?쒕줈 ?곸땐?섎뒗 ?⑺듃??援щ텇?댁꽌 ?곸뒿?덈떎.',
+    '湲곗궗?먯꽌 諛섎뱶??梨숆꺼遊먯빞 ???ъ씤?? ?볦튂湲??ъ슫 ?섏튂, ?댄빐愿怨꾩옄 蹂?붾쭔 ?뺣━?⑸땲??',
   ].join('\n');
 
   if (mode === 'external') {
     return `${sharedRules}
 ${sourceText}
 ${keywordText}
-외부 배포용 데일리 리포트 형식으로 작성합니다.
-분량은 임원 메일로 바로 읽을 수 있게 간결하게 유지합니다.
-구성은 다음 순서를 따릅니다:
-1. 핵심 요약
-2. 주요 기사 포인트 3~6개
-3. 주의 깊게 볼 변화 또는 체크포인트
-4. 참고 기사 목록
+?몃? 諛고룷???곗씪由?由ы룷???뺤떇?쇰줈 ?묒꽦?⑸땲??
+遺꾨웾? ?꾩썝 硫붿씪濡?諛붾줈 ?쎌쓣 ???덇쾶 媛꾧껐?섍쾶 ?좎??⑸땲??
+援ъ꽦? ?ㅼ쓬 ?쒖꽌瑜??곕쫭?덈떎:
+1. ?듭떖 ?붿빟
+2. 二쇱슂 湲곗궗 ?ъ씤??3~6媛?
+3. 二쇱쓽 源딄쾶 蹂?蹂???먮뒗 泥댄겕?ъ씤??
+4. 李멸퀬 湲곗궗 紐⑸줉
 ${basePrompt || ''}`.trim();
   }
 
   return `${sharedRules}
 ${sourceText}
 ${keywordText}
-내부 분석용 리포트 형식으로 작성합니다.
-구성은 다음 순서를 따릅니다:
-1. 핵심 요약
-2. 공통적으로 드러난 흐름
-3. 매체별/기사군별 체크포인트
-4. 놓치면 안 되는 팩트
-5. 참고 기사 목록
+?대? 遺꾩꽍??由ы룷???뺤떇?쇰줈 ?묒꽦?⑸땲??
+援ъ꽦? ?ㅼ쓬 ?쒖꽌瑜??곕쫭?덈떎:
+1. ?듭떖 ?붿빟
+2. 怨듯넻?곸쑝濡??쒕윭???먮쫫
+3. 留ㅼ껜蹂?湲곗궗援곕퀎 泥댄겕?ъ씤??
+4. ?볦튂硫????섎뒗 ?⑺듃
+5. 李멸퀬 湲곗궗 紐⑸줉
 ${basePrompt || ''}`.trim();
 }
 
@@ -574,7 +1027,7 @@ async function executeManagedReport({
       result.outputId,
       resolvedRecipients,
       {
-        subjectPrefix: '[EUM PE 외부리포트]',
+        subjectPrefix: '[EUM PE ?몃?由ы룷??',
         markAsField: 'externalSentAt',
         metadata: {
           externalSendCount: resolvedRecipients.length,
@@ -653,7 +1106,7 @@ async function executeStandaloneCustomReport({
   };
 }
 
-// superadmin용: systemSettings/aiConfig + systemSettings/promptConfig에서 AI 설정 로드
+// superadmin?? systemSettings/aiConfig + systemSettings/promptConfig?먯꽌 AI ?ㅼ젙 濡쒕뱶
 async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; companyId: string }> {
   const db = admin.firestore();
   const [sysDoc, promptDoc] = await Promise.all([
@@ -674,19 +1127,19 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
     baseUrl: sysData[`aiBaseUrls.${provider}`] || sysData.ai?.baseUrl || null,
     maxPendingBatch: 60,
     maxAnalysisBatch: 40,
-    // 슈퍼어드민이 커스텀 설정한 프롬프트가 있으면 사용, 없으면 코드 기본값
+    // ?덊띁?대뱶誘쇱씠 而ㅼ뒪? ?ㅼ젙???꾨＼?꾪듃媛 ?덉쑝硫??ъ슜, ?놁쑝硫?肄붾뱶 湲곕낯媛?
     relevancePrompt: promptData.relevancePrompt || undefined,
     analysisPrompt: promptData.analysisPrompt || undefined,
   };
-  // 첫 번째 활성 회사를 fallback companyId로 사용
+  // 泥?踰덉㎏ ?쒖꽦 ?뚯궗瑜?fallback companyId濡??ъ슜
   const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();
   const companyId = companiesSnap.empty ? '__system__' : companiesSnap.docs[0].id;
   return { aiConfig, companyId };
 }
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // [NEW] Global Source Management (Superadmin)
-// ─────────────────────────────────────────
-/** 글로벌 소스 목록 조회 (모든 인증 사용자) */
+// ?????????????????????????????????????????
+/** 湲濡쒕쾶 ?뚯뒪 紐⑸줉 議고쉶 (紐⑤뱺 ?몄쬆 ?ъ슜?? */
 export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
@@ -698,7 +1151,29 @@ export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invo
     throw new HttpsError('internal', err.message);
   }
 });
-/** 글로벌 소스 생성/수정 (Superadmin만) */
+export const testGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin required');
+  }
+
+  const { sourceId } = request.data || {};
+  if (!sourceId) {
+    throw new HttpsError('invalid-argument', 'sourceId required');
+  }
+
+  const result = await runGlobalSourceTest(sourceId);
+  await admin.firestore().collection('globalSources').doc(sourceId).update({
+    lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastTestResult: result,
+    ...(result.success ? { status: 'active' } : { status: 'error' }),
+    lastStatus: result.success ? 'success' : 'error',
+    errorMessage: result.success ? null : result.message,
+  });
+  return result;
+});
+/** 湲濡쒕쾶 ?뚯뒪 ?앹꽦/?섏젙 (Superadmin留? */
 export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -707,20 +1182,20 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
   }
   const { id, ...data } = request.data || {};
   
-  // ★ 로깅 추가
-  console.log('[upsertGlobalSource] 시작', { uid: request.auth.uid, id, dataName: data.name });
+  // ??濡쒓퉭 異붽?
+  console.log('[upsertGlobalSource] ?쒖옉', { uid: request.auth.uid, id, dataName: data.name });
   
   if (!data.name || !data.url || !data.type) {
-    console.error('[upsertGlobalSource] 필수 필드 누락', { hasName: !!data.name, hasUrl: !!data.url, hasType: !!data.type });
+    console.error('[upsertGlobalSource] ?꾩닔 ?꾨뱶 ?꾨씫', { hasName: !!data.name, hasUrl: !!data.url, hasType: !!data.type });
     throw new HttpsError('invalid-argument', 'name, url, type are required');
   }
   
   const db = admin.firestore();
   const docRef = id ? db.collection('globalSources').doc(id) : db.collection('globalSources').doc();
   
-  console.log('[upsertGlobalSource] 경로', { 
+  console.log('[upsertGlobalSource] 寃쎈줈', { 
     mode: id ? 'update' : 'create', 
-    targetId: id || '(새 ID)', 
+    targetId: id || '(??ID)', 
     docRefId: docRef.id 
   });
   
@@ -735,15 +1210,15 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
       }),
     }, { merge: !!id });
     
-    console.log('[upsertGlobalSource] 저장 성공', { docId: docRef.id, mode: id ? 'update' : 'create' });
+    console.log('[upsertGlobalSource] ????깃났', { docId: docRef.id, mode: id ? 'update' : 'create' });
     
     return { success: true, id: docRef.id };
   } catch (error: any) {
-    console.error('[upsertGlobalSource] 저장 실패', { docId: docRef.id, error: error.message, stack: error.stack });
-    throw new HttpsError('internal', `저장 실패: ${error.message}`);
+    console.error('[upsertGlobalSource] ????ㅽ뙣', { docId: docRef.id, error: error.message, stack: error.stack });
+    throw new HttpsError('internal', `????ㅽ뙣: ${error.message}`);
   }
 });
-/** 글로벌 소스 삭제 (Superadmin만) */
+/** 湲濡쒕쾶 ?뚯뒪 ??젣 (Superadmin留? */
 export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -771,11 +1246,11 @@ export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, in
 
   return { success: true };
 });
-/** 글로벌 소스 연결 테스트 (Superadmin만) - HTTP 함수 with CORS */
+/** 湲濡쒕쾶 ?뚯뒪 ?곌껐 ?뚯뒪??(Superadmin留? - HTTP ?⑥닔 with CORS */
 export const testSourceConnectionHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 60, memory: '512MiB' },
   async (request, response) => {
-    // CORS 헤더 설정
+    // CORS ?ㅻ뜑 ?ㅼ젙
     response.set('Access-Control-Allow-Origin', '*');
     response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
     response.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -800,12 +1275,14 @@ export const testSourceConnectionHttp = onRequest(
         response.status(400).json({ error: 'sourceId required' });
         return;
       }
-      const result = await testGlobalSource(sourceId);
-      // 테스트 결과를 문서에 저장
+      const result = await runGlobalSourceTest(sourceId);
+      // ?뚯뒪??寃곌낵瑜?臾몄꽌?????
       await admin.firestore().collection('globalSources').doc(sourceId).update({
         lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
         lastTestResult: result,
         ...(result.success ? { status: 'active' } : { status: 'error' }),
+        lastStatus: result.success ? 'success' : 'error',
+        errorMessage: result.success ? null : result.message,
       });
       response.json(result);
     } catch (err: any) {
@@ -813,7 +1290,7 @@ export const testSourceConnectionHttp = onRequest(
     }
   }
 );
-/** 회사가 구독 소스 선택 저장 */
+/** ?뚯궗媛 援щ룆 ?뚯뒪 ?좏깮 ???*/
 export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
@@ -835,7 +1312,7 @@ export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', 
   return { success: true, companyId };
 });
 
-/** 알림 설정 (이메일, 텔레그램 등) 업데이트 */
+/** ?뚮┝ ?ㅼ젙 (?대찓?? ?붾젅洹몃옩 ?? ?낅뜲?댄듃 */
 export const updateNotificationSettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId: rawCompanyId, telegram, emails } = request.data || {};
@@ -850,10 +1327,10 @@ export const updateNotificationSettings = onCall({ region: 'us-central1', cors: 
   await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
   return { success: true };
 });
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // [NEW] Company & User Management
-// ─────────────────────────────────────────
-/** 회사 목록 조회 (Superadmin만) */
+// ?????????????????????????????????????????
+/** ?뚯궗 紐⑸줉 議고쉶 (Superadmin留? */
 export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
@@ -872,7 +1349,7 @@ export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker:
     throw new HttpsError('internal', err.message);
   }
 });
-/** 회사 생성/수정 (Superadmin만) */
+/** ?뚯궗 ?앹꽦/?섏젙 (Superadmin留? */
 export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -893,14 +1370,14 @@ export const upsertCompany = onCall({ region: 'us-central1', cors: true, invoker
   }, { merge: true });
   return { success: true, id: docRef.id };
 });
-/** 사용자 생성 (Superadmin 또는 Company Admin) */
+/** ?ъ슜???앹꽦 (Superadmin ?먮뒗 Company Admin) */
 export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { email, password, displayName, role, companyId: targetCompanyId } = request.data || {};
   if (!email || !password || !role || !targetCompanyId) {
     throw new HttpsError('invalid-argument', 'Missing required fields');
   }
-  // 권한 확인
+  // 沅뚰븳 ?뺤씤
   const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
   const callerData = callerDoc.data();
   const isSuper = callerData?.role === 'superadmin';
@@ -909,18 +1386,18 @@ export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invok
   if (!isSuper && !isCompanyAdmin) {
     throw new HttpsError('permission-denied', 'Insufficient permissions to create user');
   }
-  // 역할 제한: Company Admin은 superadmin을 생성할 수 없음
+  // ??븷 ?쒗븳: Company Admin? superadmin???앹꽦?????놁쓬
   if (!isSuper && role === 'superadmin') {
     throw new HttpsError('permission-denied', 'Only superadmins can create other superadmins');
   }
   try {
-    // Auth 사용자 생성
+    // Auth ?ъ슜???앹꽦
     const userRecord = await admin.auth().createUser({
       email,
       password,
       displayName: displayName || email.split('@')[0],
     });
-    // Firestore 사용자 문서 생성
+    // Firestore ?ъ슜??臾몄꽌 ?앹꽦
     await admin.firestore().collection('users').doc(userRecord.uid).set({
       uid: userRecord.uid,
       email,
@@ -930,14 +1407,14 @@ export const adminCreateUser = onCall({ region: 'us-central1', cors: true, invok
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: request.auth.uid,
     });
-    // Custom Claims 설정
+    // Custom Claims ?ㅼ젙
     await admin.auth().setCustomUserClaims(userRecord.uid, { role, companyId: targetCompanyId });
     return { success: true, uid: userRecord.uid };
   } catch (error: any) {
     throw new HttpsError('internal', error.message);
   }
 });
-/** 특정 회사 사용자 목록 조회 */
+/** ?뱀젙 ?뚯궗 ?ъ슜??紐⑸줉 議고쉶 */
 export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId } = request.data || {};
@@ -953,7 +1430,7 @@ export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invok
     .where('companyIds', 'array-contains', companyId)
     .get();
   return snap.docs
-    // company_admin 호출 시 superadmin 계정 노출 금지
+    // company_admin ?몄텧 ??superadmin 怨꾩젙 ?몄텧 湲덉?
     .filter(doc => isSuper || doc.data().role !== 'superadmin')
     .map(doc => {
       const data = doc.data();
@@ -965,7 +1442,7 @@ export const getCompanyUsers = onCall({ region: 'us-central1', cors: true, invok
       };
     });
 });
-/** 사용자 삭제 (Superadmin 또는 본인 회사 Company Admin) */
+/** ?ъ슜????젣 (Superadmin ?먮뒗 蹂몄씤 ?뚯궗 Company Admin) */
 export const deleteCompanyUser = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { uid: targetUid } = request.data || {};
@@ -975,12 +1452,12 @@ export const deleteCompanyUser = onCall({ region: 'us-central1', cors: true, inv
   const callerData = callerDoc.data();
   const isSuper = callerData?.role === 'superadmin';
 
-  // 삭제 대상 유저 정보 조회
+  // ??젣 ????좎? ?뺣낫 議고쉶
   const targetDoc = await admin.firestore().collection('users').doc(targetUid).get();
   if (!targetDoc.exists) throw new HttpsError('not-found', 'Target user not found');
   const targetData = targetDoc.data();
 
-  // Company Admin: 본인 회사 소속이고 superadmin이 아닌 유저만 삭제 가능
+  // Company Admin: 蹂몄씤 ?뚯궗 ?뚯냽?닿퀬 superadmin???꾨땶 ?좎?留???젣 媛??
   if (!isSuper) {
     const callerCompanyId = callerData?.companyIds?.[0] || callerData?.companyId;
     const targetInSameCompany = targetData?.companyIds?.includes(callerCompanyId) || targetData?.companyId === callerCompanyId;
@@ -997,9 +1474,9 @@ export const deleteCompanyUser = onCall({ region: 'us-central1', cors: true, inv
   return { success: true };
 });
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // [NEW] Save/Load AI Prompt Config (Superadmin)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const savePromptConfig = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -1026,9 +1503,9 @@ export const getPromptConfig = onCall({ region: 'us-central1', cors: true, invok
   };
 });
 
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // [NEW] Save AI Provider API Key
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   try {
     if (!request.auth) {
@@ -1062,7 +1539,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
       throw new HttpsError('invalid-argument', 'Valid provider required: glm, gemini, openai, claude');
     }
 
-    // 1. API Key 저장
+    // 1. API Key ???
     if (apiKey) {
       if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
         throw new HttpsError('invalid-argument', 'Valid API key is required');
@@ -1073,11 +1550,11 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
         console.log('saveAiApiKey: API key saved successfully');
       } catch (keyErr: any) {
         console.error('saveAiApiKey: API key save failed, continuing anyway:', keyErr.message);
-        // API 키 저장 실패해도 계속 진행 (나중에 환경 변수나 다른 곳에서 로드 가능)
+        // API ??????ㅽ뙣?대룄 怨꾩냽 吏꾪뻾 (?섏쨷???섍꼍 蹂?섎굹 ?ㅻⅨ 怨녹뿉??濡쒕뱶 媛??
       }
     }
 
-    // 2. Base URL 및 선택된 모델 저장
+    // 2. Base URL 諛??좏깮??紐⑤뜽 ???
     const db = admin.firestore();
     const updates: any = {};
     if (baseUrl !== undefined) {
@@ -1095,7 +1572,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     if (fallbackModel !== undefined) {
       updates[`aiFallbackModels.${provider}`] = fallbackModel || null;
     }
-    // setAsActive이면 활성 프로바이더로 설정
+    // setAsActive?대㈃ ?쒖꽦 ?꾨줈諛붿씠?붾줈 ?ㅼ젙
     if (setAsActive) {
       updates['ai.provider'] = provider;
       if (model) updates['ai.model'] = model;
@@ -1111,7 +1588,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     if (userDoc.data()?.role === 'superadmin') {
       console.log('saveAiApiKey: User is superadmin, also saving to systemSettings');
       const sysDocRef = db.collection('systemSettings').doc('aiConfig');
-      // update()는 dot-notation을 nested path로 해석 (set+merge는 literal 필드명으로 저장)
+      // update()??dot-notation??nested path濡??댁꽍 (set+merge??literal ?꾨뱶紐낆쑝濡????
       const sysUpdates: any = { ...updates };
       if (!sysUpdates['ai.provider']) sysUpdates['ai.provider'] = provider;
       if (apiKey) {
@@ -1120,7 +1597,7 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
       try {
         await sysDocRef.update(sysUpdates);
       } catch {
-        // document가 없으면 set으로 fallback (nested object 구조 사용)
+        // document媛 ?놁쑝硫?set?쇰줈 fallback (nested object 援ъ“ ?ъ슜)
         const nested: any = {};
         if (apiKey) nested.apiKeys = { [provider]: apiKey.trim() };
         if (baseUrl !== undefined) { nested.aiBaseUrls = { [provider]: baseUrl }; }
@@ -1139,13 +1616,13 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     return { success: true, message: `Settings for ${provider} saved` };
   } catch (err: any) {
     console.error('saveAiApiKey: ERROR:', err.code, err.message, err.stack);
-    // HttpsError는 그대로 re-throw (Firebase가 올바르게 처리)
+    // HttpsError??洹몃?濡?re-throw (Firebase媛 ?щ컮瑜닿쾶 泥섎━)
     if (typeof err.code === 'string' && err.code.startsWith('functions/')) throw err;
-    // 일반 Error는 명시적으로 HttpsError로 변환
+    // ?쇰컲 Error??紐낆떆?곸쑝濡?HttpsError濡?蹂??
     throw new HttpsError('internal', err.message || 'Unknown error');
   }
 });
-/** 회사별 파이프라인 설정 (필터, 출력 등) 업데이트 */
+/** ?뚯궗蹂??뚯씠?꾨씪???ㅼ젙 (?꾪꽣, 異쒕젰 ?? ?낅뜲?댄듃 */
 export const updateCompanySettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId, filters, output, timezone } = request.data || {};
@@ -1171,6 +1648,7 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
     logoDataUrl,
     internalPrompt,
     externalPrompt,
+    smtp,
   } = request.data || {};
 
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -1184,6 +1662,16 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
   const safeLogoDataUrl = typeof logoDataUrl === 'string' && logoDataUrl.trim()
     ? logoDataUrl.trim()
     : null;
+  const safeSmtp = smtp && typeof smtp === 'object'
+    ? {
+      host: `${smtp.host || ''}`.trim(),
+      port: Number(smtp.port || 587),
+      secure: Boolean(smtp.secure),
+      user: `${smtp.user || ''}`.trim(),
+      pass: `${smtp.pass || ''}`.trim(),
+      from: `${smtp.from || ''}`.trim(),
+    }
+    : null;
 
   await admin.firestore().collection('companySettings').doc(companyId).set({
     companyName: safeCompanyName,
@@ -1195,15 +1683,16 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
       publisherName: safePublisherName,
       logoDataUrl: safeLogoDataUrl,
     },
+    ...(safeSmtp ? { smtp: safeSmtp } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
   }, { merge: true });
 
   return { success: true, companyId };
 });
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // [NEW] Test AI Provider Connection
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const testAiConnection = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
@@ -1229,9 +1718,9 @@ export const testAiConnection = onCall({ region: 'us-central1', cors: true, invo
     };
   }
 });
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Analyze Manual Article
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Authentication required');
@@ -1242,7 +1731,7 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
   }
   const articleContent = content || title;
 
-  // superadmin은 companyId 없이도 systemSettings AI 설정으로 실행
+  // superadmin? companyId ?놁씠??systemSettings AI ?ㅼ젙?쇰줈 ?ㅽ뻾
   let aiConfig: RuntimeAiConfig;
   let resolvedCompanyId: string;
   const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -1277,314 +1766,33 @@ export const analyzeManualArticle = onCall({ region: 'us-central1', cors: true, 
     analysis,
   };
 });
-// ─────────────────────────────────────────
-// Bulk AI Analysis (전체 기사 일괄 AI 분석)
-// ─────────────────────────────────────────
-/** Callable: 전체 기사 일괄 분석 시작 (fire-and-forget) */
-export const runBulkAiAnalysis = onCall({ region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-  const jobRef = admin.firestore().collection('bulkAiJobs').doc();
-  await jobRef.set({
-    id: jobRef.id,
-    status: 'pending',
-    triggeredBy: request.auth.uid,
-    startedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  const execUrl = `https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`;
-  fetch(execUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobId: jobRef.id }),
-  }).catch(err => console.error('Failed to trigger runBulkAiAnalysisHttp:', err));
-  return { success: true, jobId: jobRef.id };
-});
-
-// ── Pipeline abort checker ──
-async function isPipelineAborted(db: FirebaseFirestore.Firestore, type: 'pipeline' | 'aionly'): Promise<boolean> {
-  try {
-    const snap = await db.collection('systemSettings').doc('pipelineControl').get();
-    const data = snap.data() || {};
-    return type === 'pipeline' ? !data.pipelineEnabled : !data.aiOnlyEnabled;
-  } catch { return false; }
-}
-
-/** HTTP: 슈퍼어드민 전체 파이프라인 - 수집 → 분류 → 분석 → 보고서 (최대 60분) */
-export const runBulkAiAnalysisHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 3600, memory: '2GiB' },
-  async (req, res) => {
-    const { jobId } = req.body || {};
-    res.json({ accepted: true, jobId });
-
-    const db = admin.firestore();
-    const jobRef = jobId ? db.collection('bulkAiJobs').doc(jobId) : null;
-    const controlRef = db.collection('systemSettings').doc('pipelineControl');
-
-    const updateJob = async (data: any) => {
-      if (jobRef) await jobRef.update(data).catch(() => {});
-    };
-    const updateControl = async (data: any) => {
-      await controlRef.set(data, { merge: true }).catch(() => {});
-    };
-    // Abort checker that AI functions can call between batches
-    const abortChecker = () => isPipelineAborted(db, 'pipeline');
-
-    try {
-      // systemSettings에서 AI 설정 로드
-      const sys = await getSystemAiConfig();
-      const aiConfig = sys.aiConfig;
-      const companyId = sys.companyId;
-      console.log(`[Pipeline] Starting: provider=${aiConfig.provider}, model=${aiConfig.model}, companyId=${companyId}`);
-
-      // ── 회사별 런타임 설정 로드 (구독 소스 포함) ──
-      let runtimeFilters: any = { sourceIds: [] };
-      try {
-        const runtime = await getCompanyRuntimeConfig(companyId);
-        runtimeFilters = runtime.filters;
-        console.log(`[Pipeline] Company filters loaded: sourceIds=${(runtimeFilters.sourceIds || []).length}, dateRange=${runtimeFilters.dateRange}`);
-      } catch (err: any) {
-        console.warn(`[Pipeline] Could not load runtime config for ${companyId}: ${err.message}, using all active sources`);
-      }
-
-      // ── 1단계: 수집 ──
-      await updateJob({ status: 'running', currentStep: '1/3 수집 중...' });
-      await updateControl({ currentStep: '1/3 수집 중...' });
-      let totalCollected = 0;
-
-      // 슈퍼어드민 파이프라인: 모든 active 소스 수집 (회사 구독 무관)
-      // 비즈니스 로직: 수집 → 필터링 → 분석은 슈퍼어드민이 수행, 고객은 결과만 조회
-      const allActiveSourceIds = (await db.collection('globalSources').where('status', '==', 'active').get()).docs.map(d => d.id);
-      console.log(`[Pipeline] Collecting from ${allActiveSourceIds.length} active sources (superadmin mode)`);
-      const sourceFilter = { filters: { ...runtimeFilters, sourceIds: allActiveSourceIds }, aiConfig };
-
-      const [rssResult, apiResult, scrapingResult] = await Promise.allSettled([
-        processRssSources(sourceFilter),
-        processApiSources(sourceFilter),
-        processScrapingSources(sourceFilter),
-      ]);
-      if (rssResult.status === 'fulfilled') totalCollected += (rssResult.value as any)?.totalCollected || 0;
-      if (apiResult.status === 'fulfilled') totalCollected += (apiResult.value as any)?.totalCollected || 0;
-      if (scrapingResult.status === 'fulfilled') totalCollected += (scrapingResult.value as any)?.totalCollected || 0;
-      if (rssResult.status === 'rejected') console.error('[Pipeline] RSS error:', (rssResult as any).reason?.message);
-      if (apiResult.status === 'rejected') console.error('[Pipeline] API error:', (apiResult as any).reason?.message);
-      if (scrapingResult.status === 'rejected') console.error('[Pipeline] Scraping error:', (scrapingResult as any).reason?.message);
-      console.log(`[Pipeline] Step 1 done: collected=${totalCollected}`);
-
-      // ── 중단 체크 ──
-      if (await abortChecker()) {
-        console.log('[Pipeline] Abort requested after collection step.');
-        await updateJob({ status: 'aborted', currentStep: null, completedAt: admin.firestore.FieldValue.serverTimestamp(), result: { totalCollected, totalFiltered: 0, totalAnalyzed: 0 } });
-        await updateControl({ pipelineRunning: false, currentStep: null });
-        return;
-      }
-
-      // ── 2단계: AI 관련성 분류 (전체 pending 기사) ──
-      await updateJob({ currentStep: '2/3 AI 관련성 분류 중...' });
-      await updateControl({ currentStep: '2/3 AI 관련성 분류 중...' });
-      const filterResult = await processRelevanceFiltering({ aiConfig, companyId, filters: runtimeFilters, abortChecker });
-      const totalFiltered = (filterResult as any).processed || 0;
-      console.log(`[Pipeline] Step 2 done: filtered=${totalFiltered}, passed=${(filterResult as any).passed || 0}`);
-
-      // ── 중단 체크 ──
-      if (await abortChecker()) {
-        console.log('[Pipeline] Abort requested after filter step.');
-        await updateJob({ status: 'aborted', currentStep: null, completedAt: admin.firestore.FieldValue.serverTimestamp(), result: { totalCollected, totalFiltered, totalAnalyzed: 0 } });
-        await updateControl({ pipelineRunning: false, currentStep: null });
-        return;
-      }
-
-      // ── 3단계: AI 심층 분석 + 요약 (전체 filtered 기사) ──
-      await updateJob({ currentStep: '3/3 AI 분석·요약 중...' });
-      await updateControl({ currentStep: '3/3 AI 분석·요약 중...' });
-      const analysisResult = await processDeepAnalysis({ aiConfig, companyId, abortChecker });
-      const totalAnalyzed = (analysisResult as any).processed || 0;
-      console.log(`[Pipeline] Step 3 done: analyzed=${totalAnalyzed}`);
-
-      await updateJob({
-        status: 'completed',
-        currentStep: null,
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        result: { totalCollected, totalFiltered, totalAnalyzed },
-      });
-    } catch (err: any) {
-      console.error('[Pipeline] Fatal error:', err.message, err.stack);
-      await updateJob({ status: 'failed', error: err.message });
-    } finally {
-      try {
-        await controlRef.set({ pipelineRunning: false, currentStep: null }, { merge: true });
-        const controlSnap = await controlRef.get();
-        if (controlSnap.data()?.pipelineEnabled) {
-          setTimeout(async () => {
-            try {
-              const newJobRef = db.collection('bulkAiJobs').doc();
-              await newJobRef.set({ id: newJobRef.id, status: 'pending', triggeredBy: 'auto', startedAt: admin.firestore.FieldValue.serverTimestamp() });
-              await controlRef.set({ pipelineRunning: true }, { merge: true });
-              fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ jobId: newJobRef.id }),
-              }).catch(() => {});
-            } catch { await controlRef.set({ pipelineRunning: false }, { merge: true }); }
-          }, 10000);
-        }
-      } catch { /* non-critical */ }
-    }
-  }
-);
-
-/** Callable: 파이프라인 / AI전용 ON/OFF 제어 */
-export const setPipelineControl = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin only');
-
-  const { type, enabled } = request.data as { type: 'pipeline' | 'aionly' | 'stopall'; enabled: boolean };
-  const db = admin.firestore();
-  const controlRef = db.collection('systemSettings').doc('pipelineControl');
-
-  if (type === 'stopall') {
-    // 모든 파이프라인 강제 종료
-    await controlRef.set({
-      pipelineEnabled: false, pipelineRunning: false,
-      aiOnlyEnabled: false, aiOnlyRunning: false,
-      currentStep: null,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    // ★ 실행 중인 pipelineRuns aborted 처리
-    const runningPipelines = await db.collection('pipelineRuns')
-      .where('status', 'in', ['pending', 'running'])
-      .get();
-    for (const doc of runningPipelines.docs) {
-      await doc.ref.update({
-        status: 'aborted',
-        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }).catch(() => {});
-    }
-
-    // ★ 실행 중인 bulkAiJobs도 aborted 처리
-    const runningJobs = await db.collection('bulkAiJobs')
-      .where('status', 'in', ['pending', 'running'])
-      .get();
-    for (const doc of runningJobs.docs) {
-      await doc.ref.update({
-        status: 'aborted',
-        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }).catch(() => {});
-    }
-    console.log(`[Pipeline] Force stopped ${runningPipelines.size} pipelineRuns, ${runningJobs.size} bulkAiJobs`);
-
-    return { success: true, enabled: false };
-  } else if (type === 'pipeline') {
-    await controlRef.set({ pipelineEnabled: enabled, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    if (enabled) {
-      const snap = await controlRef.get();
-      if (!snap.data()?.pipelineRunning) {
-        const newJobRef = db.collection('bulkAiJobs').doc();
-        await newJobRef.set({ id: newJobRef.id, status: 'pending', triggeredBy: request.auth!.uid, startedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await controlRef.set({ pipelineRunning: true }, { merge: true });
-        fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runBulkAiAnalysisHttp`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId: newJobRef.id }),
-        }).catch(() => {});
-      }
-    }
-  } else if (type === 'aionly') {
-    await controlRef.set({ aiOnlyEnabled: enabled, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    if (enabled) {
-      const snap = await controlRef.get();
-      if (!snap.data()?.aiOnlyRunning) {
-        await controlRef.set({ aiOnlyRunning: true }, { merge: true });
-        fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runAiOnlyHttp`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-        }).catch(() => {});
-      }
-    }
-  }
-  return { success: true, enabled };
-});
-
-/** HTTP: AI 전용 루프 - 관련성 분류 + 심층 분석 (반복 실행, 최대 60분) */
-export const runAiOnlyHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 3600, memory: '2GiB' },
-  async (req, res) => {
-    res.json({ accepted: true });
-    const db = admin.firestore();
-    const controlRef = db.collection('systemSettings').doc('pipelineControl');
-    const abortChecker = () => isPipelineAborted(db, 'aionly');
-    try {
-      await controlRef.set({ aiOnlyRunning: true }, { merge: true });
-      const sys = await getSystemAiConfig();
-      const aiConfig = sys.aiConfig;
-      const companyId = sys.companyId;
-      console.log(`[AI-Only] Starting: provider=${aiConfig.provider}, model=${aiConfig.model}, companyId=${companyId}`);
-      const { totalFiltered, totalAnalyzed } = await drainAiAnalysisQueue(aiConfig, companyId);
-      console.log(`[AI-Only] Queue drained: filtered=${totalFiltered}, analyzed=${totalAnalyzed}`);
-
-      await controlRef.set({ lastAiOnlyAt: admin.firestore.FieldValue.serverTimestamp(), aiOnlyLastResult: { totalFiltered, totalAnalyzed } }, { merge: true });
-    } catch (err: any) {
-      console.error('[AI-Only] Error:', err.message, err.stack);
-    } finally {
-      try {
-        await controlRef.set({ aiOnlyRunning: false }, { merge: true });
-        const snap = await controlRef.get();
-        if (snap.data()?.aiOnlyEnabled) {
-          setTimeout(async () => {
-            try {
-              await controlRef.set({ aiOnlyRunning: true }, { merge: true });
-              fetch(`https://us-central1-eumnews-9a99c.cloudfunctions.net/runAiOnlyHttp`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-              }).catch(() => {});
-            } catch { await controlRef.set({ aiOnlyRunning: false }, { merge: true }); }
-          }, 5000);
-        }
-      } catch { /* non-critical */ }
-    }
-  }
-);
-
-// ─────────────────────────────────────────
-// Diagnostic endpoint (시스템 상태 확인용)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const diagnosticHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 30 },
   async (req, res) => {
     const db = admin.firestore();
     try {
-      // POST: 상태 초기화 액션
+      // POST: ?곹깭 珥덇린???≪뀡
       if (req.method === 'POST') {
         const { action } = req.body || {};
         if (action === 'resetPipelineState') {
-          await db.collection('systemSettings').doc('pipelineControl').set({
-            pipelineEnabled: false, pipelineRunning: false,
-            aiOnlyEnabled: false, aiOnlyRunning: false,
-            currentStep: null,
+          await db.collection('systemRuntime').doc('worker_continuous-collection').set({
+            leaseUntil: admin.firestore.FieldValue.delete(),
+            status: 'idle',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           }, { merge: true });
-          res.json({ success: true, message: 'Pipeline state reset' });
-          return;
-        }
-        if (action === 'clearStaleJobs') {
-          // running/pending 상태 job을 모두 aborted로 표시 (force=true 시 시간 무관)
-          const force = req.body?.force === true;
-          const cutoff = new Date(Date.now() - 30 * 60 * 1000); // 30분 기준
-          const staleSnap = await db.collection('bulkAiJobs')
-            .where('status', 'in', ['running', 'pending'])
-            .get();
-          const batch = db.batch();
-          let count = 0;
-          staleSnap.docs.forEach(d => {
-            const startedAt = d.data().startedAt?.toDate?.() || new Date(0);
-            if (force || startedAt < cutoff) {
-              batch.update(d.ref, { status: 'aborted', completedAt: admin.firestore.FieldValue.serverTimestamp() });
-              count++;
-            }
-          });
-          if (count > 0) await batch.commit();
-          res.json({ success: true, message: `Marked ${count} stale jobs as aborted` });
+          await db.collection('systemRuntime').doc('worker_continuous-analysis').set({
+            leaseUntil: admin.firestore.FieldValue.delete(),
+            status: 'idle',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+          await db.collection('systemRuntime').doc('continuousPipeline').set({
+            lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
+            resetBy: 'diagnosticHttp',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, { merge: true });
+          const recovered = await recoverStaleAiStageArticles();
+          res.json({ success: true, message: 'Pipeline state reset', ...recovered });
           return;
         }
         if (action === 'cleanupTheBell') {
@@ -1600,7 +1808,7 @@ export const diagnosticHttp = onRequest(
             ].map(normalize);
             return candidates.some((value) =>
               value.includes('thebell') ||
-              value.includes('더벨') ||
+              value.includes('?붾꺼') ||
               value.includes('3syjizr4ih9bluozttba')
             );
           };
@@ -1769,7 +1977,7 @@ export const diagnosticHttp = onRequest(
         }
         if (action === 'countNaverArticles') {
           const statuses = ['pending', 'filtered', 'analyzed', 'published'];
-          const sourceNames = ['네이버 뉴스', '네이버 뉴스 (M&A/투자)'];
+          const sourceNames = ['?ㅼ씠踰??댁뒪', '?ㅼ씠踰??댁뒪 (M&A/?ъ옄)'];
           const sourceCounts: Record<string, Record<string, number>> = {};
 
           for (const sourceName of sourceNames) {
@@ -1794,7 +2002,7 @@ export const diagnosticHttp = onRequest(
         if (action === 'normalizeNaverSources') {
           const canonicalId = 'qp7aZkqLLDGqRAqscpYK';
           const legacyId = 'XTu0io8BExlACzgBUemZ';
-          const canonicalName = '네이버 뉴스 (M&A/투자)';
+          const canonicalName = '?ㅼ씠踰??댁뒪 (M&A/?ъ옄)';
 
           const [legacyArticles, legacyDedup] = await Promise.all([
             db.collection('articles').where('sourceId', '==', legacyId).get(),
@@ -1831,7 +2039,7 @@ export const diagnosticHttp = onRequest(
 
           await db.collection('globalSources').doc(legacyId).set({
             status: 'inactive',
-            notes: 'Inactive placeholder source. Consolidated into 네이버 뉴스 (M&A/투자).',
+            notes: 'Inactive placeholder source. Consolidated into ?ㅼ씠踰??댁뒪 (M&A/?ъ옄).',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             lastStatus: 'inactive',
           }, { merge: true });
@@ -1859,9 +2067,15 @@ export const diagnosticHttp = onRequest(
         return { id: d.id, name: data.name, type: data.type, rssUrl: (data.rssUrl || '').substring(0, 80), url: (data.url || '').substring(0, 80) };
       });
 
-      // 3. Pipeline control
-      const ctrlDoc = await db.collection('systemSettings').doc('pipelineControl').get();
-      const ctrl = ctrlDoc.data() || {};
+      // 3. Continuous runtime state
+      const [continuousPipelineDoc, collectionWorkerDoc, analysisWorkerDoc] = await Promise.all([
+        db.collection('systemRuntime').doc('continuousPipeline').get(),
+        db.collection('systemRuntime').doc('worker_continuous-collection').get(),
+        db.collection('systemRuntime').doc('worker_continuous-analysis').get(),
+      ]);
+      const continuousPipeline = continuousPipelineDoc.data() || {};
+      const collectionWorker = collectionWorkerDoc.data() || {};
+      const analysisWorker = analysisWorkerDoc.data() || {};
 
       // 4. Article status counts
       const [pending, filtered, analyzed, rejected] = await Promise.all([
@@ -1922,7 +2136,20 @@ export const diagnosticHttp = onRequest(
           fallbackCompanyId,
           allFields: Object.keys(aiData),
         },
-        pipelineControl: ctrl,
+        pipelineRuntime: {
+          mode: 'continuous',
+          toggleSupported: false,
+          pipelineEnabled: true,
+          pipelineRunning: collectionWorker.status === 'running' || analysisWorker.status === 'running',
+          currentStep: collectionWorker.status === 'running'
+            ? 'continuous-collection'
+            : analysisWorker.status === 'running'
+            ? 'continuous-analysis'
+            : null,
+          collectionWorker,
+          analysisWorker,
+          continuousPipeline,
+        },
         activeSources: { count: sources.length, sources },
         articleCounts: {
           pending: pending.data().count,
@@ -1944,9 +2171,10 @@ export const diagnosticHttp = onRequest(
   }
 );
 
-// ─────────────────────────────────────────
+
+// ?????????????????????????????????????????
 // HTTP triggers (collection)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // triggerRssCollection: removed (replaced by scheduled pipeline in runFullPipeline)
 // triggerAiFiltering, triggerDeepAnalysis, triggerBriefingGeneration: removed (internal steps, use runFullPipeline)
 export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
@@ -2261,19 +2489,141 @@ export const getAiUsageSummary = onCall(
 );
 // getPaidSourceAccess, managePaidSourceAccess: removed (paid source access UI removed)
 // scheduledNewsCollection: removed (replaced by local PC scraper auto-scheduler)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Scheduled: AI Analysis (every 4 hours)
-// ─────────────────────────────────────────
-export const scheduledAiAnalysis = onSchedule('0 */4 * * *', async () => {
+// ?????????????????????????????????????????
+export const scheduledAiAnalysis = onSchedule({ schedule: '*/5 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
   try {
     const { aiConfig, companyId } = await getSystemAiConfig();
-    const result = await drainAiAnalysisQueue(aiConfig, companyId);
+    const result = await runContinuousAnalysisWorker(aiConfig, companyId);
+    if (result.skipped) {
+      logger.info('scheduledAiAnalysis skipped because another analysis worker is active');
+      return;
+    }
+    await updateContinuousPipelineRuntime({
+      lastAnalysisRunAt: admin.firestore.FieldValue.serverTimestamp(),
+      totalFiltered: result.totalFiltered || 0,
+      totalAnalyzed: result.totalAnalyzed || 0,
+      analysisSkipped: false,
+    });
     logger.info('scheduledAiAnalysis completed', result);
   } catch (err: any) {
     console.error('Scheduled AI analysis failed:', err.message);
   }
 });
 
+export const scheduledContinuousCollection = onSchedule({ schedule: '*/5 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
+  try {
+    const { aiConfig, companyId } = await getSystemAiConfig();
+    const result = await runContinuousCollectionWorker(aiConfig, companyId);
+    if (result.skipped) {
+      logger.info('scheduledContinuousCollection skipped because another collection worker is active');
+      return;
+    }
+    await updateContinuousPipelineRuntime({
+      lastCollectionRunAt: admin.firestore.FieldValue.serverTimestamp(),
+      totalCollected: result.totalCollected || 0,
+      collectionSkipped: false,
+    });
+    logger.info('scheduledContinuousCollection completed', result);
+  } catch (err: any) {
+    console.error('Scheduled continuous collection failed:', err.message);
+  }
+});
+
+export const scheduledPremiumCollection = onSchedule({ schedule: '*/10 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
+  try {
+    const { aiConfig, companyId } = await getSystemAiConfig();
+    const result = await runContinuousPremiumCollectionWorker(aiConfig, companyId);
+    if (result.skipped) {
+      logger.info('scheduledPremiumCollection skipped because another premium collection worker is active');
+      return;
+    }
+    await updateContinuousPipelineRuntime({
+      lastPremiumCollectionRunAt: admin.firestore.FieldValue.serverTimestamp(),
+      totalPremiumCollected: result.totalCollected || 0,
+      premiumCollectionSkipped: false,
+    });
+    logger.info('scheduledPremiumCollection completed', result);
+  } catch (err: any) {
+    console.error('Scheduled premium collection failed:', err.message);
+  }
+});
+
+export const triggerContinuousCollectionNow = onCall({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  await requireSuperadminUid(request.auth.uid);
+
+  if (request.data?.resetLease) {
+    await admin.firestore().collection('systemRuntime').doc('worker_continuous-collection').set({
+      status: 'idle',
+      lastManualResetAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+  }
+
+  const { aiConfig, companyId } = await getSystemAiConfig();
+  const result = await runContinuousCollectionWorker(aiConfig, companyId);
+  const counts = await updateContinuousPipelineRuntime({
+    lastManualCollectionRunAt: admin.firestore.FieldValue.serverTimestamp(),
+    totalCollected: result.totalCollected || 0,
+    collectionSkipped: !!result.skipped,
+  });
+
+  return { success: true, ...result, articleCounts: counts };
+});
+
+export const triggerContinuousPremiumCollectionNow = onCall({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  await requireSuperadminUid(request.auth.uid);
+
+  if (request.data?.resetLease) {
+    await admin.firestore().collection('systemRuntime').doc('worker_continuous-premium-collection').set({
+      status: 'idle',
+      lastManualResetAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+  }
+
+  const { aiConfig, companyId } = await getSystemAiConfig();
+  const result = await runContinuousPremiumCollectionWorker(aiConfig, companyId);
+  const counts = await updateContinuousPipelineRuntime({
+    lastManualPremiumCollectionRunAt: admin.firestore.FieldValue.serverTimestamp(),
+    totalPremiumCollected: result.totalCollected || 0,
+    premiumCollectionSkipped: !!result.skipped,
+  });
+
+  return { success: true, ...result, articleCounts: counts };
+});
+
+export const triggerContinuousAnalysisNow = onCall({ region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 540, memory: '1GiB' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  await requireSuperadminUid(request.auth.uid);
+
+  let recovered = { recoveredFiltering: 0, recoveredAnalyzing: 0 };
+  if (request.data?.resetLease) {
+    await admin.firestore().collection('systemRuntime').doc('worker_continuous-analysis').set({
+      status: 'idle',
+      lastManualResetAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      leaseUntil: admin.firestore.FieldValue.delete(),
+    }, { merge: true });
+    recovered = await recoverStaleAiStageArticles();
+  }
+
+  const { aiConfig, companyId } = await getSystemAiConfig();
+  const result = await runContinuousAnalysisWorker(aiConfig, companyId);
+  const counts = await updateContinuousPipelineRuntime({
+    lastManualAnalysisRunAt: admin.firestore.FieldValue.serverTimestamp(),
+    totalFiltered: result.totalFiltered || 0,
+    totalAnalyzed: result.totalAnalyzed || 0,
+    analysisSkipped: !!result.skipped,
+  });
+
+  return { success: true, ...result, ...recovered, articleCounts: counts };
+});
 export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async () => {
   const db = admin.firestore();
   const now = new Date();
@@ -2340,9 +2690,9 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
     }
   }
 });
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 // Scheduled: Briefing generation (daily 22:00)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
 export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => {
   const db = admin.firestore();
   const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
@@ -2360,13 +2710,12 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
     }
   }
 });
-// ─────────────────────────────────────────
-// runFullPipeline: 파이프라인 시작 (즉시 pipelineId 반환, 실제 실행은 background HTTP)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// runFullPipeline: ?뚯씠?꾨씪???쒖옉 (利됱떆 pipelineId 諛섑솚, ?ㅼ젣 ?ㅽ뻾? background HTTP)
+// ?????????????????????????????????????????
 export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 60 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
-    // superadmin이고 companyId가 없으면 첫 번째 활성 회사 사용
     let targetCompanyId = request.data?.companyId;
     if (!targetCompanyId) {
       const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
@@ -2376,36 +2725,36 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
           targetCompanyId = companiesSnap.docs[0].id;
           console.log('runFullPipeline: superadmin using companyId:', targetCompanyId);
         } else {
-          throw new HttpsError('not-found', '활성화된 회사가 없습니다');
+          throw new HttpsError('not-found', '?쒖꽦?붾맂 ?뚯궗媛 ?놁뒿?덈떎');
         }
       }
     }
 
     console.log('runFullPipeline: resolveRuntime for', targetCompanyId);
     const runtime = await resolveRuntime(request.auth.uid, targetCompanyId, request.data?.overrides);
-  const db = admin.firestore();
-  const pipelineRef = db.collection('pipelineRuns').doc();
-  const pipelineId = pipelineRef.id;
+    const db = admin.firestore();
+    const pipelineRef = db.collection('pipelineRuns').doc();
+    const pipelineId = pipelineRef.id;
 
-  await pipelineRef.set({
-    id: pipelineId,
-    companyId: runtime.companyId,
-    companyName: runtime.companyName,
-    status: 'pending',
-    triggeredBy: request.auth.uid,
-    configSnapshot: runtime,
-    startedAt: admin.firestore.FieldValue.serverTimestamp(),
-    steps: {},
-  });
+    await pipelineRef.set({
+      id: pipelineId,
+      companyId: runtime.companyId,
+      companyName: runtime.companyName,
+      status: 'pending',
+      triggeredBy: request.auth.uid,
+      configSnapshot: runtime,
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      mode: 'manual',
+      steps: {},
+    });
 
-  // Kick off background HTTP execution — no await (fire and forget)
-  // executePipelineHttp runs independently in Cloud Run with its own 9-min timeout
-  const execUrl = `https://us-central1-eumnews-9a99c.cloudfunctions.net/executePipelineHttp`;
-  fetch(execUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pipelineId, companyId: runtime.companyId }),
-  }).catch(err => console.error('Failed to trigger executePipelineHttp:', err));
+    const execUrl = `https://us-central1-eumnews-9a99c.cloudfunctions.net/executePipelineHttp`;
+    fetch(execUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pipelineId }),
+    }).catch(err => console.error('Failed to trigger executePipelineHttp:', err));
 
     return { pipelineId, success: true };
   } catch (err: any) {
@@ -2415,15 +2764,12 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
   }
 });
 
-// ─────────────────────────────────────────
-// executePipelineHttp: 실제 파이프라인 실행 (9분 타임아웃, HTTP 트리거)
-// ─────────────────────────────────────────
 export const executePipelineHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
   async (req, res) => {
-    const { pipelineId, companyId } = req.body || {};
-    if (!pipelineId || !companyId) {
-      res.status(400).json({ error: 'Missing pipelineId or companyId' });
+    const { pipelineId } = req.body || {};
+    if (!pipelineId) {
+      res.status(400).json({ error: 'Missing pipelineId' });
       return;
     }
 
@@ -2435,128 +2781,35 @@ export const executePipelineHttp = onRequest(
       return;
     }
 
-    // Respond immediately so the caller (runFullPipeline) doesn't wait
     res.json({ accepted: true, pipelineId });
 
-    const runtime = pipelineDoc.data()?.configSnapshot;
+    const runtime = pipelineDoc.data()?.configSnapshot as RuntimePipelineConfig | undefined;
     if (!runtime) {
-      await pipelineRef.update({ status: 'failed', error: 'Missing configSnapshot' });
+      await pipelineRef.set({
+        status: 'failed',
+        error: 'Missing configSnapshot',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
       return;
     }
 
-    const updateStep = async (
-      step: string,
-      status: 'running' | 'completed' | 'failed' | 'skipped' | 'aborted',
-      result?: any,
-    ) => {
-      await pipelineRef.update({
-        [`steps.${step}`]: {
-          status,
-          completedAt: status === 'running' ? null : admin.firestore.FieldValue.serverTimestamp(),
-          ...(result ? { result } : {}),
-        },
-      });
-    };
-
-    // ★ Abort 체크 함수
-    const abortChecker = async () => {
-      const controlSnap = await db.collection('systemSettings').doc('pipelineControl').get();
-      return controlSnap.data()?.pipelineEnabled === false;
-    };
-
-    // ★ Abort 처리 함수
-    const handleAbort = async (currentStep: string) => {
-      console.log(`[Pipeline] Abort requested at ${currentStep}`);
-      await updateStep(currentStep, 'aborted');
-      await pipelineRef.update({
-        status: 'aborted',
-        abortedAt: admin.firestore.FieldValue.serverTimestamp(),
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    };
-
-    await pipelineRef.update({ status: 'running' });
     try {
-      // Step 1: Collection
-      await updateStep('collection', 'running');
-      const collectionStart = Date.now();
-      const [rssResult, apiResult, scrapingResult] = await Promise.all([
-        processRssSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
-        processApiSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
-        processScrapingSources({ companyId, pipelineRunId: pipelineId, filters: runtime.filters, aiConfig: runtime.ai }),
-      ]);
-      const totalCollected =
-        (rssResult.totalCollected || 0) +
-        (apiResult.totalCollected || 0) +
-        (scrapingResult.totalCollected || 0);
-      await updateStep('collection', 'completed', {
-        duration: Date.now() - collectionStart,
-        rss: rssResult, api: apiResult, scraping: scrapingResult, totalCollected,
-      });
-
-      // ★ Abort 체크: Collection 후
-      if (await abortChecker()) {
-        await handleAbort('filtering');
-        return;
-      }
-
-      // Step 2: Filtering
-      await updateStep('filtering', 'running');
-      const filteringStart = Date.now();
-      const filteringResult = await processRelevanceFiltering({
-        companyId, pipelineRunId: pipelineId, aiConfig: runtime.ai, filters: runtime.filters,
-      });
-      await updateStep('filtering', 'completed', { duration: Date.now() - filteringStart, ...filteringResult });
-
-      // ★ Abort 체크: Filtering 후
-      if (await abortChecker()) {
-        await handleAbort('analysis');
-        return;
-      }
-
-      // Step 3: Analysis
-      await updateStep('analysis', 'running');
-      const analysisStart = Date.now();
-      const analysisResult = await processDeepAnalysis({ companyId, pipelineRunId: pipelineId, aiConfig: runtime.ai });
-      await updateStep('analysis', 'completed', { duration: Date.now() - analysisStart, ...analysisResult });
-
-      // ★ Abort 체크: Analysis 후
-      if (await abortChecker()) {
-        await handleAbort('output');
-        return;
-      }
-
-      // Step 4: Output
-      await updateStep('output', 'running');
-      const outputStart = Date.now();
-      const outputResult = await createDailyBriefing({
-        companyId, pipelineRunId: pipelineId, aiConfig: runtime.ai,
-        outputConfig: runtime.output, timezone: runtime.timezone,
-      });
-      await updateStep('output', outputResult.success ? 'completed' : 'failed', {
-        duration: Date.now() - outputStart, ...outputResult,
-      });
-
-      await pipelineRef.update({
-        status: outputResult.success ? 'completed' : 'failed',
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      await executePipelineRun({
+        runtime,
+        pipelineRef,
+        pipelineRunId: pipelineId,
+        includeOutput: true,
       });
     } catch (error: any) {
       console.error('Pipeline execution error:', error.message);
-      await pipelineRef.update({
-        status: 'failed',
-        completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        error: error.message || String(error),
-      }).catch(() => {});
     }
   },
 );
-
-// ─────────────────────────────────────────
-// [NEW] generateReport: 사용자 선택 기사 + 프롬프트 → HTML 분석 보고서
-// ─────────────────────────────────────────
-// [FAST] generateReportV2: 보고서 문서 생성 후 즉시 ID 반환
-// 실제 생성은 generateReportContentHttp에서 백그라운드로 수행
+// [NEW] generateReport: ?ъ슜???좏깮 湲곗궗 + ?꾨＼?꾪듃 ??HTML 遺꾩꽍 蹂닿퀬??
+// ?????????????????????????????????????????
+// [FAST] generateReportV2: 蹂닿퀬??臾몄꽌 ?앹꽦 ??利됱떆 ID 諛섑솚
+// ?ㅼ젣 ?앹꽦? generateReportContentHttp?먯꽌 諛깃렇?쇱슫?쒕줈 ?섑뻾
 export const generateReportV2 = onCall(
   { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
   async (request) => {
@@ -2572,7 +2825,7 @@ export const generateReportV2 = onCall(
       } = request.data || {};
 
       if (!Array.isArray(articleIds) || articleIds.length === 0) {
-        throw new HttpsError('invalid-argument', 'articleIds 배열이 필요합니다');
+        throw new HttpsError('invalid-argument', 'articleIds array is required');
       }
 
       const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -2580,7 +2833,7 @@ export const generateReportV2 = onCall(
 
       const db = admin.firestore();
 
-      // 1. Output document 생성 (pending 상태로)
+      // 1. Output document ?앹꽦 (pending ?곹깭濡?
       const outputRef = db.collection('outputs').doc();
       const reportTitleResolved = reportTitle || `${keywords[0] || '시장'} 동향 분석 보고서`;
 
@@ -2629,7 +2882,7 @@ export const generateReportV2 = onCall(
 );
 export const generateReport = generateReportV2;
 
-// [NEW] generateReportContentHttp: 보고서 내용 생성 (백그라운드, 최대 540초)
+// [NEW] generateReportContentHttp: 蹂닿퀬???댁슜 ?앹꽦 (諛깃렇?쇱슫?? 理쒕? 540珥?
 export const generateReportContentHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
   async (req, res) => {
@@ -2644,22 +2897,22 @@ export const generateReportContentHttp = onRequest(
       const db = admin.firestore();
       const outputRef = db.collection('outputs').doc(outputId);
 
-      // 즉시 응답 (클라이언트가 기다리지 않음)
+      // 利됱떆 ?묐떟 (?대씪?댁뼵?멸? 湲곕떎由ъ? ?딆쓬)
       res.json({ accepted: true, outputId, status: 'processing' });
 
-      // 백그라운드에서 생성 시작
+      // 諛깃렇?쇱슫?쒖뿉???앹꽦 ?쒖옉
       (async () => {
         try {
-          // Status 업데이트: processing
+          // Status ?낅뜲?댄듃: processing
           await outputRef.update({
             status: 'processing',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
 
-          // 런타임 설정 조회
+          // ?고????ㅼ젙 議고쉶
           const runtime = await getCompanyRuntimeConfig(companyId);
 
-          // 실제 보고서 생성
+          // ?ㅼ젣 蹂닿퀬???앹꽦
           const result = await generateCustomReport({
             companyId,
             articleIds,
@@ -2671,7 +2924,7 @@ export const generateReportContentHttp = onRequest(
             outputId,
           });
 
-          // Status 업데이트: completed
+          // Status ?낅뜲?댄듃: completed
           await outputRef.update({
             status: 'completed',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2680,7 +2933,7 @@ export const generateReportContentHttp = onRequest(
           console.log(`Report ${outputId} generated successfully`);
         } catch (err: any) {
           console.error(`Report ${outputId} generation failed:`, err);
-          // Status 업데이트: failed
+          // Status ?낅뜲?댄듃: failed
           await outputRef.update({
             status: 'failed',
             errorMessage: err.message || 'Unknown error',
@@ -2794,7 +3047,7 @@ export const processManagedReportHttp = onRequest(
             result.outputId,
             resolvedRecipients,
             {
-              subjectPrefix: '[EUM PE 외부리포트]',
+              subjectPrefix: '[EUM PE ?몃?由ы룷??',
               markAsField: 'externalSentAt',
               metadata: {
                 externalSendCount: resolvedRecipients.length,
@@ -2820,9 +3073,9 @@ export const processManagedReportHttp = onRequest(
   }
 );
 
-// ─────────────────────────────────────────
-// [NEW] searchArticles: 기사 검색 (키워드/날짜/매체)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// [NEW] searchArticles: 湲곗궗 寃??(?ㅼ썙???좎쭨/留ㅼ껜)
+// ?????????????????????????????????????????
 export const searchArticles = onCall(
   { region: 'us-central1', timeoutSeconds: 60, cors: true, invoker: 'public' },
   async (request) => {
@@ -3040,9 +3293,9 @@ export const searchArticles = onCall(
   }
 );
 
-// ─────────────────────────────────────────
-// 기사 삭제 유틸: 배치 작업 (500건씩)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// 湲곗궗 ??젣 ?좏떥: 諛곗튂 ?묒뾽 (500嫄댁뵫)
+// ?????????????????????????????????????????
 async function deleteArticlesByQuery(db: admin.firestore.Firestore, q: admin.firestore.Query) {
   let deleted = 0;
   let snapshot = await q.limit(500).get();
@@ -3073,9 +3326,9 @@ async function purgeRejectedArticlesByQuery(db: admin.firestore.Firestore, q: ad
   return deleted;
 }
 
-// ─────────────────────────────────────────
-// 모든 기사 삭제 (Superadmin용)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// 紐⑤뱺 湲곗궗 ??젣 (Superadmin??
+// ?????????????????????????????????????????
 export const deleteAllArticlesHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
   async (request, response) => {
@@ -3116,9 +3369,9 @@ export const deleteAllArticlesHttp = onRequest(
   }
 );
 
-// ─────────────────────────────────────────
-// 제외된 기사 삭제 (status='rejected')
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// ?쒖쇅??湲곗궗 ??젣 (status='rejected')
+// ?????????????????????????????????????????
 export const deleteExcludedArticlesHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
   async (request, response) => {
@@ -3175,9 +3428,9 @@ export const cleanupRejectedArticles = onSchedule(
   }
 );
 
-// ─────────────────────────────────────────
-// 모든 보고서 삭제 (outputs 컬렉션)
-// ─────────────────────────────────────────
+// ?????????????????????????????????????????
+// 紐⑤뱺 蹂닿퀬????젣 (outputs 而щ젆??
+// ?????????????????????????????????????????
 export const deleteAllOutputsHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
   async (request, response) => {

@@ -1,6 +1,6 @@
 import * as admin from 'firebase-admin';
-import { callAiProvider, logPromptExecution, trackAiCost } from './aiService';
-import { RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
+import { callAiProvider, logPromptExecution, resolveAiCallOptions, trackAiCost } from './aiService';
+import { PROVIDER_DEFAULTS, RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
 
 interface OutputGenerationOptions {
@@ -23,6 +23,122 @@ function stripMarkdownCodeFence(raw: string): string {
   }
 
   return fenceMatch[1].trim();
+}
+
+function extractHtmlPayload(raw: string): string {
+  const cleaned = stripMarkdownCodeFence(raw || '').trim();
+  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
+  if (doctypeIdx >= 0) {
+    return cleaned.slice(doctypeIdx).trim();
+  }
+  const htmlIdx = cleaned.search(/<html[\s>]/i);
+  if (htmlIdx >= 0) {
+    return cleaned.slice(htmlIdx).trim();
+  }
+  return cleaned;
+}
+
+function ensureHtmlDocument(raw: string, title: string) {
+  const cleaned = extractHtmlPayload(raw || '');
+  const hasHtmlTag = /<html[\s>]|<body[\s>]|<article[\s>]|<section[\s>]|<div[\s>]/i.test(cleaned);
+  if (hasHtmlTag) return cleaned;
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => `<p>${item}</p>`)
+    .join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    body { margin: 0; background: linear-gradient(180deg, #f4f7fb 0%, #e9eef5 100%); color: #102033; font-family: "Noto Sans KR Variable", "Malgun Gothic", sans-serif; }
+    .report-content { max-width: 940px; margin: 40px auto; padding: 0 20px 40px; }
+    .report-header { padding: 36px 40px; border-radius: 28px; background: linear-gradient(135deg, #0f2238 0%, #1f4b74 100%); color: #f8fafc; box-shadow: 0 18px 50px rgba(15, 34, 56, 0.18); }
+    .report-header h1 { margin: 0; font-size: 34px; line-height: 1.25; color: #f2d27b; }
+    .section-summary { margin-top: 24px; padding: 28px 32px; border: 1px solid #d8e1ec; border-radius: 24px; background: rgba(255, 255, 255, 0.92); box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); }
+    .section-summary h2 { margin: 0 0 16px; font-size: 20px; color: #16324f; }
+    .section-summary p { margin: 0 0 14px; font-size: 15px; line-height: 1.85; color: #334155; }
+  </style>
+</head>
+<body>
+  <article class="report-content">
+    <header class="report-header"><h1>${title}</h1></header>
+    <section class="section-summary">
+      <h2>Executive Summary</h2>
+      ${paragraphs || '<p>Report content was not generated.</p>'}
+    </section>
+  </article>
+</body>
+  </html>`;
+}
+
+async function resolveCompanyDisplayName(companyId: string) {
+  try {
+    const db = admin.firestore();
+    const settingsDoc = await db.collection('companySettings').doc(companyId).get();
+    const settings = settingsDoc.data() as any;
+    const fromSettings = `${settings?.branding?.publisherName || settings?.companyName || ''}`.trim();
+    if (fromSettings) return fromSettings;
+
+    const companyDoc = await db.collection('companies').doc(companyId).get();
+    const companyData = companyDoc.data() as any;
+    const fromCompany = `${companyData?.name || companyData?.displayName || ''}`.trim();
+    if (fromCompany) return fromCompany;
+  } catch {
+    // fallback below
+  }
+  return 'EUM Private Equity';
+}
+
+function resolveCustomReportAiConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig {
+  return {
+    ...aiConfig,
+    provider: 'gemini',
+    model: 'gemini-2.5-pro',
+    apiKeyEnvKey: PROVIDER_DEFAULTS.gemini.apiKeyEnvKey,
+    baseUrl: undefined,
+  };
+}
+
+function buildCustomReportArticleDigest(articles: any[]) {
+  const prioritized = [...articles]
+    .sort((a, b) => {
+      const scoreGap = Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0);
+      if (scoreGap !== 0) return scoreGap;
+      const analyzedGap = Number(Boolean(b.summary?.length || b.category || b.tags?.length)) - Number(Boolean(a.summary?.length || a.category || a.tags?.length));
+      if (analyzedGap !== 0) return analyzedGap;
+      const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : new Date(a.publishedAt || 0).getTime();
+      const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : new Date(b.publishedAt || 0).getTime();
+      return timeB - timeA;
+    })
+    .slice(0, 50);
+
+  return prioritized.map((article, index) => {
+    const pub = article.publishedAt?.toDate
+      ? article.publishedAt.toDate().toLocaleDateString('ko-KR')
+      : (article.publishedAt || '');
+    const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
+    const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
+    const safeBody = fixEncodingIssues(cleanHtmlContent(article.content || (article.summary || []).join(' ')));
+    const safeSummary = Array.isArray(article.summary) ? article.summary.slice(0, 3).join(' / ') : '';
+    return [
+      `[ARTICLE ${index + 1}]`,
+      `TITLE: ${safeTitle}`,
+      `SOURCE: ${safeSource}`,
+      `DATE: ${pub}`,
+      `RELEVANCE_SCORE: ${article.relevanceScore || 0}/100`,
+      `CATEGORY: ${article.category || 'uncategorized'}`,
+      `SUMMARY: ${safeSummary || 'No summary available'}`,
+      'BODY:',
+      safeBody.substring(0, 2200),
+    ].join('\n');
+  }).join('\n\n---\n\n');
 }
 
 function buildArticleDigest(articles: any[], includeArticleBody: boolean): string {
@@ -157,15 +273,20 @@ export async function generatePipelineOutput(
 Article digest:
 ${digest}`;
 
-    const aiResponse = await callAiProvider(listSummaryPrompt, options.aiConfig, { temperature: 0.3 }, options.companyId);
+    const aiResponse = await callAiProvider(
+      listSummaryPrompt,
+      options.aiConfig,
+      resolveAiCallOptions(options.aiConfig.provider, 'article-list-summary'),
+      options.companyId,
+    );
     rawOutput = aiResponse.content;
-    await trackAiCost('article-list-summary', aiResponse.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId, options.pipelineRunId);
+    await trackAiCost('article-list-summary', aiResponse.usage, aiResponse.model, aiResponse.provider, options.companyId, options.pipelineRunId);
 
     await logPromptExecution(
       'article-list-summary',
       { articleCount: limitedArticles.length, outputType },
       rawOutput,
-      options.aiConfig.model,
+      aiResponse.model,
       {
         companyId: options.companyId,
         pipelineRunId: options.pipelineRunId,
@@ -223,15 +344,20 @@ Output title: ${options.outputConfig.title || 'AI News Output'}
 Article digest:
 ${digest}`;
 
-    const response = await callAiProvider(prompt, options.aiConfig, { temperature: 0.3 }, options.companyId);
+    const response = await callAiProvider(
+      prompt,
+      options.aiConfig,
+      resolveAiCallOptions(options.aiConfig.provider, 'daily-briefing'),
+      options.companyId,
+    );
     rawOutput = response.content;
-    await trackAiCost(outputType === 'custom_prompt' ? 'custom-output' : 'daily-briefing', response.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId, options.pipelineRunId);
+    await trackAiCost(outputType === 'custom_prompt' ? 'custom-output' : 'daily-briefing', response.usage, response.model, response.provider, options.companyId, options.pipelineRunId);
 
     await logPromptExecution(
       outputType === 'custom_prompt' ? 'custom-output' : 'daily-briefing',
       { articleCount: limitedArticles.length, outputType },
       rawOutput,
-      options.aiConfig.model,
+      response.model,
       {
         companyId: options.companyId,
         pipelineRunId: options.pipelineRunId,
@@ -317,83 +443,67 @@ export interface CustomReportOptions {
 export async function generateCustomReport(options: CustomReportOptions) {
   const db = admin.firestore();
 
-  // 1. 선택한 기사들 로드
   const articleDocs = await Promise.all(
-    options.articleIds.map(id => db.collection('articles').doc(id).get())
+    options.articleIds.map((id) => db.collection('articles').doc(id).get())
   );
   const articles = articleDocs
-    .filter(d => d.exists)
-    .map(d => ({ id: d.id, ...d.data() as any }));
+    .filter((doc) => doc.exists)
+    .map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
 
   if (articles.length === 0) {
-    throw new Error('선택한 기사를 찾을 수 없습니다.');
+    throw new Error('No selected articles were found.');
   }
 
-  // 2. 기사 원문 digest 구성 (번호 포함)
-  const articleDigest = articles.map((article, index) => {
-    const pub = article.publishedAt?.toDate
-      ? article.publishedAt.toDate().toLocaleDateString('ko-KR')
-      : (article.publishedAt || '');
-    const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
-    const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
-    const safeBody = fixEncodingIssues(cleanHtmlContent(article.content || (article.summary || []).join(' ')));
-    return [
-      `[기사 ${index + 1}]`,
-      `제목: ${safeTitle}`,
-      `매체: ${safeSource}`,
-      `날짜: ${pub}`,
-      `원문:\n${safeBody.substring(0, 3000)}`,
-    ].join('\n');
-  }).join('\n\n---\n\n');
+  const articleDigest = buildCustomReportArticleDigest(articles);
+  const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
+  const companyDisplayName = await resolveCompanyDisplayName(options.companyId);
+  const keywordSummary = options.keywords.length > 0 ? options.keywords.join(', ') : 'deal flow, investment, portfolio, private equity';
+  const reportTitle = options.reportTitle || `${companyDisplayName} Market Intelligence Report`;
 
-  const keywordsText = options.keywords.length > 0
-    ? `분석 초점 키워드: ${options.keywords.join(', ')}`
-    : '';
+const systemPrompt = `You are a senior private equity research editor.
+Create a premium HTML report in Korean for investment professionals.
 
-  const reportTitle = options.reportTitle || `${options.keywords[0] || '시장'} 동향 분석 보고서`;
+Requirements:
+1. Output a complete HTML document from <!DOCTYPE html> to </html>.
+2. The tone must be polished, analytical, and suitable for a PE firm's internal or client-facing report.
+3. Use modern, elegant layout sections. Avoid plain markdown, plain text dumps, or JSON.
+4. Synthesize the articles into insight, not article-by-article repetition.
+5. Cite article references inline using [1], [2] style superscripts where relevant.
+6. Include sections for executive summary, key developments, market map, factual implications, and reference list.
+7. Use concise Korean headings and professional business language.
+8. If input quality is uneven, still return strong HTML with clear structure and styled cards, tables, and callout panels where useful.
+9. Keep the final result presentation-ready for a premium PE firm.
+10. Do not include investment recommendations, suggestions, calls to action, opportunity lists, or next steps.
 
-  // 3. AI 프롬프트 구성
-  const systemPrompt = `당신은 국내 최고 수준의 투자·산업 분석 전문가입니다.
-제공된 기사들을 바탕으로 전문적인 분석 보고서를 HTML 형식으로 작성하세요.
+Recommended structure:
+- hero header
+- executive summary
+- key developments
+- market map
+- factual implications
+- reference list`;
 
-[분석 및 정제 원칙]
-1. 원문 정제: 기사 원문에 포함된 '좋아요', '댓글', '공유하기', '글자크기 조절', '로그인' 등 기사 내용과 관련 없는 사이트 UI 텍스트는 분석에서 반드시 무시하고 제거하세요.
-2. 언어: 모든 분석 내용(제목, 본문, 요약, 트렌드 등)은 반드시 자연스러운 한국어로 작성하세요.
-3. 통찰력: 단순한 기사 요약을 넘어, 각 이슈가 향후 시장이나 관련 기업에 미칠 영향(So-what)을 전문적으로 분석하세요.
-4. 각주 표시: 분석 근거가 되는 기사는 반드시 <sup><a class="footnote-ref" data-ref="N">[N]</a></sup> 형식으로 표시하세요. (N은 기사 번호)
-5. 구조: <!DOCTYPE html>부터 </html>까지 완전한 HTML 구조를 유지하되, 세련된 투자 인텔리전스 보고서 형식을 갖추세요.
+  const userPrompt = `Report title: ${reportTitle}
+Company: ${companyDisplayName}
+Priority keywords: ${keywordSummary}
+Additional direction: ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}
+Do not add investment recommendations or action items.
+Selected article count: ${articles.length}
+Use at most the strongest 50 articles already curated below.
 
-보고서 HTML 권장 구조:
-<article class="report-content">
-  <header class="report-header"><h1>[주제] 분석 보고서</h1></header>
-  <section class="section-summary"><h2>핵심 요약</h2><p>전문가적인 요약 세 문장 내외</p></section>
-  <section class="section-highlights"><h2>주요 이슈 및 딜 분석</h2><!-- 카드 형태의 구조화된 분석 --></section>
-  <section class="section-trends"><h2>시장 동향 및 거시적 시사점</h2></section>
-  <section class="section-risks"><h2>리스크 & 기회요인</h2></section>
-  <section class="section-outlook"><h2>향후 전망 및 전략적 제언</h2></section>
-  <section class="section-references"><h2>참고 자료</h2><!-- 각 기사 출처 및 링크 명시 --></section>
-</article>`;
-
-  const userPrompt = `${keywordsText}
-${options.analysisPrompt ? `분석 방향: ${options.analysisPrompt}` : ''}
-보고서 제목: ${reportTitle}
-
-아래 ${articles.length}개의 기사를 분석하여 전문 보고서를 HTML로 작성하세요.
-
+Article digest:
 ${articleDigest}`;
 
-  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
   const response = await callAiProvider(
-    fullPrompt,
-    options.aiConfig,
-    { temperature: 0.3, maxTokens: 8000 },
+    `${systemPrompt}\n\n${userPrompt}`,
+    reportAiConfig,
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 12000, temperature: 0.4 }),
     options.companyId
   );
-  await trackAiCost('custom-output', response.usage, options.aiConfig.model, options.aiConfig.provider, options.companyId);
+  await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
 
-  const htmlContent = stripMarkdownCodeFence(response.content);
+  const htmlContent = ensureHtmlDocument(response.content, reportTitle);
 
-  // 4. outputs 컬렉션에 저장
   const outputRef = options.outputId
     ? db.collection('outputs').doc(options.outputId)
     : db.collection('outputs').doc();
@@ -423,7 +533,7 @@ ${articleDigest}`;
     'custom-output',
     { articleCount: articles.length, keywords: options.keywords },
     htmlContent,
-    options.aiConfig.model,
+    response.model,
     { companyId: options.companyId, prompt: userPrompt }
   );
 
