@@ -25,6 +25,7 @@ import DeliveryCenter from '@/pages/DeliveryCenter';
 import AdminDashboard from '@/pages/admin/AdminDashboard';
 import AdminArticles from '@/pages/admin/AdminArticles';
 import AdminSettings from '@/pages/admin/AdminSettings';
+import AdminKeywords from '@/pages/admin/AdminKeywords';
 import AdminManagement from '@/pages/AdminManagement';
 import MediaAdmin from '@/pages/MediaAdmin';
 
@@ -128,6 +129,11 @@ export default function App() {
         <Route path="/admin/settings" element={
           <ProtectedRoute requiredRole="superadmin">
             <AdminLayout><AdminSettings /></AdminLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/admin/keywords" element={
+          <ProtectedRoute requiredRole="superadmin">
+            <AdminLayout><AdminKeywords /></AdminLayout>
           </ProtectedRoute>
         } />
         {/* Catch all */}

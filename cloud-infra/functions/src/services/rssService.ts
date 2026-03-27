@@ -9,6 +9,7 @@ import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
 import { enrichArticleBody } from './articleContentFetchService';
+import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
 
 const REQUEST_TIMEOUT_MS = 45000;
 const RSS_FETCH_TIMEOUT_MS = 60000;
@@ -194,8 +195,16 @@ export async function processRssSources(options?: {
 
         const batch = db.batch();
         const dedupWrites: Promise<any>[] = [];
+        const keywordChecks = await Promise.all(
+          chunk.map((article, idx) =>
+            dupChecks[idx].isDuplicate
+              ? Promise.resolve(false)
+              : titlePassesGlobalKeywordFilter(article.title, source.name, sourceId)
+          )
+        );
         dupChecks.forEach((check, idx) => {
           if (check.isDuplicate) return;
+          if (!keywordChecks[idx]) return; // 제목 키워드 미매칭 → DB 미기록
           const article = chunk[idx];
           const articleRef = db.collection('articles').doc();
           batch.set(articleRef, {

@@ -12,6 +12,7 @@ import {
   Sun,
   ChevronRight,
   Key,
+  Tags,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useThemeStore } from '@/store/useThemeStore';
@@ -34,6 +35,7 @@ const adminNav = [
     items: [
       { name: '회사 관리', href: '/admin/companies', icon: Building2, desc: '회사 계정과 유료 매체 제공 여부 관리' },
       { name: 'AI 설정', href: '/admin/settings', icon: Key, desc: '전사 AI 모델과 프롬프트 관리' },
+      { name: '키워드 관리', href: '/admin/keywords', icon: Tags, desc: '수집 제목 키워드 / PE하우스 목록 관리' },
     ],
   },
 ];

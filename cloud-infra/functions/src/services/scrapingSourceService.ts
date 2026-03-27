@@ -8,6 +8,7 @@ import { extractTextFromHtml } from '../utils/textUtils';
 import { RuntimeAiConfig, RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
+import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
@@ -160,6 +161,9 @@ export async function processScrapingSources(options?: {
           fastMode: true,
         });
         if (dupCheck.isDuplicate) continue;
+        // 제목 키워드 필터: 매칭 안 되면 DB 미기록
+        const passes = await titlePassesGlobalKeywordFilter(article.title, source.name, sourceId);
+        if (!passes) continue;
 
         const articleRef = db.collection('articles').doc();
         await articleRef.set({

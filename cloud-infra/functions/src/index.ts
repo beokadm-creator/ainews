@@ -31,6 +31,7 @@ import { assertCompanyAccess, getCompanyRuntimeConfig } from './services/runtime
 import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS, RuntimePipelineConfig } from './types/runtime';
 import { saveApiKeyForCompany } from './utils/secretManager';
 import { seedGlobalSources, testGlobalSource as runGlobalSourceTest } from './services/globalSourceService';
+import { getGlobalKeywordConfig, saveGlobalKeywordConfig, seedGlobalKeywordsIfEmpty, invalidateKeywordCache } from './services/globalKeywordService';
 admin.initializeApp();
 admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
@@ -3466,6 +3467,116 @@ export const deleteAllOutputsHttp = onRequest(
       });
     } catch (err: any) {
       console.error('deleteAllOutputs error:', err);
+      response.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// ?????????????????????????????????????????
+// 글로벌 키워드 관리 (슈퍼어드민 전용)
+// ?????????????????????????????????????????
+
+export const getGlobalKeywords = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const db = admin.firestore();
+  const userDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin only');
+  }
+  const config = await getGlobalKeywordConfig();
+  return config;
+});
+
+export const saveGlobalKeywords = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const db = admin.firestore();
+  const userDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin only');
+  }
+  const { titleKeywords, bypassSourcePatterns } = request.data || {};
+  if (!Array.isArray(titleKeywords)) {
+    throw new HttpsError('invalid-argument', 'titleKeywords must be an array');
+  }
+  await saveGlobalKeywordConfig(titleKeywords, bypassSourcePatterns);
+  invalidateKeywordCache();
+  return { success: true, count: titleKeywords.length };
+});
+
+export const seedGlobalKeywords = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const db = admin.firestore();
+  const userDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'Superadmin only');
+  }
+  const seeded = await seedGlobalKeywordsIfEmpty();
+  const config = await getGlobalKeywordConfig();
+  return { success: true, seeded, count: config.titleKeywords.length };
+});
+
+// ?????????????????????????????????????????
+// 기사 + 중복 원장 전체 초기화 (슈퍼어드민 전용)
+// - 키워드 필터 테스트 완료 후 클린 스타트용
+// ?????????????????????????????????????????
+
+export const resetAllArticlesHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
+  async (request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
+    if (request.method === 'OPTIONS') {
+      response.status(200).send('OK');
+      return;
+    }
+
+    try {
+      const db = admin.firestore();
+      const uid = request.headers['x-uid'] as string;
+      if (!uid) {
+        response.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const userDoc = await db.collection('users').doc(uid).get();
+      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
+        response.status(403).json({ error: 'Forbidden - Superadmin only' });
+        return;
+      }
+
+      const confirmToken = request.body?.confirm;
+      if (confirmToken !== 'RESET_ALL_CONFIRMED') {
+        response.status(400).json({ error: 'confirm 필드에 "RESET_ALL_CONFIRMED" 값이 필요합니다' });
+        return;
+      }
+
+      // 1. articles 전체 삭제
+      const articlesDeleted = await deleteArticlesByQuery(db, db.collection('articles'));
+
+      // 2. articleDedup 전체 삭제
+      let dedupDeleted = 0;
+      const dedupSnap = await db.collection('articleDedup').limit(500).get();
+      while (true) {
+        const snap = await db.collection('articleDedup').limit(400).get();
+        if (snap.empty) break;
+        const batch = db.batch();
+        snap.docs.forEach((doc) => batch.delete(doc.ref));
+        await batch.commit();
+        dedupDeleted += snap.docs.length;
+      }
+
+      // 3. 키워드 캐시 초기화
+      invalidateKeywordCache();
+
+      logger.info(`[ResetAll] articles: ${articlesDeleted}, dedup: ${dedupDeleted}`);
+      response.json({
+        success: true,
+        message: `초기화 완료 — 기사 ${articlesDeleted}건, 중복원장 ${dedupDeleted}건 삭제`,
+        articlesDeleted,
+        dedupDeleted,
+      });
+    } catch (err: any) {
+      console.error('resetAllArticles error:', err);
       response.status(500).json({ error: err.message });
     }
   }

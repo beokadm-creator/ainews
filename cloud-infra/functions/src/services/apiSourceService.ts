@@ -8,6 +8,7 @@ import { getDateRangeBounds } from './runtimeConfigService';
 import { fetchNaverNews } from './naverApiService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
 import { enrichArticleBody } from './articleContentFetchService';
+import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
 
 const API_SOURCE_CONCURRENCY = 2;
 const API_BODY_ENRICH_CONCURRENCY = 3;
@@ -182,6 +183,9 @@ async function collectFromNaverNews(
   for (const article of enrichedCandidates) {
     const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId, fastMode: true });
     if (dupCheck.isDuplicate) continue;
+    // 제목 키워드 필터 (Naver API는 키워드 검색이지만 추가 보호)
+    const passes = await titlePassesGlobalKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId);
+    if (!passes) continue;
 
     const articleRef = db.collection('articles').doc();
     await articleRef.set({
