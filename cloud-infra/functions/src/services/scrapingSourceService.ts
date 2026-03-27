@@ -8,7 +8,7 @@ import { extractTextFromHtml } from '../utils/textUtils';
 import { RuntimeAiConfig, RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
-import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
+import { checkKeywordFilter } from './globalKeywordService';
 
 const REQUEST_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
@@ -162,8 +162,21 @@ export async function processScrapingSources(options?: {
         });
         if (dupCheck.isDuplicate) continue;
         // 제목 키워드 필터: 매칭 안 되면 DB 미기록
-        const passes = await titlePassesGlobalKeywordFilter(article.title, source.name, sourceId);
-        if (!passes) continue;
+        const kw = await checkKeywordFilter(article.title, source.name, sourceId);
+        if (!kw.passes) continue;
+
+        // 키워드 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
+        const relevanceFields = {
+          filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+          relevanceBasis: kw.isBypassSource ? 'priority_source_bypass' : 'keyword_prefilter',
+          relevanceScore: kw.isBypassSource ? 100 : 80,
+          relevanceConfidence: kw.isBypassSource ? 1.0 : 0.9,
+          relevanceReason: kw.isBypassSource
+            ? `우선 매체 (${source.name}) - 전량 수집`
+            : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+          keywordMatched: kw.matchedKeyword || null,
+          priorityAnalysis: kw.isBypassSource,
+        };
 
         const articleRef = db.collection('articles').doc();
         await articleRef.set({
@@ -177,9 +190,10 @@ export async function processScrapingSources(options?: {
           sourceCategory: source.category || null,
           sourcePricingTier: (data as any).pricingTier || 'free',
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'pending',
+          status: 'filtered',
           urlHash: hashUrl(article.url),
           titleHash: hashTitle(article.title),
+          ...relevanceFields,
         });
         await recordArticleDedupEntry({
           id: articleRef.id,
@@ -188,7 +202,7 @@ export async function processScrapingSources(options?: {
           sourceId,
           globalSourceId: sourceId,
           source: source.name,
-          status: 'pending',
+          status: 'filtered',
           collectedAt: new Date(),
         });
         sourceCollected++;

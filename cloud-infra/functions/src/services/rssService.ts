@@ -9,7 +9,7 @@ import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
 import { enrichArticleBody } from './articleContentFetchService';
-import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
+import { checkKeywordFilter } from './globalKeywordService';
 
 const REQUEST_TIMEOUT_MS = 45000;
 const RSS_FETCH_TIMEOUT_MS = 60000;
@@ -166,12 +166,14 @@ export async function processRssSources(options?: {
       });
 
       // 제목 키워드 필터를 본문 fetch 전에 적용 → 불필요한 HTTP 요청 절감
-      const keywordFiltered = (await Promise.all(
+      // checkKeywordFilter: 통과 여부 + bypass/매칭키워드 함께 반환 (수집 시 status 결정용)
+      const keywordResults = await Promise.all(
         dateFiltered.map(async (article) => ({
           article,
-          passes: await titlePassesGlobalKeywordFilter(article.title, source.name, sourceId),
+          kw: await checkKeywordFilter(article.title, source.name, sourceId),
         }))
-      )).filter(({ passes }) => passes).map(({ article }) => article);
+      );
+      const keywordFiltered = keywordResults.filter(({ kw }) => kw.passes);
 
       if (keywordFiltered.length < dateFiltered.length) {
         console.log(`[RSS] ${source.name}: title filter ${dateFiltered.length} → ${keywordFiltered.length} (${dateFiltered.length - keywordFiltered.length} skipped)`);
@@ -180,7 +182,7 @@ export async function processRssSources(options?: {
       const enrichedArticles = await mapWithConcurrency(
         keywordFiltered,
         RSS_BODY_ENRICH_CONCURRENCY,
-        async (article) => enrichArticleBody(article),
+        async ({ article, kw }) => ({ enriched: await enrichArticleBody(article), kw }),
       );
 
       if (enrichedArticles.length === 0) {
@@ -199,7 +201,7 @@ export async function processRssSources(options?: {
       for (let i = 0; i < enrichedArticles.length; i += batchSize) {
         const chunk = enrichedArticles.slice(i, Math.min(i + batchSize, enrichedArticles.length));
         const dupChecks = await Promise.all(
-          chunk.map((article) => isDuplicateArticle(article, {
+          chunk.map(({ enriched }) => isDuplicateArticle(enriched, {
             companyId: source.companyId || options?.companyId,
             fastMode: true,
           }))
@@ -209,8 +211,23 @@ export async function processRssSources(options?: {
         const dedupWrites: Promise<any>[] = [];
         dupChecks.forEach((check, idx) => {
           if (check.isDuplicate) return;
-          // 키워드 필터는 이미 본문 fetch 전에 적용됨
-          const article = chunk[idx];
+          const { enriched: article, kw } = chunk[idx];
+
+          // 키워드 필터 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
+          // → processDeepAnalysis가 직접 심층 분석 (GLM 호출 1회로 절약)
+          const initialStatus = 'filtered';
+          const relevanceFields = {
+            filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+            relevanceBasis: kw.isBypassSource ? 'priority_source_bypass' : 'keyword_prefilter',
+            relevanceScore: kw.isBypassSource ? 100 : 80,
+            relevanceConfidence: kw.isBypassSource ? 1.0 : 0.9,
+            relevanceReason: kw.isBypassSource
+              ? `우선 매체 (${source.name}) - 전량 수집`
+              : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+            keywordMatched: kw.matchedKeyword || null,
+            priorityAnalysis: kw.isBypassSource,
+          };
+
           const articleRef = db.collection('articles').doc();
           batch.set(articleRef, {
             id: articleRef.id,
@@ -223,9 +240,10 @@ export async function processRssSources(options?: {
             sourceCategory: source.category || null,
             sourcePricingTier: source.pricingTier || 'free',
             collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-            status: 'pending',
+            status: initialStatus,
             urlHash: hashUrl(article.url),
             titleHash: hashTitle(article.title),
+            ...relevanceFields,
           });
           dedupWrites.push(recordArticleDedupEntry({
             id: articleRef.id,
@@ -234,7 +252,7 @@ export async function processRssSources(options?: {
             sourceId,
             globalSourceId: sourceId,
             source: source.name,
-            status: 'pending',
+            status: initialStatus,
             collectedAt: new Date(),
           }));
           sourceCollected++;

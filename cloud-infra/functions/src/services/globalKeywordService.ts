@@ -12,7 +12,7 @@ const DEFAULT_BYPASS_PATTERNS = ['더벨', 'thebell', '마켓인사이트', 'mar
 // ─── 초기 시드 키워드 (딜 키워드 + PE하우스 정식명칭 + 약칭) ─────────────────
 export const SEED_TITLE_KEYWORDS: string[] = [
   // ── 딜 키워드 ────────────────────────────────────────────────────────────
-  '인수', '매각', '매물', '투자집행', '지분투자', '경영권투자',
+  '인수', '매각', '투자집행', '지분투자', '경영권투자',
   '인수금융', '바이아웃', '공동투자', 'exit', '엑시트', '회수',
   'IPO', '상장추진', '블록딜', 'PEF', '사모', 'M&A', 'PE',
 
@@ -103,33 +103,79 @@ async function loadKeywordConfig(): Promise<void> {
  * - 키워드 목록이 비어있으면: 모두 통과 (하위 호환)
  * - 제목에 키워드 하나라도 포함(OR)되면 통과
  */
+export interface KeywordFilterResult {
+  passes: boolean;
+  isBypassSource: boolean;   // 더벨/마켓인사이트 등 우선 매체
+  matchedKeyword: string | null; // 매칭된 키워드 (없으면 null)
+}
+
+/** 키워드 매칭 내부 로직 (isBypass 이미 확인된 후) */
+function findMatchedKeyword(titleLower: string, keywords: string[]): string | null {
+  for (const kw of keywords) {
+    const k = `${kw || ''}`.trim().toLowerCase();
+    if (!k) continue;
+    // 순수 영문자 3자 이하 약칭: 앞뒤 단어경계 검사 (SGI에서 SG 오탐 방지)
+    if (k.length <= 3 && /^[a-z]+$/.test(k)) {
+      let idx = titleLower.indexOf(k);
+      while (idx !== -1) {
+        const before = idx > 0 ? titleLower[idx - 1] : '';
+        const after = idx + k.length < titleLower.length ? titleLower[idx + k.length] : '';
+        if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return kw;
+        idx = titleLower.indexOf(k, idx + 1);
+      }
+    } else if (titleLower.includes(k)) {
+      return kw;
+    }
+  }
+  return null;
+}
+
+/**
+ * 기사 제목이 글로벌 키워드 필터를 통과하는지 확인.
+ * - 우선 매체(더벨, 마켓인사이트): 항상 통과 (isBypassSource=true)
+ * - 키워드 목록이 비어있으면: 모두 통과 (하위 호환)
+ * - 제목에 키워드 하나라도 포함(OR)되면 통과
+ */
 export async function titlePassesGlobalKeywordFilter(
   title: string,
   sourceName?: string | null,
   sourceId?: string | null,
 ): Promise<boolean> {
+  const result = await checkKeywordFilter(title, sourceName, sourceId);
+  return result.passes;
+}
+
+/**
+ * 키워드 필터 결과 + 매칭 상세 정보 반환.
+ * 수집 시 status='filtered' 직접 저장에 사용.
+ */
+export async function checkKeywordFilter(
+  title: string,
+  sourceName?: string | null,
+  sourceId?: string | null,
+): Promise<KeywordFilterResult> {
   await loadKeywordConfig();
 
   const bypassPatterns = cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS;
   const sourceNameLower = `${sourceName || ''}`.toLowerCase();
   const sourceIdLower = `${sourceId || ''}`.toLowerCase();
 
-  // 우선 매체는 키워드 무관 전체 수집
-  const isBypass = bypassPatterns.some((pattern) => {
+  const isBypassSource = bypassPatterns.some((pattern) => {
     const p = pattern.toLowerCase();
     return sourceNameLower.includes(p) || sourceIdLower.includes(p);
   });
-  if (isBypass) return true;
+  if (isBypassSource) {
+    return { passes: true, isBypassSource: true, matchedKeyword: null };
+  }
 
   const keywords = cachedTitleKeywords || [];
-  // 키워드 미설정 시 전체 통과 (초기 설정 전 하위 호환)
-  if (keywords.length === 0) return true;
+  if (keywords.length === 0) {
+    return { passes: true, isBypassSource: false, matchedKeyword: null };
+  }
 
   const titleLower = `${title || ''}`.toLowerCase();
-  return keywords.some((kw) => {
-    const k = `${kw || ''}`.trim().toLowerCase();
-    return k.length > 0 && titleLower.includes(k);
-  });
+  const matched = findMatchedKeyword(titleLower, keywords);
+  return { passes: matched !== null, isBypassSource: false, matchedKeyword: matched };
 }
 
 export async function getGlobalKeywordConfig(): Promise<{

@@ -215,10 +215,43 @@ export async function trackAiCost(
 // ?????????????????????????????????????????
 let recentErrorCount = 0;
 let lastErrorReset = Date.now();
+
+// 429 쿨다운: 메모리(빠른 접근) + Firestore(인스턴스 간 공유)
+// Cloud Function은 5분마다 새 인스턴스 → 메모리만 쓰면 쿨다운이 리셋됨
 const aiThrottleUntilByProvider: Partial<Record<AiProvider, number>> = {};
+let throttleCacheLoadedAt = 0;
+const THROTTLE_CACHE_TTL_MS = 8_000;
+const THROTTLE_DOC_PATH = 'systemRuntime/aiThrottle';
+
+async function loadThrottleFromFirestore(): Promise<void> {
+  if (Date.now() - throttleCacheLoadedAt < THROTTLE_CACHE_TTL_MS) return;
+  try {
+    const doc = await admin.firestore().doc(THROTTLE_DOC_PATH).get();
+    const data = doc.data() || {};
+    const now = Date.now();
+    for (const [provider, until] of Object.entries(data)) {
+      if (typeof until === 'number' && until > now) {
+        aiThrottleUntilByProvider[provider as AiProvider] = until;
+      }
+    }
+    throttleCacheLoadedAt = now;
+  } catch {
+    // Firestore 읽기 실패 시 메모리 값 사용
+  }
+}
+
+function persistThrottleToFirestore(provider: AiProvider, until: number): void {
+  admin.firestore().doc(THROTTLE_DOC_PATH).set(
+    { [provider]: until, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  ).then(() => { throttleCacheLoadedAt = Date.now(); }).catch(() => {});
+}
+
 const ERROR_WINDOW_MS = 5 * 60 * 1000;
 const MAX_ERROR_RATE = 0.3;
-const WORKER_LEASE_MS = 10 * 60 * 1000;
+// 아티클 레벨 리스: 관련도 필터 ~60s, 심층분석 ~180s → 4분이면 충분
+// 10분에서 단축: 스케줄 5분 주기 내에 재시도 가능하도록
+const WORKER_LEASE_MS = 4 * 60 * 1000;
 const MAX_RETRY_BACKOFF_MS = 60 * 60 * 1000;
 const STALE_STAGE_RECOVERY_LIMIT = 200;
 
@@ -286,9 +319,11 @@ function getRateLimitDelay(attempt: number): number {
 }
 
 async function waitForAiThrottleWindow(provider: AiProvider): Promise<void> {
+  // 새 Function 인스턴스 시작 시 Firestore에서 쿨다운 상태 복원
+  await loadThrottleFromFirestore();
   const waitMs = (aiThrottleUntilByProvider[provider] || 0) - Date.now();
   if (waitMs > 0) {
-    console.warn(`[AI-THROTTLE] Cooling down ${provider} for ${waitMs}ms before next provider call.`);
+    console.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 }
@@ -299,11 +334,15 @@ function registerAiRateLimit(error: any, provider?: AiProvider): void {
 
   const retryAfterHeader = error.response?.headers?.['retry-after'];
   const retryAfterSeconds = Number(Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader);
+  // 기본 60초 (이전 15초는 너무 짧아 새 인스턴스에서 즉시 재시도됨)
   const cooldownMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
     ? retryAfterSeconds * 1000
-    : 15000;
+    : 60_000;
 
-  aiThrottleUntilByProvider[provider] = Math.max(aiThrottleUntilByProvider[provider] || 0, Date.now() + cooldownMs);
+  const newUntil = Math.max(aiThrottleUntilByProvider[provider] || 0, Date.now() + cooldownMs);
+  aiThrottleUntilByProvider[provider] = newUntil;
+  // Firestore에 비동기 저장 → 다음 인스턴스도 이 쿨다운을 인식
+  persistThrottleToFirestore(provider, newUntil);
 }
 
 function getRetryDelayMs(attemptCount: number): number {
@@ -678,7 +717,8 @@ export function resolveAiCallOptions(
     },
     analysis: {
       temperature: 0,
-      maxTokens: 1400,
+      // glm-4.7 thinking 모드 시 reasoning ~200-500 토큰 소모 → 출력 여유 확보
+      maxTokens: 3000,
       doSample: false,
       thinkingType: 'disabled',
       clearThinking: true,
@@ -702,16 +742,16 @@ export function resolveAiCallOptions(
     },
     'daily-briefing': {
       temperature: 0.2,
-      maxTokens: 2400,
+      maxTokens: 4000,
       doSample: false,
-      thinkingType: 'disabled',
+      thinkingType: 'enabled',
       clearThinking: true,
       structuredJson: true,
     },
     'custom-report': {
       temperature: 0.2,
       maxTokens: 8000,
-      thinkingType: 'disabled',
+      thinkingType: 'enabled',
       clearThinking: true,
     },
   };
@@ -744,6 +784,9 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
       ...(options?.maxTokens ? { max_tokens: options.maxTokens } : {}),
       ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
       ...(options?.doSample !== undefined ? { do_sample: options.doSample } : {}),
+      // thinking 파라미터: disabled 포함 항상 전송
+      // Z.AI /coding/paas/v4 엔드포인트의 glm-4.7은 기본적으로 thinking 모드 동작
+      // 'disabled' 파라미터가 reasoning_tokens를 억제해 출력 토큰을 확보함
       ...(options?.thinkingType
         ? {
             thinking: {
@@ -1129,7 +1172,9 @@ export async function processRelevanceFiltering(options?: {
   let passed = 0;
   let failed = 0;
 
-  const parallelLimit = Math.max(3, Math.min(6, getDynamicBatchSize(Math.min(6, options?.aiConfig.maxPendingBatch || 6))));
+  // 429 rate limit 방지: 최소 동시 호출 1개 (기존 3개에서 낮춤)
+  // AI 설정의 maxPendingBatch 값으로 조정 가능 (기본 2)
+  const parallelLimit = Math.max(1, Math.min(3, getDynamicBatchSize(Math.min(3, options?.aiConfig.maxPendingBatch || 2))));
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
     if (options?.abortChecker && await options.abortChecker()) {
@@ -1330,8 +1375,10 @@ export async function processRelevanceFiltering(options?: {
       }
     }
     if (rejectedDocs.length > 0) await syncArticlesToDedup(rejectedDocs, 'rejected');
-    if (i + parallelLimit < articles.length && recentErrorCount > 0) {
-      await new Promise(resolve => setTimeout(resolve, 300));
+    if (i + parallelLimit < articles.length) {
+      // 배치 간 최소 지연으로 GLM API rate limit 방지 (오류 시 2초, 정상 시 1초)
+      const batchDelay = recentErrorCount > 0 ? 2000 : 1000;
+      await new Promise(resolve => setTimeout(resolve, batchDelay));
     }
   }
 
@@ -1348,7 +1395,8 @@ export async function processDeepAnalysis(options?: {
   abortChecker?: () => Promise<boolean>;
 }) {
   const db = admin.firestore();
-  const baseBatchSize = Math.max(10, options?.aiConfig.maxAnalysisBatch || 24);
+  // 속도보다 정확성 우선: 한 번에 10건씩만 클레임 (타임아웃 시 복구 빠름)
+  const baseBatchSize = Math.min(10, options?.aiConfig.maxAnalysisBatch || 10);
 
   await recoverStaleArticlesForStage('analyzing');
 
@@ -1373,7 +1421,11 @@ export async function processDeepAnalysis(options?: {
   let processed = 0;
   let failed = 0;
 
-  const parallelLimit = Math.max(2, Math.min(4, getDynamicBatchSize(Math.min(4, options?.aiConfig.maxAnalysisBatch || 4))));
+  // 순차 처리: GLM-4.7 /coding 엔드포인트 rate limit 대응
+  // 동시 호출 1개 + 호출 간 2.5s 고정 딜레이 → 약 24 RPM (안전)
+  const parallelLimit = 1;
+  const ANALYSIS_CALL_DELAY_MS = 2500;
+
   const articles = (await Promise.all(claimedArticles.map(async (doc) => {
     const article = doc.data() as any;
     const priorityDecision = await getSourcePriorityDecision(article);
@@ -1445,9 +1497,59 @@ export async function processDeepAnalysis(options?: {
       }
     }
 
-    if (results.length > 0) await batch.commit();
-    if (i + parallelLimit < articles.length && recentErrorCount > 0) {
-      await new Promise(resolve => setTimeout(resolve, 300));
+    if (results.length > 0) {
+      try {
+        await batch.commit();
+      } catch (batchErr: any) {
+        if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
+          console.warn('[DeepAnalysis] batch.commit NOT_FOUND → individual fallback');
+          for (const { doc, analysisResult, priorityDecision, error } of results) {
+            try {
+              if (analysisResult) {
+                const normalized = normalizeAnalysisResult(analysisResult);
+                await doc.ref.update({
+                  status: 'analyzed',
+                  analyzedAt: admin.firestore.FieldValue.serverTimestamp(),
+                  summary: normalized.summary,
+                  category: normalized.category,
+                  companies: normalized.companies,
+                  deal: normalized.deal,
+                  insights: normalized.insights,
+                  tags: normalized.tags,
+                  priorityAnalysis: priorityDecision?.isPriority || false,
+                  analysisPriority: priorityDecision?.priority || 0,
+                  priorityAnalysisReason: priorityDecision?.reason || null,
+                  analysisAttemptCount: admin.firestore.FieldValue.delete(),
+                  lastAiErrorStage: admin.firestore.FieldValue.delete(),
+                  lastAiError: admin.firestore.FieldValue.delete(),
+                  lastAiErrorAt: admin.firestore.FieldValue.delete(),
+                  ...clearWorkerFields(),
+                });
+              } else if (error) {
+                const currentAttempts = Number(doc.data()?.analysisAttemptCount || 0);
+                await doc.ref.update(buildRetryUpdate(
+                  'analysis_error',
+                  'analysis',
+                  currentAttempts + 1,
+                  (error as any)?.message || 'Unknown analysis error',
+                ));
+              }
+            } catch (indErr: any) {
+              if (indErr?.code !== 5 && !`${indErr?.message || ''}`.includes('NOT_FOUND')) {
+                console.warn(`[DeepAnalysis] individual update failed for ${doc.id}:`, indErr.message);
+              }
+              // NOT_FOUND → doc was deleted, skip silently
+            }
+          }
+        } else {
+          throw batchErr;
+        }
+      }
+    }
+    // 다음 기사 전 고정 딜레이 (오류 여부와 무관하게 항상 대기)
+    if (i + parallelLimit < articles.length) {
+      const delay = recentErrorCount > 0 ? ANALYSIS_CALL_DELAY_MS * 2 : ANALYSIS_CALL_DELAY_MS;
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 

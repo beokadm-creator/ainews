@@ -222,36 +222,38 @@ function matchArticleToSources(article: any, sources: ManagedReportSourceDefinit
     .map((source) => source.id);
 }
 
+// Cloud Function 타임아웃(540s) 이내에 안전하게 종료: 7분 예산
+const DRAIN_BUDGET_MS = 7 * 60 * 1000;
+
 async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: string) {
   let totalFiltered = 0;
   let totalAnalyzed = 0;
   const maxRounds = 20;
+  const startTime = Date.now();
 
+  // processRelevanceFiltering 제거:
+  // 새 파이프라인에서 기사는 수집 시 바로 'filtered' 저장 → AI 관련도 필터 불필요
+  // 호출 시 불필요한 GLM API 소모 + 503/429 유발 → drain에서 완전 제거
   for (let round = 0; round < maxRounds; round++) {
-    const filterResult = await processRelevanceFiltering({
-      companyId,
-      aiConfig,
-    });
-
-    const analysisResult = await processDeepAnalysis({
-      companyId,
-      aiConfig,
-    });
-
-    totalFiltered += Number(filterResult?.processed || 0);
-    totalAnalyzed += Number(analysisResult?.processed || 0);
-
-    if ((filterResult?.processed || 0) === 0 && (analysisResult?.processed || 0) === 0) {
+    if (Date.now() - startTime > DRAIN_BUDGET_MS) {
+      console.log(`[drainQueue] 7분 시간 예산 초과 → round ${round}에서 정상 종료`);
       break;
     }
+
+    const analysisResult = await processDeepAnalysis({ companyId, aiConfig });
+    totalAnalyzed += Number(analysisResult?.processed || 0);
+
+    if ((analysisResult?.processed || 0) === 0) break;
   }
 
   return { totalFiltered, totalAnalyzed };
 }
 
-const CONTINUOUS_COLLECTION_LOCK_MS = 12 * 60 * 1000;
-const CONTINUOUS_ANALYSIS_LOCK_MS = 12 * 60 * 1000;
-const CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS = 15 * 60 * 1000;
+// 워커 리스: Cloud Function 타임아웃 540s(9분) 이내에 drainQueue가 정상 종료됨
+// → 8분으로 단축해 비정상 종료 시에도 빠르게 다음 워커가 인계
+const CONTINUOUS_COLLECTION_LOCK_MS = 8 * 60 * 1000;
+const CONTINUOUS_ANALYSIS_LOCK_MS = 8 * 60 * 1000;
+const CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS = 10 * 60 * 1000;
 
 async function withWorkerLease<T>(
   workerId: string,
@@ -297,6 +299,8 @@ async function withWorkerLease<T>(
       lastSuccessAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       leaseUntil: admin.firestore.FieldValue.delete(),
+      lastError: admin.firestore.FieldValue.delete(),
+      lastErrorAt: admin.firestore.FieldValue.delete(),
     }, { merge: true });
     return { executed: true, result };
   } catch (error: any) {
@@ -445,7 +449,8 @@ async function updateContinuousPipelineRuntime(payload: Record<string, any>) {
   return counts;
 }
 
-async function recoverStaleAiStageArticles() {
+// force=true: 수동 리셋 시 아티클 레벨 리스 만료 여부 무관하게 모두 복구
+async function recoverStaleAiStageArticles(force = false) {
   const db = admin.firestore();
   const now = Date.now();
   let recoveredFiltering = 0;
@@ -459,12 +464,14 @@ async function recoverStaleAiStageArticles() {
   const batch = db.batch();
 
   for (const doc of filteringSnap.docs) {
-    const data = doc.data() as any;
-    const leaseUntil = data?.workerLeaseUntil?.toDate
-      ? data.workerLeaseUntil.toDate()
-      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
-    const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
-    if (!isExpired) continue;
+    if (!force) {
+      const data = doc.data() as any;
+      const leaseUntil = data?.workerLeaseUntil?.toDate
+        ? data.workerLeaseUntil.toDate()
+        : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+      const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
+      if (!isExpired) continue;
+    }
     batch.set(doc.ref, {
       status: 'pending',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -476,12 +483,14 @@ async function recoverStaleAiStageArticles() {
   }
 
   for (const doc of analyzingSnap.docs) {
-    const data = doc.data() as any;
-    const leaseUntil = data?.workerLeaseUntil?.toDate
-      ? data.workerLeaseUntil.toDate()
-      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
-    const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
-    if (!isExpired) continue;
+    if (!force) {
+      const data = doc.data() as any;
+      const leaseUntil = data?.workerLeaseUntil?.toDate
+        ? data.workerLeaseUntil.toDate()
+        : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+      const isExpired = !leaseUntil || Number.isNaN(leaseUntil.getTime()) || leaseUntil.getTime() <= now;
+      if (!isExpired) continue;
+    }
     batch.set(doc.ref, {
       status: 'filtered',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -494,6 +503,7 @@ async function recoverStaleAiStageArticles() {
 
   if (recoveredFiltering > 0 || recoveredAnalyzing > 0) {
     await batch.commit();
+    console.log(`[RecoverStale] filtering→pending: ${recoveredFiltering}, analyzing→filtered: ${recoveredAnalyzing} (force=${force})`);
   }
 
   return { recoveredFiltering, recoveredAnalyzing };
@@ -508,8 +518,13 @@ async function requireSuperadminUid(uid: string) {
 
 async function runContinuousPipelineCycle() {
   const { aiConfig, companyId } = await getSystemAiConfig();
-  const collection = await runContinuousCollectionWorker(aiConfig, companyId);
-  const analysis = await runContinuousAnalysisWorker(aiConfig, companyId);
+
+  // 수집과 분석을 병렬 실행: 각자 독립 리스를 사용하므로 충돌 없음
+  // 순차 실행 시 수집이 오래 걸리면 분석이 타임아웃에 밀리는 문제 해결
+  const [collection, analysis] = await Promise.all([
+    runContinuousCollectionWorker(aiConfig, companyId),
+    runContinuousAnalysisWorker(aiConfig, companyId),
+  ]);
 
   const counts = await updateContinuousPipelineRuntime({
     lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1792,7 +1807,7 @@ export const diagnosticHttp = onRequest(
             resetBy: 'diagnosticHttp',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           }, { merge: true });
-          const recovered = await recoverStaleAiStageArticles();
+          const recovered = await recoverStaleAiStageArticles(true);
           res.json({ success: true, message: 'Pipeline state reset', ...recovered });
           return;
         }
@@ -2611,7 +2626,8 @@ export const triggerContinuousAnalysisNow = onCall({ region: 'us-central1', cors
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       leaseUntil: admin.firestore.FieldValue.delete(),
     }, { merge: true });
-    recovered = await recoverStaleAiStageArticles();
+    // 수동 리셋 시 아티클 레벨 리스 만료 여부 무관하게 강제 복구
+    recovered = await recoverStaleAiStageArticles(true);
   }
 
   const { aiConfig, companyId } = await getSystemAiConfig();
@@ -2853,7 +2869,10 @@ export const generateReportV2 = onCall(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      await executeStandaloneCustomReport({
+      // 백그라운드 비동기 실행: await하지 않고 즉시 outputId 반환
+      // → GLM 생성 시간(30-120s)에 관계없이 onCall 함수는 즉시 응답
+      // Cloud Run 인스턴스가 살아있는 동안 백그라운드로 계속 실행됨
+      executeStandaloneCustomReport({
         outputId: outputRef.id,
         companyId,
         articleIds,
@@ -2861,13 +2880,22 @@ export const generateReportV2 = onCall(
         analysisPrompt,
         reportTitle: reportTitleResolved,
         requestedBy: request.auth.uid,
+      }).catch((err: any) => {
+        console.error('Background report generation failed:', err.message);
+        admin.firestore().collection('outputs').doc(outputRef.id).set({
+          status: 'failed',
+          errorMessage: err.message || 'Report generation failed',
+          failedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true }).catch(() => {});
       });
 
+      // 즉시 outputId 반환 → 프론트엔드는 Firestore 실시간 구독으로 완료 감지
       return {
         success: true,
         outputId: outputRef.id,
-        status: 'completed',
-        message: 'Report generation completed.',
+        status: 'pending',
+        message: 'Report generation started. Monitor outputId for status updates.',
       };
     } catch (err: any) {
       const errorMsg = err.message || (typeof err === 'string' ? err : 'Unknown error');

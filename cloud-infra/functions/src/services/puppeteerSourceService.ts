@@ -253,12 +253,17 @@ export async function processPuppeteerSources(options?: {
       const page = await browser.newPage();
 
       try {
+        // 로그인 필요 소스는 Cloud Run에서 처리 불가 → 로컬 PC 스크래퍼가 담당
+        if (source.loginRequired || source.authType === 'session') {
+          console.log(`[Puppeteer] ${source.name}: loginRequired=true → skipping (handled by local scraper)`);
+          await page.close().catch(() => {});
+          continue;
+        }
+
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         const cookies = await loadCookies(source);
         if (cookies.length > 0) {
           await page.setCookie(...cookies);
-        } else if (source.loginRequired || source.authType === 'session') {
-          console.warn(`[Puppeteer] ${source.name}: session cookies not found, attempting public scrape.`);
         }
 
         const listedArticles = await scrapeListing(page, source);

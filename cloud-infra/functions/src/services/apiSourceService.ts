@@ -8,7 +8,7 @@ import { getDateRangeBounds } from './runtimeConfigService';
 import { fetchNaverNews } from './naverApiService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
 import { enrichArticleBody } from './articleContentFetchService';
-import { titlePassesGlobalKeywordFilter } from './globalKeywordService';
+import { checkKeywordFilter } from './globalKeywordService';
 
 const API_SOURCE_CONCURRENCY = 2;
 const API_BODY_ENRICH_CONCURRENCY = 3;
@@ -184,8 +184,21 @@ async function collectFromNaverNews(
     const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId, fastMode: true });
     if (dupCheck.isDuplicate) continue;
     // 제목 키워드 필터 (Naver API는 키워드 검색이지만 추가 보호)
-    const passes = await titlePassesGlobalKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId);
-    if (!passes) continue;
+    const kw = await checkKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId);
+    if (!kw.passes) continue;
+
+    // 키워드 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
+    const relevanceFields = {
+      filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+      relevanceBasis: kw.isBypassSource ? 'priority_source_bypass' : 'keyword_prefilter',
+      relevanceScore: kw.isBypassSource ? 100 : 80,
+      relevanceConfidence: kw.isBypassSource ? 1.0 : 0.9,
+      relevanceReason: kw.isBypassSource
+        ? `우선 매체 (${source.name || '네이버 뉴스'}) - 전량 수집`
+        : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+      keywordMatched: kw.matchedKeyword || null,
+      priorityAnalysis: kw.isBypassSource,
+    };
 
     const articleRef = db.collection('articles').doc();
     await articleRef.set({
@@ -199,9 +212,10 @@ async function collectFromNaverNews(
       sourceCategory: source.category || 'domestic',
       sourcePricingTier: source.pricingTier || 'free',
       collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'pending',
+      status: 'filtered',
       urlHash: hashUrl(article.url),
       titleHash: hashTitle(article.title),
+      ...relevanceFields,
     });
     await recordArticleDedupEntry({
       id: articleRef.id,
@@ -210,7 +224,7 @@ async function collectFromNaverNews(
       sourceId,
       globalSourceId: sourceId,
       source: source.name || '네이버 뉴스',
-      status: 'pending',
+      status: 'filtered',
       collectedAt: new Date(),
     });
     collected++;

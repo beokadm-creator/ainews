@@ -8,44 +8,44 @@ import { validateApiKey } from './secretManager';
  */
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
-  maxRetries: number = 4
+  maxRetries: number = 6  // 기본 6회 (리포트 thinking 생성 등 오래 걸리는 작업 대응)
 ): Promise<T> {
   let lastError: Error;
-  
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error) {
       lastError = error as Error;
-      
-      // Axios 에러인지 확인
+
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        
-        // 429 Rate Limit 또는 5xx 서버 오류인 경우만 재시도
+
+        // 429, 503(서버 타임아웃/과부하), 기타 5xx → 재시도
         if (status === 429 || (status && status >= 500 && status < 600)) {
           if (attempt < maxRetries - 1) {
-            // 지수 백오프: 2초, 4초, 8초...
             const retryAfterHeader = error.response?.headers?.['retry-after'];
             const retryAfterSeconds = Number(Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader);
-            const baseDelay = Math.min(30000, Math.pow(2, attempt) * 2000);
+            // 503은 서버 과부하 → 더 긴 대기: 5s, 10s, 20s, 40s, 80s
+            const base = status === 503
+              ? Math.min(80000, Math.pow(2, attempt) * 5000)
+              : Math.min(30000, Math.pow(2, attempt) * 2000);
             const retryAfterDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
               ? retryAfterSeconds * 1000
               : 0;
-            const jitter = Math.floor(Math.random() * 1500);
-            const waitTime = Math.max(baseDelay, retryAfterDelay) + jitter;
-            console.warn(`Rate limited or server error (attempt ${attempt + 1}/${maxRetries}). Retrying after ${waitTime}ms...`);
+            const jitter = Math.floor(Math.random() * 2000);
+            const waitTime = Math.max(base, retryAfterDelay) + jitter;
+            console.warn(`[retry] HTTP ${status} (attempt ${attempt + 1}/${maxRetries}). Retrying after ${Math.round(waitTime/1000)}s...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
           }
         }
       }
-      
-      // 429/5xx가 아니면 즉시 실패
+
       throw error;
     }
   }
-  
+
   throw lastError!;
 }
 
