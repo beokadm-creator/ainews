@@ -159,14 +159,26 @@ export async function processRssSources(options?: {
         ),
       ]);
 
-      const validArticles = articles.filter((article) => {
+      const dateFiltered = articles.filter((article) => {
         if (startDate && article.publishedAt < startDate) return false;
         if (endDate && article.publishedAt > endDate) return false;
         return true;
       });
 
+      // 제목 키워드 필터를 본문 fetch 전에 적용 → 불필요한 HTTP 요청 절감
+      const keywordFiltered = (await Promise.all(
+        dateFiltered.map(async (article) => ({
+          article,
+          passes: await titlePassesGlobalKeywordFilter(article.title, source.name, sourceId),
+        }))
+      )).filter(({ passes }) => passes).map(({ article }) => article);
+
+      if (keywordFiltered.length < dateFiltered.length) {
+        console.log(`[RSS] ${source.name}: title filter ${dateFiltered.length} → ${keywordFiltered.length} (${dateFiltered.length - keywordFiltered.length} skipped)`);
+      }
+
       const enrichedArticles = await mapWithConcurrency(
-        validArticles,
+        keywordFiltered,
         RSS_BODY_ENRICH_CONCURRENCY,
         async (article) => enrichArticleBody(article),
       );
@@ -195,16 +207,9 @@ export async function processRssSources(options?: {
 
         const batch = db.batch();
         const dedupWrites: Promise<any>[] = [];
-        const keywordChecks = await Promise.all(
-          chunk.map((article, idx) =>
-            dupChecks[idx].isDuplicate
-              ? Promise.resolve(false)
-              : titlePassesGlobalKeywordFilter(article.title, source.name, sourceId)
-          )
-        );
         dupChecks.forEach((check, idx) => {
           if (check.isDuplicate) return;
-          if (!keywordChecks[idx]) return; // 제목 키워드 미매칭 → DB 미기록
+          // 키워드 필터는 이미 본문 fetch 전에 적용됨
           const article = chunk[idx];
           const articleRef = db.collection('articles').doc();
           batch.set(articleRef, {

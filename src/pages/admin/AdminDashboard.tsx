@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -12,10 +13,13 @@ import {
   Rss,
   SearchX,
   Sparkles,
+  Tags,
+  Shield,
 } from 'lucide-react';
 import {
   collection,
   doc,
+  getDoc,
   getCountFromServer,
   getDocs,
   limit,
@@ -151,6 +155,7 @@ export default function AdminDashboard() {
     activeSources: 0,
   });
   const [runningAction, setRunningAction] = useState<'collection' | 'premiumCollection' | 'analysis' | null>(null);
+  const [keywordConfig, setKeywordConfig] = useState<{ titleKeywords: string[]; bypassSourcePatterns: string[] } | null>(null);
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -171,6 +176,16 @@ export default function AdminDashboard() {
         getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
         getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(500))),
       ]);
+
+      // 키워드 설정 로드
+      const kwSnap = await getDoc(doc(db, 'systemSettings', 'globalKeywords'));
+      if (kwSnap.exists()) {
+        const kwData = kwSnap.data() as any;
+        setKeywordConfig({
+          titleKeywords: Array.isArray(kwData.titleKeywords) ? kwData.titleKeywords : [],
+          bypassSourcePatterns: Array.isArray(kwData.bypassSourcePatterns) ? kwData.bypassSourcePatterns : [],
+        });
+      }
 
       const dedupedSources = dedupeSourceCatalog(
         globalSourcesSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) })),
@@ -321,6 +336,38 @@ export default function AdminDashboard() {
         </div>
       ) : (
         <>
+          {/* 키워드 필터 현황 배너 */}
+          {keywordConfig !== null && (
+            <div className="flex items-center justify-between rounded-2xl border border-[#d4af37]/20 bg-[#d4af37]/5 px-5 py-4">
+              <div className="flex items-center gap-4">
+                <div className="rounded-xl border border-[#d4af37]/30 bg-[#d4af37]/10 p-2.5">
+                  <Tags className="h-5 w-5 text-[#d4af37]" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-white">
+                    제목 키워드 필터 활성
+                    <span className="ml-2 rounded-full bg-[#d4af37]/20 px-2 py-0.5 text-xs font-bold text-[#d4af37]">
+                      {keywordConfig.titleKeywords.length}개
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-white/45">
+                    키워드가 제목에 하나라도 포함(OR)된 기사만 수집 ·{' '}
+                    <span className="text-green-400">
+                      <Shield className="inline h-3 w-3 mr-0.5" />
+                      우선 매체: {keywordConfig.bypassSourcePatterns.join(', ')}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/admin/keywords"
+                className="text-xs font-medium text-[#d4af37]/70 hover:text-[#d4af37] transition-colors underline-offset-2 hover:underline"
+              >
+                키워드 관리 →
+              </Link>
+            </div>
+          )}
+
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <StatCard title="Collected Queue" value={counts.collected} hint="수집 후 처리 대기 기사" icon={Newspaper} tone="text-cyan-300" />
             <StatCard title="Excluded" value={counts.excluded} hint="제외 처리된 기사" icon={SearchX} tone="text-rose-300" />
@@ -361,7 +408,14 @@ export default function AdminDashboard() {
                       <p>
                         Queue: pending {runtimeCounts.pending || 0} · filtering {runtimeCounts.filtering || 0} · filtered {runtimeCounts.filtered || 0} · analyzing {runtimeCounts.analyzing || 0}
                       </p>
-                      {worker.runtime.lastError ? <p className="text-rose-200">Error: {worker.runtime.lastError}</p> : null}
+                      {worker.runtime.lastError ? (
+                        <p className="text-rose-200 break-all">
+                          오류: {worker.runtime.lastError.length > 120 ? worker.runtime.lastError.substring(0, 120) + '...' : worker.runtime.lastError}
+                        </p>
+                      ) : null}
+                      {worker.runtime.lastSuccessAt && worker.runtime.updatedAt && toDate(worker.runtime.lastSuccessAt)?.getTime() !== toDate(worker.runtime.updatedAt)?.getTime() && worker.status === 'error' ? (
+                        <p className="text-amber-200/70 text-[10px]">마지막 성공: {formatRelative(worker.runtime.lastSuccessAt)}</p>
+                      ) : null}
                     </div>
                   </div>
                 ))}

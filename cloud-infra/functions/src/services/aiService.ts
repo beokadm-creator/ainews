@@ -1290,7 +1290,45 @@ export async function processRelevanceFiltering(options?: {
       }
     }
 
-    if (results.length > 0) await batch.commit();
+    if (results.length > 0) {
+      try {
+        await batch.commit();
+      } catch (batchErr: any) {
+        // batch에 삭제된 문서가 포함된 경우(수동 초기화 후 등) 개별 업데이트로 폴백
+        if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
+          console.warn('[RelevanceFilter] batch.commit NOT_FOUND → individual fallback');
+          for (const { doc: d, result: r, aiRelevanceResult, priorityDecision, error: e } of results) {
+            if (!r && !e) continue;
+            try {
+              if (r) {
+                const aiConf = clampConfidence(aiRelevanceResult?.confidence ?? null);
+                let basis: RelevanceBasis = 'ai';
+                if (!aiRelevanceResult && !r.isRelevant && r.confidence === 0) basis = 'keyword_reject';
+                else if (priorityDecision?.isPriority && aiRelevanceResult) basis = 'priority_source_override';
+                else if (priorityDecision?.isPriority && !aiRelevanceResult) basis = 'priority_source_fallback';
+                await d.ref.update({
+                  status: r.isRelevant ? 'filtered' : 'rejected',
+                  filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+                  relevanceBasis: basis,
+                  relevanceReason: r.reason,
+                  ...clearWorkerFields(),
+                });
+              } else if (e) {
+                const attempts = Number(d.data()?.relevanceAttemptCount || 0) + 1;
+                await d.ref.update(buildRetryUpdate('ai_error', 'relevance', attempts, e.message || 'Unknown error'));
+              }
+            } catch (indErr: any) {
+              if (indErr?.code !== 5 && !`${indErr?.message || ''}`.includes('NOT_FOUND')) {
+                console.warn(`[RelevanceFilter] fallback update failed for ${d.id}:`, indErr.message);
+              }
+              // NOT_FOUND → 이미 삭제된 문서, 무시
+            }
+          }
+        } else {
+          throw batchErr;
+        }
+      }
+    }
     if (rejectedDocs.length > 0) await syncArticlesToDedup(rejectedDocs, 'rejected');
     if (i + parallelLimit < articles.length && recentErrorCount > 0) {
       await new Promise(resolve => setTimeout(resolve, 300));
