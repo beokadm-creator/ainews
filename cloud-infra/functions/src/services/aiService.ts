@@ -697,6 +697,7 @@ type ApiCallOptions = {
   temperature?: number;
   maxTokens?: number;
   maxRetries?: number;
+  requestTimeoutMs?: number;
   topP?: number;
   doSample?: boolean;
   structuredJson?: boolean;
@@ -759,7 +760,9 @@ export function resolveAiCallOptions(
     },
     'daily-briefing': {
       temperature: 0.2,
-      maxTokens: 4000,
+      maxTokens: 6000,
+      maxRetries: 8,
+      requestTimeoutMs: 480000,
       doSample: false,
       thinkingType: 'enabled',
       clearThinking: true,
@@ -768,6 +771,8 @@ export function resolveAiCallOptions(
     'custom-report': {
       temperature: 0.2,
       maxTokens: 8000,
+      maxRetries: 8,
+      requestTimeoutMs: 480000,
       thinkingType: 'enabled',
       clearThinking: true,
     },
@@ -819,7 +824,7 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
       requestBody,
       {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 240000,
+        timeout: options?.requestTimeoutMs ?? 240000,
       }
     );
     const rawContent = response.data.choices?.[0]?.message?.content;

@@ -99,15 +99,18 @@ async function resolveCompanyDisplayName(companyId: string) {
 function resolveCustomReportAiConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig {
   return {
     ...aiConfig,
-    provider: 'gemini',
-    model: 'gemini-2.5-pro',
-    apiKeyEnvKey: PROVIDER_DEFAULTS.gemini.apiKeyEnvKey,
-    baseUrl: undefined,
+    provider: 'glm',
+    model: 'glm-4.7',
+    apiKeyEnvKey: PROVIDER_DEFAULTS.glm.apiKeyEnvKey,
+    filteringModel: 'glm-4.7',
+    fallbackProvider: undefined,
+    fallbackModel: undefined,
   };
 }
 
-function buildCustomReportArticleDigest(articles: any[]) {
-  const prioritized = [...articles]
+// digest에 실제로 사용된 기사 순서(정렬 후)를 반환 — 각주 번호가 이 순서와 일치해야 함
+function prioritizeArticlesForDigest(articles: any[]): any[] {
+  return [...articles]
     .sort((a, b) => {
       const scoreGap = Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0);
       if (scoreGap !== 0) return scoreGap;
@@ -118,8 +121,12 @@ function buildCustomReportArticleDigest(articles: any[]) {
       return timeB - timeA;
     })
     .slice(0, 50);
+}
 
-  return prioritized.map((article, index) => {
+function buildCustomReportArticleDigest(articles: any[]): { digest: string; orderedArticles: any[] } {
+  const prioritized = prioritizeArticlesForDigest(articles);
+
+  const digest = prioritized.map((article, index) => {
     const pub = article.publishedAt?.toDate
       ? article.publishedAt.toDate().toLocaleDateString('ko-KR')
       : (article.publishedAt || '');
@@ -139,6 +146,8 @@ function buildCustomReportArticleDigest(articles: any[]) {
       safeBody.substring(0, 2200),
     ].join('\n');
   }).join('\n\n---\n\n');
+
+  return { digest, orderedArticles: prioritized };
 }
 
 function buildArticleDigest(articles: any[], includeArticleBody: boolean): string {
@@ -210,6 +219,7 @@ export async function generatePipelineOutput(
 ) {
   const db = admin.firestore();
   const outputType = options.outputConfig.type;
+  const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
 
   if (articles.length === 0) {
     // [FIX] 기사가 없더라도 빈 리포트를 생성하여 '실패'로 보이지 않게 함
@@ -295,8 +305,8 @@ ${digest}`;
     );
   } else {
     const basePrompt = outputType === 'custom_prompt'
-      ? (options.outputConfig.prompt || options.aiConfig.outputPrompt || 'Analyze the following articles and return the requested output.')
-      : (options.aiConfig.outputPrompt || `당신은 M&A·사모펀드·전략적 투자 분야의 전문 투자 애널리스트입니다.
+      ? (options.outputConfig.prompt || reportAiConfig.outputPrompt || 'Analyze the following articles and return the requested output.')
+      : (reportAiConfig.outputPrompt || `당신은 M&A·사모펀드·전략적 투자 분야의 전문 투자 애널리스트입니다.
 제공된 기사들을 분석하여 구조화된 프리미엄 투자 인텔리전스 보고서를 작성하세요.
 
 모든 텍스트는 반드시 자연스러운 한국어로 작성하세요.
@@ -346,8 +356,8 @@ ${digest}`;
 
     const response = await callAiProvider(
       prompt,
-      options.aiConfig,
-      resolveAiCallOptions(options.aiConfig.provider, 'daily-briefing'),
+      reportAiConfig,
+      resolveAiCallOptions(reportAiConfig.provider, 'daily-briefing'),
       options.companyId,
     );
     rawOutput = response.content;
@@ -454,7 +464,9 @@ export async function generateCustomReport(options: CustomReportOptions) {
     throw new Error('No selected articles were found.');
   }
 
-  const articleDigest = buildCustomReportArticleDigest(articles);
+  // digest와 함께 GLM에 전달된 실제 기사 순서를 받아옴
+  // → 각주 [1],[2],...가 이 순서의 기사를 가리킴
+  const { digest: articleDigest, orderedArticles } = buildCustomReportArticleDigest(articles);
   const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
   const companyDisplayName = await resolveCompanyDisplayName(options.companyId);
   const keywordSummary = options.keywords.length > 0 ? options.keywords.join(', ') : 'deal flow, investment, portfolio, private equity';
@@ -515,7 +527,11 @@ ${articleDigest}`;
     keywords: options.keywords,
     analysisPrompt: options.analysisPrompt,
     articleIds: options.articleIds,
+    // GLM에 전달된 실제 기사 순서 (각주 [1],[2],... 와 1:1 대응)
+    // 프론트엔드는 articleIds 대신 orderedArticleIds로 참조 목록 표시해야 함
+    orderedArticleIds: orderedArticles.map((a: any) => a.id),
     articleCount: articles.length,
+    digestArticleCount: orderedArticles.length,
     htmlContent,
     rawOutput: htmlContent,
     structuredOutput: null,
