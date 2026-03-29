@@ -109,6 +109,41 @@ export interface KeywordFilterResult {
   matchedKeyword: string | null; // 매칭된 키워드 (없으면 null)
 }
 
+const SPORTS_CONTEXT_PATTERNS: RegExp[] = [
+  /\b(soccer|football|baseball|basketball|volleyball|tennis|golf|olympic|olympics|mlb|nba|nfl|epl|kbo|uefa|fifa|fa cup|champions league)\b/i,
+  /\b(player|players|coach|match|game|goal|scored|transfer window|transfer fee|release clause|club|athlete|season|tournament)\b/i,
+  /(축구|야구|농구|배구|테니스|골프|올림픽|월드컵|챔피언스리그|프리미어리그|KBO|선수|감독|구단|클럽|팀|경기|득점|이적|방출|우승|준우승|개막전|정규시즌)/i,
+];
+
+export function hasSportsContext(text: string): boolean {
+  const normalized = `${text || ''}`.trim();
+  if (!normalized) return false;
+  return SPORTS_CONTEXT_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+/**
+ * 명백한 오탐만 제거 (필터링 아님).
+ * 예: "바이아웃" + 스포츠 단어만 → 제외
+ * 하지만 불확실하면 수집 (false positive가 분석 단계에서 제거됨)
+ */
+function isDefinitelyNotRelevant(title: string, keyword: string): boolean {
+  const titleLower = title.toLowerCase();
+  const kwLower = keyword.toLowerCase();
+
+  if (hasSportsContext(titleLower)) return true;
+
+  // 매우 명확한 오탐만 여기서 제거
+  if (kwLower === '바이아웃' || kwLower === 'buyout') {
+    // 스포츠 맥락이 명확하면 제외
+    const sportsOnlyPattern = /\b(선수|구단|클럽|팀)\b.*\b(바이아웃|buyout)\b|\b(바이아웃|buyout)\b.*\b(선수|구단|클럽|팀)\b/i;
+    if (sportsOnlyPattern.test(titleLower)) return true;
+  }
+
+  // 기타 명확한 오탐도 여기 추가 가능
+  // 기본값: 불확실하면 수집 (하단 분석 단계에서 판단)
+  return false;
+}
+
 /** 키워드 매칭 내부 로직 (isBypass 이미 확인된 후) */
 function findMatchedKeyword(titleLower: string, keywords: string[]): string | null {
   for (const kw of keywords) {
@@ -120,11 +155,13 @@ function findMatchedKeyword(titleLower: string, keywords: string[]): string | nu
       while (idx !== -1) {
         const before = idx > 0 ? titleLower[idx - 1] : '';
         const after = idx + k.length < titleLower.length ? titleLower[idx + k.length] : '';
-        if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return kw;
+        if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) {
+          if (!isDefinitelyNotRelevant(titleLower, k)) return kw;
+        }
         idx = titleLower.indexOf(k, idx + 1);
       }
     } else if (titleLower.includes(k)) {
-      return kw;
+      if (!isDefinitelyNotRelevant(titleLower, k)) return kw;
     }
   }
   return null;
@@ -155,6 +192,10 @@ export async function checkKeywordFilter(
   sourceId?: string | null,
 ): Promise<KeywordFilterResult> {
   await loadKeywordConfig();
+
+  if (hasSportsContext(title)) {
+    return { passes: false, isBypassSource: false, matchedKeyword: null };
+  }
 
   const bypassPatterns = cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS;
   const sourceNameLower = `${sourceName || ''}`.toLowerCase();

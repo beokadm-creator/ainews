@@ -32,6 +32,7 @@ import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFA
 import { saveApiKeyForCompany } from './utils/secretManager';
 import { seedGlobalSources, testGlobalSource as runGlobalSourceTest } from './services/globalSourceService';
 import { getGlobalKeywordConfig, saveGlobalKeywordConfig, seedGlobalKeywordsIfEmpty, invalidateKeywordCache } from './services/globalKeywordService';
+import { recordMetric } from './services/metricsService';
 admin.initializeApp();
 admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
@@ -231,19 +232,58 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
   const maxRounds = 20;
   const startTime = Date.now();
 
-  // processRelevanceFiltering 제거:
-  // 새 파이프라인에서 기사는 수집 시 바로 'filtered' 저장 → AI 관련도 필터 불필요
-  // 호출 시 불필요한 GLM API 소모 + 503/429 유발 → drain에서 완전 제거
   for (let round = 0; round < maxRounds; round++) {
     if (Date.now() - startTime > DRAIN_BUDGET_MS) {
       console.log(`[drainQueue] 7분 시간 예산 초과 → round ${round}에서 정상 종료`);
       break;
     }
 
-    const analysisResult = await processDeepAnalysis({ companyId, aiConfig });
-    totalAnalyzed += Number(analysisResult?.processed || 0);
+    const filteringStartedAt = Date.now();
+    const filteringResult = await processRelevanceFiltering({ companyId, aiConfig });
+    const filteredThisRound = Number(filteringResult?.processed || 0);
+    totalFiltered += filteredThisRound;
+    if (filteredThisRound > 0) {
+      console.log(`[drainQueue] round=${round} filtered=${filteredThisRound} passed=${Number(filteringResult?.passed || 0)} failed=${Number(filteringResult?.failed || 0)}`);
+      recordMetric({
+        stage: 'pipeline',
+        action: 'continuous_filtering_round',
+        count: filteredThisRound,
+        duration: Date.now() - filteringStartedAt,
+        success: true,
+        metadata: {
+          companyId: companyId || null,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          round,
+          passed: Number(filteringResult?.passed || 0),
+          failed: Number(filteringResult?.failed || 0),
+        },
+      }).catch(() => {});
+    }
 
-    if ((analysisResult?.processed || 0) === 0) break;
+    const analysisStartedAt = Date.now();
+    const analysisResult = await processDeepAnalysis({ companyId, aiConfig });
+    const analyzedThisRound = Number(analysisResult?.processed || 0);
+    totalAnalyzed += analyzedThisRound;
+    if (analyzedThisRound > 0) {
+      console.log(`[drainQueue] round=${round} analyzed=${analyzedThisRound} failed=${Number(analysisResult?.failed || 0)}`);
+      recordMetric({
+        stage: 'pipeline',
+        action: 'continuous_analysis_round',
+        count: analyzedThisRound,
+        duration: Date.now() - analysisStartedAt,
+        success: true,
+        metadata: {
+          companyId: companyId || null,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          round,
+          failed: Number(analysisResult?.failed || 0),
+        },
+      }).catch(() => {});
+    }
+
+    if (filteredThisRound === 0 && analyzedThisRound === 0) break;
   }
 
   return { totalFiltered, totalAnalyzed };

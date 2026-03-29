@@ -6,6 +6,8 @@ import { retryWithBackoff } from '../utils/errorHandling';
 import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils/secretManager';
 import { RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from '../types/runtime';
 import { syncArticlesToDedup } from './articleDedupService';
+import { recordMetric } from './metricsService';
+import { hasSportsContext } from './globalKeywordService';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
 const OPENAI_COST_PER_1K_TOKENS = { input: 0.005, output: 0.015 };
@@ -49,6 +51,11 @@ interface SourcePriorityDecision {
   priority: number;
   reason: string | null;
   sourceMeta: Record<string, any> | null;
+}
+
+interface CallProviderTelemetry {
+  throttleWaitMs: number;
+  fallbackUsed: boolean;
 }
 
 interface NormalizedAnalysisResult {
@@ -326,6 +333,16 @@ async function waitForAiThrottleWindow(provider: AiProvider): Promise<void> {
     console.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
+}
+
+async function waitForAiThrottleWindowWithTelemetry(provider: AiProvider): Promise<number> {
+  await loadThrottleFromFirestore();
+  const waitMs = Math.max(0, (aiThrottleUntilByProvider[provider] || 0) - Date.now());
+  if (waitMs > 0) {
+    console.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  return waitMs;
 }
 
 function registerAiRateLimit(error: any, provider?: AiProvider): void {
@@ -912,7 +929,11 @@ export async function callAiProvider(
   options?: ApiCallOptions,
   companyId?: string
 ): Promise<ApiCallResult> {
-  await waitForAiThrottleWindow(aiConfig.provider);
+  const startedAt = Date.now();
+  const telemetry: CallProviderTelemetry = {
+    throttleWaitMs: await waitForAiThrottleWindowWithTelemetry(aiConfig.provider),
+    fallbackUsed: false,
+  };
   const apiKey = await resolveApiKey(aiConfig, companyId);
   validateApiKey(apiKey, aiConfig.provider);
 
@@ -920,7 +941,25 @@ export async function callAiProvider(
   const primaryOpts: ApiCallOptions = { ...options, maxRetries: aiConfig.fallbackProvider ? 2 : undefined };
 
   try {
-    return await routeToProvider(aiConfig.provider, prompt, apiKey, aiConfig, primaryOpts);
+    const result = await routeToProvider(aiConfig.provider, prompt, apiKey, aiConfig, primaryOpts);
+    const latencyMs = Date.now() - startedAt;
+    console.log(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs} fallbackUsed=false promptChars=${prompt.length}`);
+    recordMetric({
+      stage: 'ai',
+      action: 'call',
+      count: 1,
+      duration: latencyMs,
+      success: true,
+      metadata: {
+        provider: result.provider,
+        model: result.model,
+        companyId: companyId || null,
+        throttleWaitMs: telemetry.throttleWaitMs,
+        fallbackUsed: false,
+        promptChars: prompt.length,
+      },
+    }).catch(() => {});
+    return result;
   } catch (primaryError: any) {
     registerAiRateLimit(primaryError, aiConfig.provider);
 
@@ -931,16 +970,76 @@ export async function callAiProvider(
         `[AI-FALLBACK] ${aiConfig.provider}(${aiConfig.model}) failed: ${primaryError.message?.substring(0, 120)}` +
         ` -> ${fallbackConfig.provider}(${fallbackConfig.model})`
       );
-      await waitForAiThrottleWindow(fallbackConfig.provider);
+      telemetry.fallbackUsed = true;
+      const fallbackThrottleWaitMs = await waitForAiThrottleWindowWithTelemetry(fallbackConfig.provider);
       const fallbackKey = await resolveApiKey(fallbackConfig, companyId);
       validateApiKey(fallbackKey, fallbackConfig.provider);
       try {
-        return await routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, fallbackOpts);
-      } catch (fallbackError) {
+        const result = await routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, fallbackOpts);
+        const latencyMs = Date.now() - startedAt;
+        console.log(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs + fallbackThrottleWaitMs} fallbackUsed=true promptChars=${prompt.length}`);
+        recordMetric({
+          stage: 'ai',
+          action: 'call',
+          count: 1,
+          duration: latencyMs,
+          success: true,
+          metadata: {
+            provider: result.provider,
+            model: result.model,
+            companyId: companyId || null,
+            primaryProvider: aiConfig.provider,
+            primaryModel: aiConfig.model,
+            throttleWaitMs: telemetry.throttleWaitMs,
+            fallbackThrottleWaitMs,
+            fallbackUsed: true,
+            promptChars: prompt.length,
+          },
+        }).catch(() => {});
+        return result;
+      } catch (fallbackError: any) {
         registerAiRateLimit(fallbackError, fallbackConfig.provider);
+        const latencyMs = Date.now() - startedAt;
+        console.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=true error=${fallbackError.message}`);
+        recordMetric({
+          stage: 'ai',
+          action: 'call',
+          count: 1,
+          duration: latencyMs,
+          success: false,
+          metadata: {
+            provider: aiConfig.provider,
+            model: aiConfig.model,
+            fallbackProvider: fallbackConfig.provider,
+            fallbackModel: fallbackConfig.model,
+            companyId: companyId || null,
+            throttleWaitMs: telemetry.throttleWaitMs,
+            fallbackUsed: true,
+            promptChars: prompt.length,
+            error: fallbackError.message?.substring(0, 300) || 'Unknown AI error',
+          },
+        }).catch(() => {});
         throw fallbackError;
       }
     }
+    const latencyMs = Date.now() - startedAt;
+    console.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=false error=${primaryError.message}`);
+    recordMetric({
+      stage: 'ai',
+      action: 'call',
+      count: 1,
+      duration: latencyMs,
+      success: false,
+      metadata: {
+        provider: aiConfig.provider,
+        model: aiConfig.model,
+        companyId: companyId || null,
+        throttleWaitMs: telemetry.throttleWaitMs,
+        fallbackUsed: false,
+        promptChars: prompt.length,
+        error: primaryError.message?.substring(0, 300) || 'Unknown AI error',
+      },
+    }).catch(() => {});
     throw primaryError;
   }
 }
@@ -1045,6 +1144,14 @@ export async function checkRelevance(
   context?: PromptExecutionContext,
   filters?: any // RuntimeFilters
 ): Promise<RelevanceResult> {
+  if (hasSportsContext(`${article.title || ''} ${article.content || ''}`)) {
+    return {
+      isRelevant: false,
+      confidence: 0,
+      reason: '스포츠 문맥 기사 제외',
+    };
+  }
+
   let extraGuidelines = '';
   if (filters) {
     const include = filters.includeKeywords || [];
@@ -1190,14 +1297,19 @@ export async function processRelevanceFiltering(options?: {
         let fastRejectReason: string | null = null;
 
         if (!priorityDecision.isPriority) {
+          const textToSearch = `${article.title || ''} ${article.content || ''}`;
+          const normalizedText = textToSearch.toLowerCase();
+          if (hasSportsContext(textToSearch)) {
+            fastRejectReason = 'Sports context article';
+          }
+
           const mustKeywords = filters?.mustIncludeKeywords || [];
-          if (mustKeywords.length > 0) {
-            const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
+          if (!fastRejectReason && mustKeywords.length > 0) {
             const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
-              kw.trim() && textToSearch.includes(kw.trim().toLowerCase())
+              kw.trim() && normalizedText.includes(kw.trim().toLowerCase())
             );
             for (const kw of mustKeywords) {
-              if (kw.trim() && !textToSearch.includes(kw.trim().toLowerCase())) {
+              if (kw.trim() && !normalizedText.includes(kw.trim().toLowerCase())) {
                 if (hasAnyMustKeyword) break;
                 fastRejectReason = `Missing required keyword: ${kw}`;
                 break;
@@ -1207,9 +1319,8 @@ export async function processRelevanceFiltering(options?: {
 
           const excludeKeywords = filters?.excludeKeywords || [];
           if (!fastRejectReason && excludeKeywords.length > 0) {
-            const textToSearch = `${article.title || ''} ${article.content || ''}`.toLowerCase();
             for (const kw of excludeKeywords) {
-              if (kw.trim() && textToSearch.includes(kw.trim().toLowerCase())) {
+              if (kw.trim() && normalizedText.includes(kw.trim().toLowerCase())) {
                 fastRejectReason = `Contains excluded keyword: ${kw}`;
                 break;
               }
