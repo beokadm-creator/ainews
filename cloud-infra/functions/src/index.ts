@@ -1187,6 +1187,10 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
     relevancePrompt: promptData.relevancePrompt || undefined,
     analysisPrompt: promptData.analysisPrompt || undefined,
   };
+  if (!aiConfig.fallbackProvider && aiConfig.provider === 'glm') {
+    aiConfig.fallbackProvider = 'gemini';
+    aiConfig.fallbackModel = aiConfig.fallbackModel || 'gemini-2.5-flash';
+  }
   // 泥?踰덉㎏ ?쒖꽦 ?뚯궗瑜?fallback companyId濡??ъ슜
   const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();
   const companyId = companiesSnap.empty ? '__system__' : companiesSnap.docs[0].id;

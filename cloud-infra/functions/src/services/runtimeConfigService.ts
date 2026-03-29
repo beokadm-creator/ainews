@@ -25,9 +25,27 @@ const DEFAULT_AI_CONFIG: RuntimeAiConfig = {
   provider: 'glm',
   model: 'glm-4.7',
   apiKeyEnvKey: 'GLM_API_KEY',
+  fallbackProvider: 'gemini',
+  fallbackModel: 'gemini-2.5-flash',
   maxPendingBatch: 60,
   maxAnalysisBatch: 24,
 };
+
+function applyDefaultFallback(aiConfig: RuntimeAiConfig): RuntimeAiConfig {
+  if (aiConfig.fallbackProvider) {
+    return aiConfig;
+  }
+
+  if (aiConfig.provider === 'glm') {
+    return {
+      ...aiConfig,
+      fallbackProvider: 'gemini',
+      fallbackModel: aiConfig.fallbackModel || 'gemini-2.5-flash',
+    };
+  }
+
+  return aiConfig;
+}
 
 const DEFAULT_OUTPUT_CONFIG: RuntimeOutputConfig = {
   type: 'analysis_report',
@@ -55,10 +73,10 @@ function mergeFilters(base: RuntimeFilters, override?: Partial<RuntimeFilters>):
 }
 
 function mergeAiConfig(base: RuntimeAiConfig, override?: Partial<RuntimeAiConfig>): RuntimeAiConfig {
-  return {
+  return applyDefaultFallback({
     ...base,
     ...override
-  };
+  });
 }
 
 function mergeOutputConfig(base: RuntimeOutputConfig, override?: Partial<RuntimeOutputConfig>): RuntimeOutputConfig {
@@ -135,7 +153,7 @@ export async function getCompanyRuntimeConfig(
     companyName: company.name,
     timezone: runtimeSettings.timezone || legacySettings.timezone || DEFAULT_TIMEZONE,
     filters: mergeFilters(baseFilters, overrides?.filters),
-    ai: mergeAiConfig(aiConfig, overrides?.ai),
+    ai: mergeAiConfig(applyDefaultFallback(aiConfig), overrides?.ai),
     output: mergeOutputConfig(baseOutput, overrides?.output)
   };
 }
