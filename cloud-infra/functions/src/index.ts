@@ -1187,9 +1187,12 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
     relevancePrompt: promptData.relevancePrompt || undefined,
     analysisPrompt: promptData.analysisPrompt || undefined,
   };
-  if (!aiConfig.fallbackProvider && aiConfig.provider === 'glm') {
-    aiConfig.fallbackProvider = 'gemini';
-    aiConfig.fallbackModel = aiConfig.fallbackModel || 'gemini-2.5-flash';
+  if (aiConfig.provider === 'glm') {
+    aiConfig.filteringModel = aiConfig.filteringModel === 'glm-4-plus'
+      ? aiConfig.model
+      : (aiConfig.filteringModel || aiConfig.model);
+    aiConfig.fallbackProvider = undefined;
+    aiConfig.fallbackModel = undefined;
   }
   // 泥?踰덉㎏ ?쒖꽦 ?뚯궗瑜?fallback companyId濡??ъ슜
   const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();

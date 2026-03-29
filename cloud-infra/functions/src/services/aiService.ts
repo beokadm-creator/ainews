@@ -345,11 +345,6 @@ async function waitForAiThrottleWindowWithTelemetry(provider: AiProvider): Promi
   return waitMs;
 }
 
-async function getAiThrottleWaitMs(provider: AiProvider): Promise<number> {
-  await loadThrottleFromFirestore();
-  return Math.max(0, (aiThrottleUntilByProvider[provider] || 0) - Date.now());
-}
-
 function registerAiRateLimit(error: any, provider?: AiProvider): void {
   if (!axios.isAxiosError(error) || error.response?.status !== 429) return;
   if (!provider) return;
@@ -935,40 +930,6 @@ export async function callAiProvider(
   companyId?: string
 ): Promise<ApiCallResult> {
   const startedAt = Date.now();
-  const fallbackConfig = resolveFallbackAiConfig(aiConfig);
-  const initialPrimaryThrottleWaitMs = await getAiThrottleWaitMs(aiConfig.provider);
-  if (fallbackConfig && initialPrimaryThrottleWaitMs >= 5_000) {
-    const fallbackStartedAt = Date.now();
-    const fallbackThrottleWaitMs = await waitForAiThrottleWindowWithTelemetry(fallbackConfig.provider);
-    const fallbackKey = await resolveApiKey(fallbackConfig, companyId);
-    validateApiKey(fallbackKey, fallbackConfig.provider);
-    const fallbackOpts: ApiCallOptions = { ...options, maxRetries: 2 };
-    const result = await routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, fallbackOpts);
-    const latencyMs = Date.now() - fallbackStartedAt;
-    console.warn(`[AI-FALLBACK-EARLY] ${aiConfig.provider}(${aiConfig.model}) throttle=${initialPrimaryThrottleWaitMs}ms -> ${fallbackConfig.provider}(${fallbackConfig.model})`);
-    recordMetric({
-      stage: 'ai',
-      action: 'call',
-      count: 1,
-      duration: Date.now() - startedAt,
-      success: true,
-      metadata: {
-        provider: result.provider,
-        model: result.model,
-        companyId: companyId || null,
-        primaryProvider: aiConfig.provider,
-        primaryModel: aiConfig.model,
-        skippedPrimaryThrottleWaitMs: initialPrimaryThrottleWaitMs,
-        fallbackThrottleWaitMs,
-        fallbackUsed: true,
-        fallbackReason: 'primary_throttled',
-        promptChars: prompt.length,
-        effectiveLatencyMs: latencyMs,
-      },
-    }).catch(() => {});
-    return result;
-  }
-
   const telemetry: CallProviderTelemetry = {
     throttleWaitMs: await waitForAiThrottleWindowWithTelemetry(aiConfig.provider),
     fallbackUsed: false,
@@ -1002,6 +963,7 @@ export async function callAiProvider(
   } catch (primaryError: any) {
     registerAiRateLimit(primaryError, aiConfig.provider);
 
+    const fallbackConfig = resolveFallbackAiConfig(aiConfig);
     if (fallbackConfig && isRetryableForFallback(primaryError)) {
       const fallbackOpts: ApiCallOptions = { ...options, maxRetries: 2 };
       console.warn(
