@@ -1,6 +1,32 @@
 import * as cheerio from 'cheerio';
 
 const CONTENT_SELECTORS = [
+  '.article-body',
+  '.article-body__content',
+  '.article-body__text',
+  '.article-body-wrap',
+  '.article-body-news',
+  '.article-body-news-text',
+  '.news_article',
+  '.news_article_body',
+  '.news_article_area',
+  '.news-article',
+  '.story-news-article',
+  '.story-news-article__body',
+  '.article-view-content-div',
+  '.article__body',
+  '.article__content',
+  '.article__text',
+  '.article_txt_wrap',
+  '.article_txt_article',
+  '.par',
+  '[class*="article-body"]',
+  '[class*="articleBody"]',
+  '[class*="article__body"]',
+  '[class*="article-content"]',
+  '[class*="articleContent"]',
+  '[class*="news-body"]',
+  '[class*="newsBody"]',
   'article',
   '[itemprop="articleBody"]',
   '[data-testid="article-body"]',
@@ -277,11 +303,40 @@ function cleanupNode($root: cheerio.Cheerio<any>) {
   });
 }
 
-function selectBestContentRoot($: cheerio.CheerioAPI): cheerio.Cheerio<any> {
+function getPreferredSelectors(url?: string): string[] {
+  const hostname = getHostname(url);
+  if (!hostname) return [];
+
+  if (hostname.includes('chosunbiz.com') || hostname.includes('biz.chosun.com')) {
+    return [
+      '[itemprop="articleBody"]',
+      '.news_article',
+      '.article-body',
+      '.article__body',
+      '.par',
+    ];
+  }
+
+  if (hostname.includes('sedaily.com')) {
+    return ['.article_view', '.article-body', '.news_cnt_detail_wrap'];
+  }
+
+  if (hostname.includes('asiae.co.kr')) {
+    return ['.article_body', '.article-body', '#txt_area'];
+  }
+
+  if (hostname.includes('fnnews.com')) {
+    return ['#articleBody', '.article_body', '.news_body'];
+  }
+
+  return [];
+}
+
+function selectBestContentRoot($: cheerio.CheerioAPI, url?: string): cheerio.Cheerio<any> {
   let bestRoot: cheerio.Cheerio<any> = $('body');
   let bestScore = 0;
 
-  for (const selector of CONTENT_SELECTORS) {
+  for (const selector of [...getPreferredSelectors(url), ...CONTENT_SELECTORS]) {
     if (typeof selector !== 'string') continue;
     $(selector).each((_, element) => {
       const candidate = $(element).clone();
@@ -295,6 +350,48 @@ function selectBestContentRoot($: cheerio.CheerioAPI): cheerio.Cheerio<any> {
   }
 
   return bestRoot;
+}
+
+function extractTextFromJsonLd(html: string): string {
+  const $ = cheerio.load(html);
+  const chunks: string[] = [];
+
+  $('script[type="application/ld+json"]').each((_, element) => {
+    const raw = $(element).contents().text();
+    if (!raw) return;
+
+    try {
+      const parsed = JSON.parse(raw);
+      const stack = Array.isArray(parsed) ? [...parsed] : [parsed];
+
+      while (stack.length > 0) {
+        const item = stack.pop();
+        if (!item || typeof item !== 'object') continue;
+
+        if (Array.isArray(item)) {
+          stack.push(...item);
+          continue;
+        }
+
+        const articleBody = typeof (item as Record<string, unknown>).articleBody === 'string'
+          ? normalizeLine((item as Record<string, string>).articleBody)
+          : '';
+        if (articleBody.length >= 200) {
+          chunks.push(articleBody);
+        }
+
+        Object.values(item as Record<string, unknown>).forEach((value) => {
+          if (value && typeof value === 'object') {
+            stack.push(value as Record<string, unknown>);
+          }
+        });
+      }
+    } catch {
+      return;
+    }
+  });
+
+  return chunks.join('\n\n').trim();
 }
 
 function extractParagraphs($: cheerio.CheerioAPI, $root: cheerio.Cheerio<any>): string[] {
@@ -372,13 +469,18 @@ export function normalizeArticleText(text: string, url?: string): string {
   return applySiteSpecificTextCleanup(normalized, url);
 }
 
-export function extractTextFromHtml(html: string): string {
+export function extractTextFromHtml(html: string, url?: string): string {
   if (!html) return '';
+
+  const jsonLdText = normalizeArticleText(extractTextFromJsonLd(html), url);
+  if (jsonLdText.length >= 500) {
+    return jsonLdText;
+  }
 
   const $ = cheerio.load(html);
   cleanupNode($.root());
 
-  const bestRoot = selectBestContentRoot($).clone();
+  const bestRoot = selectBestContentRoot($, url).clone();
   cleanupNode(bestRoot);
 
   let paragraphs = stripBoilerplate(extractParagraphs($, bestRoot));

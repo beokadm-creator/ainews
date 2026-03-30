@@ -23,6 +23,7 @@ import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
+import { getArticleReasonDetails as buildArticleReasonDetails } from '@/lib/articleReason';
 
 const DATE_PRESETS = [
   { label: '최근 24시간', hours: 24 },
@@ -128,11 +129,12 @@ interface ArticleItem {
   category: string;
   tags: string[];
   relevanceScore?: number;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback' | 'priority_source_bypass' | 'keyword_prefilter';
   relevanceReason?: string;
   aiRelevanceReason?: string;
   keywordMatched?: string | null;
   keywordPrefilterReason?: string;
+  priorityAnalysisReason?: string;
   content: string;
   url: string;
 }
@@ -486,7 +488,7 @@ export default function Articles() {
             <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
               {articles.map((article) => {
                 const selected = selectedIds.has(article.id);
-                const reasonDetails = getArticleReasonDetails(article);
+                const reasonDetails = buildArticleReasonDetails(article);
                 return (
                   <li key={article.id}
                     onClick={() => toggleSelect(article.id)}
@@ -578,7 +580,7 @@ export default function Articles() {
             </div>
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {(() => {
-                const reasonDetails = getArticleReasonDetails(previewArticle);
+                const reasonDetails = buildArticleReasonDetails(previewArticle);
                 return (reasonDetails.analysisBasisLabel || reasonDetails.analysisReason) ? (
                   <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">분석 근거</p>

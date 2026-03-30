@@ -5,6 +5,7 @@ import { format, subDays } from 'date-fns';
 import { functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
+import { getArticleReasonDetails as buildArticleReasonDetails } from '@/lib/articleReason';
 import { DEFAULT_TRACKED_COMPANIES } from '@/lib/trackedCompanies';
 
 interface TrackedArticle {
@@ -20,8 +21,9 @@ interface TrackedArticle {
   relevanceReason?: string;
   keywordMatched?: string | null;
   keywordPrefilterReason?: string;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback' | 'priority_source_bypass' | 'keyword_prefilter';
   aiRelevanceReason?: string;
+  priorityAnalysisReason?: string;
 }
 
 function normalizeReasonText(value?: string | null) {
@@ -294,7 +296,7 @@ export default function TrackedCompanies() {
             </div>
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {(() => {
-                const reasonDetails = getArticleReasonDetails(previewArticle);
+                const reasonDetails = buildArticleReasonDetails(previewArticle);
                 return (reasonDetails.analysisBasisLabel || reasonDetails.analysisReason) ? (
                   <div className="mb-5 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">분석 근거</p>

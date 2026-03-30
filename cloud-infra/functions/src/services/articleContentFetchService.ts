@@ -5,6 +5,7 @@ import { extractTextFromHtml, normalizeArticleText } from '../utils/textUtils';
 const FETCH_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
 const MIN_BODY_LENGTH = 500;
+const FETCH_RETRY_CONTENT_LENGTH = 1400;
 const MAX_BODY_CHARS = 50000;
 const FORCE_FETCH_HOSTS = [
   'www.fnnews.com',
@@ -37,6 +38,24 @@ export function isLikelyFullArticleBody(content?: string | null) {
   return normalized.length >= MIN_BODY_LENGTH;
 }
 
+function looksLikeSummary(content?: string | null) {
+  const normalized = `${content || ''}`.trim();
+  if (!normalized) return true;
+
+  const paragraphs = normalized.split(/\n{2,}/).filter(Boolean);
+  if (normalized.length < 900) return true;
+  if (normalized.length < FETCH_RETRY_CONTENT_LENGTH && paragraphs.length <= 3) return true;
+  if (paragraphs.length <= 1 && normalized.length < 1800) return true;
+
+  return false;
+}
+
+function shouldFetchBody(url: string, currentContent: string) {
+  if (shouldForceFetch(url)) return true;
+  if (!isLikelyFullArticleBody(currentContent)) return true;
+  return looksLikeSummary(currentContent);
+}
+
 function selectPreferredBody(currentContent: string, fetchedContent: string) {
   if (!fetchedContent) return currentContent;
   if (!currentContent) return fetchedContent;
@@ -67,16 +86,15 @@ export async function fetchArticleBodyByUrl(url: string): Promise<string> {
   });
 
   const html = decodeBuffer(Buffer.from(response.data), undefined, response.headers['content-type'] || '');
-  const extracted = extractTextFromHtml(html);
+  const extracted = extractTextFromHtml(html, url);
   const cleaned = normalizeArticleText(cleanHtmlContent(extracted), url);
   return cleaned.slice(0, MAX_BODY_CHARS);
 }
 
 export async function enrichArticleBody<T extends { url: string; content?: string | null }>(article: T): Promise<T> {
   const currentContent = normalizeArticleText(cleanHtmlContent(article.content || ''), article.url);
-  const forceFetch = shouldForceFetch(article.url);
 
-  if (!forceFetch && isLikelyFullArticleBody(currentContent)) {
+  if (!shouldFetchBody(article.url, currentContent)) {
     return {
       ...article,
       content: currentContent,
