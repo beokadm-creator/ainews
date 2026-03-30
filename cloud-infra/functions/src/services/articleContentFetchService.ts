@@ -6,6 +6,31 @@ const FETCH_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
 const MIN_BODY_LENGTH = 500;
 const MAX_BODY_CHARS = 12000;
+const FORCE_FETCH_HOSTS = [
+  'www.fnnews.com',
+  'fnnews.com',
+  'www.sedaily.com',
+  'sedaily.com',
+  'www.asiae.co.kr',
+  'asiae.co.kr',
+  'biz.chosun.com',
+  'www.chosunbiz.com',
+  'chosunbiz.com',
+];
+
+function getHostname(url?: string): string {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function shouldForceFetch(url?: string): boolean {
+  const hostname = getHostname(url);
+  return FORCE_FETCH_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+}
 
 export function isLikelyFullArticleBody(content?: string | null) {
   const normalized = `${content || ''}`.replace(/\s+/g, ' ').trim();
@@ -28,13 +53,19 @@ export async function fetchArticleBodyByUrl(url: string): Promise<string> {
 
   const html = decodeBuffer(Buffer.from(response.data), undefined, response.headers['content-type'] || '');
   const extracted = extractTextFromHtml(html);
-  const cleaned = normalizeArticleText(cleanHtmlContent(extracted));
+  const cleaned = normalizeArticleText(cleanHtmlContent(extracted), url);
   return cleaned.slice(0, MAX_BODY_CHARS);
 }
 
 export async function enrichArticleBody<T extends { url: string; content?: string | null }>(article: T): Promise<T> {
-  if (isLikelyFullArticleBody(article.content)) {
-    return article;
+  const currentContent = normalizeArticleText(cleanHtmlContent(article.content || ''), article.url);
+  const forceFetch = shouldForceFetch(article.url);
+
+  if (!forceFetch && isLikelyFullArticleBody(currentContent)) {
+    return {
+      ...article,
+      content: currentContent,
+    };
   }
 
   try {
@@ -51,6 +82,6 @@ export async function enrichArticleBody<T extends { url: string; content?: strin
 
   return {
     ...article,
-    content: `${article.content || ''}`.trim(),
+    content: currentContent,
   };
 }

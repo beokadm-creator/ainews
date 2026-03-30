@@ -152,6 +152,125 @@ function normalizeLine(line: string): string {
     .trim();
 }
 
+function getHostname(url?: string): string {
+  if (!url) return '';
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isSectionLabelLine(line: string): boolean {
+  return new Set([
+    '\uACBD\uC81C',
+    '\uAD6D\uC81C',
+    '\uC0B0\uC5C5',
+    '\uAE30\uC5C5',
+    '\uC99D\uAD8C',
+    '\uC815\uCE58',
+    '\uC0AC\uD68C',
+    '\uBB38\uD654',
+    '\uC624\uD53C\uB2C8\uC5B8',
+    '\uB9C8\uCF13\uC2DC\uADF8\uB110',
+    '\uC2DC\uC7A5\uC758 \uB9E5',
+    '\uAE30\uC790\uC218\uCCA9',
+  ]).has(line);
+}
+
+function looksLikeHeadlineCluster(line: string): boolean {
+  const ellipsisCount = (line.match(/\u2026/g) || []).length;
+  const quoteCount = (line.match(/["'\u201C\u201D\u2018\u2019]/g) || []).length;
+  const hasRankingPrefix = /^\d{1,2}\s+/.test(line);
+  const hasRepeatedHeadlineSignals =
+    ellipsisCount >= 2 ||
+    quoteCount >= 4 ||
+    /(\uD83D\uDD25|\uD504\uB85C\uC57C\uAD6C|\uC720\uD615 \uD14C\uC2A4\uD2B8)/.test(line);
+
+  if (hasRankingPrefix) return true;
+  if (isSectionLabelLine(line)) return true;
+  if (hasRepeatedHeadlineSignals && line.length >= 40) return true;
+
+  return false;
+}
+
+function stripKnownLeadingNoise(lines: string[], hostname: string): string[] {
+  if (!lines.length) return lines;
+
+  return lines.filter((line, index) => {
+    if (!line) return false;
+
+    if (
+      hostname.includes('sedaily.com') &&
+      index < 3 &&
+      /\uAC00\s+\uBCF4\uD1B5.*\uAC00\s+\uD06C\uAC8C.*\uAC00\s+\uC544\uC8FC\s+\uD06C\uAC8C.*\uC5D1\uC2A4.*\uC774\uBA54\uC77C/.test(line)
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function stripKnownTrailingNoise(lines: string[], hostname: string): string[] {
+  if (!lines.length) return lines;
+
+  const cleaned: string[] = [];
+  const seen = new Set<string>();
+  let bodyChars = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const next = lines[i + 1] || '';
+    const next2 = lines[i + 2] || '';
+    const next3 = lines[i + 3] || '';
+
+    if (bodyChars >= 120) {
+      const upcomingClusterScore = [line, next, next2, next3]
+        .filter(Boolean)
+        .reduce((count, candidate) => count + (looksLikeHeadlineCluster(candidate) ? 1 : 0), 0);
+
+      const repeatedLine = seen.has(line) && line.length >= 20;
+      const sedailyFooterStart = hostname.includes('sedaily.com')
+        && isSectionLabelLine(next)
+        && next2.length >= 20;
+
+      if (repeatedLine || upcomingClusterScore >= 2 || sedailyFooterStart) {
+        break;
+      }
+    }
+
+    cleaned.push(line);
+    seen.add(line);
+    bodyChars += line.length;
+  }
+
+  return cleaned;
+}
+
+function applySiteSpecificTextCleanup(text: string, url?: string): string {
+  const hostname = getHostname(url);
+  if (!hostname) return text;
+
+  let lines = text
+    .split(/\n{2,}/)
+    .map(normalizeLine)
+    .filter(Boolean);
+
+  if (
+    hostname.includes('asiae.co.kr') ||
+    hostname.includes('sedaily.com') ||
+    hostname.includes('fnnews.com') ||
+    hostname.includes('chosunbiz.com') ||
+    hostname.includes('biz.chosun.com')
+  ) {
+    lines = stripKnownLeadingNoise(lines, hostname);
+    lines = stripKnownTrailingNoise(lines, hostname);
+  }
+
+  return lines.join('\n\n').trim();
+}
+
 function cleanupNode($root: cheerio.Cheerio<any>) {
   REMOVE_SELECTORS.forEach((selector) => {
     $root.find(selector).remove();
@@ -237,7 +356,7 @@ function stripBoilerplate(lines: string[]): string[] {
   return cleaned;
 }
 
-export function normalizeArticleText(text: string): string {
+export function normalizeArticleText(text: string, url?: string): string {
   if (!text) return '';
 
   const lines = text
@@ -249,7 +368,8 @@ export function normalizeArticleText(text: string): string {
     .map(normalizeLine)
     .filter(Boolean);
 
-  return stripBoilerplate(lines).join('\n\n').trim();
+  const normalized = stripBoilerplate(lines).join('\n\n').trim();
+  return applySiteSpecificTextCleanup(normalized, url);
 }
 
 export function extractTextFromHtml(html: string): string {
