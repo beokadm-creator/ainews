@@ -47,41 +47,6 @@ function formatTimestamp(value: any) {
   }
 }
 
-function QuickAction({
-  icon: Icon,
-  title,
-  desc,
-  to,
-  tone,
-}: {
-  icon: any;
-  title: string;
-  desc: string;
-  to: string;
-  tone: string;
-}) {
-  return (
-    <Link
-      to={to}
-      className="group flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-5 transition-all hover:-translate-y-0.5 hover:border-[#d4af37]/40 hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
-    >
-      <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${tone}`}>
-        <Icon className="h-5 w-5 text-white" />
-      </div>
-      <div>
-        <p className="text-sm font-semibold text-gray-900 transition-colors group-hover:text-[#d4af37] dark:text-white">
-          {title}
-        </p>
-        <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{desc}</p>
-      </div>
-      <div className="mt-auto flex items-center gap-1 text-xs text-gray-400 transition-colors group-hover:text-[#d4af37]">
-        바로 가기
-        <ArrowRight className="h-3 w-3" />
-      </div>
-    </Link>
-  );
-}
-
 export default function UserHome() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
@@ -153,165 +118,180 @@ export default function UserHome() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-12">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+      {/* Header */}
+      <div className="border-b border-gray-200 pb-5 dark:border-gray-700/60">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-white">
           {greeting}, <span className="text-[#d4af37]">{userName}</span>님
         </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           오늘 수집된 분석 기사와 최근 리포트, AI 사용 현황을 한 번에 확인할 수 있습니다.
         </p>
       </div>
 
+      {/* Primary stat cards */}
       <div className={`grid gap-4 ${canViewUsage ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 dark:bg-blue-500/10">
-              <Newspaper className="h-5 w-5 text-blue-500" />
+        {[
+          { icon: Newspaper, label: '조회 가능한 분석 기사', value: todayCount.toLocaleString(), accent: 'text-[#1e3a5f] dark:text-blue-400' },
+          { icon: TrendingUp, label: '최근 분석 완료', value: analyzedCount.toLocaleString(), accent: 'text-emerald-600 dark:text-emerald-400' },
+          { icon: BookOpen, label: '최근 리포트', value: recentReports.length.toString(), accent: 'text-purple-600 dark:text-purple-400' },
+          ...(canViewUsage ? [{ icon: Coins, label: '24시간 토큰', value: Number(usage?.last24h?.totalTokens || 0).toLocaleString(), accent: 'text-amber-600 dark:text-amber-400' }] : []),
+        ].map((stat) => (
+          <div key={stat.label} className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700/60 dark:bg-gray-800/60">
+            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <stat.icon className="h-3.5 w-3.5" />
+              {stat.label}
             </div>
-            <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{todayCount.toLocaleString()}</p>
-              <p className="text-xs text-gray-400">조회 가능한 분석 기사</p>
-            </div>
+            <p className={`mt-2 text-2xl font-bold tabular-nums ${stat.accent}`}>{stat.value}</p>
           </div>
-        </div>
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-50 dark:bg-green-500/10">
-              <TrendingUp className="h-5 w-5 text-green-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{analyzedCount.toLocaleString()}</p>
-              <p className="text-xs text-gray-400">최근 분석 완료 기사</p>
-            </div>
-          </div>
-        </div>
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-50 dark:bg-purple-500/10">
-              <BookOpen className="h-5 w-5 text-purple-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{recentReports.length}</p>
-              <p className="text-xs text-gray-400">최근 리포트</p>
-            </div>
-          </div>
-        </div>
-        {canViewUsage && (
-          <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 dark:bg-amber-500/10">
-                <Coins className="h-5 w-5 text-amber-500" />
-              </div>
-              <div>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                  {Number(usage?.last24h?.totalTokens || 0).toLocaleString()}
-                </p>
-                <p className="text-xs text-gray-400">최근 24시간 토큰</p>
-              </div>
-            </div>
-          </div>
-        )}
+        ))}
       </div>
 
+      {/* Usage breakdown */}
       {canViewUsage && (
-        <div className="grid gap-4 md:grid-cols-3">
-          {[
-            { label: '최근 24시간', value: usage?.last24h?.totalTokens || 0, sub: `${usage?.last24h?.requests || 0}회 호출` },
-            { label: '최근 7일', value: usage?.last7d?.totalTokens || 0, sub: `$${Number(usage?.last7d?.totalCostUSD || 0).toFixed(2)}` },
-            { label: '최근 30일', value: usage?.last30d?.totalTokens || 0, sub: `$${Number(usage?.last30d?.totalCostUSD || 0).toFixed(2)}` },
-          ].map((item) => (
-            <div key={item.label} className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-300">{item.label}</p>
-              <p className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{Number(item.value).toLocaleString()}</p>
-              <p className="mt-1 text-xs text-gray-400">{item.sub}</p>
-            </div>
-          ))}
+        <div>
+          <div className="mb-3 flex items-center gap-3">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">AI 사용량</span>
+            <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700/60" />
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              { label: '최근 24시간', value: usage?.last24h?.totalTokens || 0, sub: `${usage?.last24h?.requests || 0}회 호출` },
+              { label: '최근 7일', value: usage?.last7d?.totalTokens || 0, sub: `$${Number(usage?.last7d?.totalCostUSD || 0).toFixed(2)}` },
+              { label: '최근 30일', value: usage?.last30d?.totalTokens || 0, sub: `$${Number(usage?.last30d?.totalCostUSD || 0).toFixed(2)}` },
+            ].map((item) => (
+              <div key={item.label} className="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-gray-700/60 dark:bg-gray-800/60">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">{item.label}</p>
+                <p className="mt-1.5 text-xl font-bold tabular-nums text-gray-900 dark:text-white">{Number(item.value).toLocaleString()}</p>
+                <p className="mt-0.5 text-xs text-gray-400">{item.sub}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
+      {/* Quick actions */}
       <div>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">빠른 시작</h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          <QuickAction icon={Search} title="기사 검색" desc="매체와 기간 기준으로 분석 완료 기사를 찾습니다." to="/articles" tone="bg-blue-500" />
-          <QuickAction icon={FileText} title="리포트 생성" desc="검색 결과 전체 또는 선택 기사로 새 리포트를 생성합니다." to="/articles" tone="bg-[#d4af37]" />
-          <QuickAction icon={Send} title="발송 관리" desc="메일링 그룹과 자동·수동 발송 일정을 관리합니다." to={role === 'company_admin' ? '/delivery' : '/briefing'} tone="bg-purple-500" />
+        <div className="mb-3 flex items-center gap-3">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">빠른 시작</span>
+          <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700/60" />
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          {[
+            { icon: Search, title: '기사 검색', desc: '매체와 기간 기준으로 분석 완료 기사를 찾습니다.', to: '/articles' },
+            { icon: FileText, title: '리포트 생성', desc: '검색 결과 전체 또는 선택 기사로 새 리포트를 생성합니다.', to: '/articles', gold: true },
+            { icon: Send, title: '발송 관리', desc: '메일링 그룹과 자동·수동 발송 일정을 관리합니다.', to: role === 'company_admin' ? '/delivery' : '/briefing' },
+          ].map((action) => (
+            <Link
+              key={action.title}
+              to={action.to}
+              className={`group flex items-center gap-4 rounded-xl border p-4 transition-all hover:shadow-sm ${
+                action.gold
+                  ? 'border-[#d4af37]/30 bg-[#d4af37]/5 hover:border-[#d4af37]/60 dark:bg-[#d4af37]/10'
+                  : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-700/60 dark:bg-gray-800/60 dark:hover:border-gray-600'
+              }`}
+            >
+              <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${action.gold ? 'bg-[#d4af37]' : 'bg-[#1e3a5f]'}`}>
+                <action.icon className="h-4 w-4 text-white" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-gray-900 dark:text-white">{action.title}</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{action.desc}</p>
+              </div>
+              <ArrowRight className="h-4 w-4 shrink-0 text-gray-300 transition-colors group-hover:text-gray-500 dark:text-gray-600 dark:group-hover:text-gray-400" />
+            </Link>
+          ))}
         </div>
       </div>
 
+      {/* Recent articles + reports */}
       <div className="grid gap-6 lg:grid-cols-2">
+        {/* Recent articles */}
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 분석 기사</h2>
-            <Link to="/articles" className="text-xs text-[#d4af37] hover:underline">전체 보기</Link>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">최근 분석 기사</span>
+              <div className="h-px w-12 bg-gray-200 dark:bg-gray-700/60" />
+            </div>
+            <Link to="/articles" className="flex items-center gap-1 text-xs text-[#d4af37] hover:underline">
+              전체 보기 <ArrowRight className="h-3 w-3" />
+            </Link>
           </div>
-          <div className="space-y-3">
+          <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
             {loading ? (
-              <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-                <Loader2 className="h-6 w-6 animate-spin text-[#1e3a5f]" />
+              <div className="flex h-48 items-center justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-[#1e3a5f] dark:text-gray-400" />
               </div>
             ) : recentArticles.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-800">
-                표시할 분석 기사가 없습니다.
-              </div>
+              <div className="px-6 py-12 text-center text-sm text-gray-400">표시할 분석 기사가 없습니다.</div>
             ) : (
-              recentArticles.map((article) => (
-                <button
-                  key={article.id}
-                  onClick={() => navigate(`/articles?highlight=${article.id}`)}
-                  className="w-full rounded-2xl border border-gray-200 bg-white p-4 text-left transition-all hover:border-[#d4af37]/40 hover:shadow-sm dark:border-gray-700 dark:bg-gray-800"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="line-clamp-2 text-sm font-semibold text-gray-900 dark:text-white">{article.title}</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                        <span>{article.source}</span>
-                        {article.category && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
-                            {article.category}
-                          </span>
-                        )}
-                        <span>{formatTimestamp(article.publishedAt)}</span>
+              <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
+                {recentArticles.map((article) => (
+                  <li key={article.id}>
+                    <button
+                      onClick={() => navigate(`/articles?highlight=${article.id}`)}
+                      className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-white/5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="line-clamp-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+                            <span>{article.source}</span>
+                            {article.category && (
+                              <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">{article.category}</span>
+                            )}
+                            <span>{formatTimestamp(article.publishedAt)}</span>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs font-bold tabular-nums text-[#1e3a5f] dark:text-[#d4af37]">
+                          {typeof article.relevanceScore === 'number' ? `${Math.round(article.relevanceScore)}점` : '—'}
+                        </span>
                       </div>
-                    </div>
-                    <span className="text-sm font-bold text-[#1e3a5f] dark:text-[#d4af37]">
-                      {typeof article.relevanceScore === 'number' ? `${Math.round(article.relevanceScore)}점` : '-'}
-                    </span>
-                  </div>
-                </button>
-              ))
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>
 
+        {/* Recent reports */}
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 리포트</h2>
-            <Link to="/history" className="text-xs text-[#d4af37] hover:underline">이력 보기</Link>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">최근 리포트</span>
+              <div className="h-px w-12 bg-gray-200 dark:bg-gray-700/60" />
+            </div>
+            <Link to="/history" className="flex items-center gap-1 text-xs text-[#d4af37] hover:underline">
+              이력 보기 <ArrowRight className="h-3 w-3" />
+            </Link>
           </div>
-          <div className="space-y-3">
+          <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
             {loading ? (
-              <div className="flex h-40 items-center justify-center rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-                <Loader2 className="h-6 w-6 animate-spin text-[#1e3a5f]" />
+              <div className="flex h-48 items-center justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-[#1e3a5f] dark:text-gray-400" />
               </div>
             ) : recentReports.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-800">
-                생성된 리포트가 없습니다.
-              </div>
+              <div className="px-6 py-12 text-center text-sm text-gray-400">생성된 리포트가 없습니다.</div>
             ) : (
-              recentReports.map((report) => (
-                <Link
-                  key={report.id}
-                  to={`/briefing?outputId=${report.id}`}
-                  className="block rounded-2xl border border-gray-200 bg-white p-4 transition-all hover:border-[#d4af37]/40 hover:shadow-sm dark:border-gray-700 dark:bg-gray-800"
-                >
-                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{report.title}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-                    <span>{report.type === 'custom_report' ? '맞춤 리포트' : '브리핑'}</span>
-                    <span>참고 기사 {report.articleCount || 0}건</span>
-                    <span>{formatTimestamp(report.createdAt)}</span>
-                  </div>
-                </Link>
-              ))
+              <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
+                {recentReports.map((report) => (
+                  <li key={report.id}>
+                    <Link
+                      to={`/briefing?outputId=${report.id}`}
+                      className="block px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-white/5"
+                    >
+                      <p className="line-clamp-1 text-sm font-medium text-gray-900 dark:text-white">{report.title}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+                        <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">
+                          {report.type === 'custom_report' ? '맞춤 리포트' : '브리핑'}
+                        </span>
+                        <span>기사 {report.articleCount || 0}건</span>
+                        <span>{formatTimestamp(report.createdAt)}</span>
+                      </div>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>

@@ -135,23 +135,23 @@ export default function ReportNew() {
   if (done) {
     return (
       <div className="mx-auto max-w-2xl py-20 text-center">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
-          <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-500/10">
+          <CheckCircle2 className="h-7 w-7 text-emerald-600 dark:text-emerald-400" />
         </div>
-        <h1 className="mt-6 text-2xl font-bold text-gray-900 dark:text-white">내부 리포트 생성이 시작되었습니다.</h1>
+        <h1 className="mt-5 text-xl font-bold text-gray-900 dark:text-white">내부 리포트 생성이 시작되었습니다.</h1>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
           AI가 선택된 기사 묶음을 기준으로 분석 중입니다. 완료되면 내부 리포트 목록에서 바로 확인할 수 있습니다.
         </p>
         <div className="mt-6 flex justify-center gap-3">
           <button
             onClick={() => navigate(`/briefing?outputId=${done.outputId}`)}
-            className="rounded-xl bg-[#1e3a5f] px-5 py-3 text-sm font-semibold text-white hover:bg-[#24456f]"
+            className="rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f]"
           >
             리포트 보기
           </button>
           <button
             onClick={() => navigate('/articles')}
-            className="rounded-xl border border-gray-200 px-5 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+            className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700/60 dark:text-gray-200 dark:hover:bg-white/5"
           >
             기사 검색으로 돌아가기
           </button>
@@ -162,86 +162,88 @@ export default function ReportNew() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 pb-12">
-      <div>
+      <div className="border-b border-gray-200 pb-5 dark:border-gray-700/60">
         <button
           onClick={() => navigate('/articles')}
-          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-3.5 w-3.5" />
           기사 검색으로 돌아가기
         </button>
-        <h1 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">내부 리포트 생성</h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        <h1 className="mt-3 text-xl font-bold text-gray-900 dark:text-white">내부 리포트 생성</h1>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           검색 결과와 동일한 기사 집합을 기준으로 내부 분석 리포트를 생성합니다.
         </p>
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
-          <FileText className="h-4 w-4 text-[#1e3a5f]" />
-          리포트 대상
+      <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+        <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+          <FileText className="h-3.5 w-3.5 text-[#1e3a5f] dark:text-blue-400" />
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">리포트 대상</span>
         </div>
 
         {loadingArticles ? (
-          <div className="mt-6 flex items-center justify-center py-10">
-            <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-5 w-5 animate-spin text-gray-300 dark:text-gray-600" />
           </div>
         ) : articleIds.length > 0 ? (
-          <div className="mt-4">
-            <p className="text-sm text-gray-500 dark:text-gray-400">선택 기사 {resolvedArticleIds.length}건</p>
-            <div className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
+          <div className="p-4">
+            <p className="text-xs text-gray-500 dark:text-gray-400">선택 기사 {resolvedArticleIds.length}건</p>
+            <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
               {articles.map((article, index) => (
-                <div key={article.id} className="px-4 py-3">
-                  <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
-                  <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                </div>
+                <li key={article.id} className="px-3 py-2.5">
+                  <div className="text-[11px] text-gray-400">{index + 1}. {article.source}</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
         ) : (
-          <div className="mt-4 rounded-xl border border-dashed border-gray-300 px-4 py-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            검색 조건 전체를 기준으로 리포트를 생성합니다.
-            <div className="mt-2">키워드: {keywords.length > 0 ? keywords.join(', ') : '없음'}</div>
-            <div className="mt-1">대상 매체 수: {sourceIds.length}</div>
-            <div className="mt-1">확정 기사 수: {resolvedArticleIds.length}</div>
+          <div className="p-4">
+            <div className="rounded-lg border border-dashed border-gray-200 px-4 py-4 text-xs text-gray-500 dark:border-gray-700/60 dark:text-gray-400">
+              검색 조건 전체를 기준으로 리포트를 생성합니다.
+              <div className="mt-2">키워드: {keywords.length > 0 ? keywords.join(', ') : '없음'}</div>
+              <div className="mt-1">대상 매체 수: {sourceIds.length}</div>
+              <div className="mt-1">확정 기사 수: {resolvedArticleIds.length}</div>
+            </div>
             {articles.length > 0 && (
-              <div className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
+              <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
                 {articles.slice(0, 12).map((article, index) => (
-                  <div key={article.id} className="px-4 py-3">
-                    <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
-                    <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                  </div>
+                  <li key={article.id} className="px-3 py-2.5">
+                    <div className="text-[11px] text-gray-400">{index + 1}. {article.source}</div>
+                    <div className="mt-0.5 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
           </div>
         )}
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
-          <Sparkles className="h-4 w-4 text-[#d4af37]" />
-          분석 설정
+      <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+        <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+          <Sparkles className="h-3.5 w-3.5 text-[#d4af37]" />
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">분석 설정</span>
         </div>
 
-        <div className="mt-4 space-y-4">
+        <div className="space-y-4 p-4">
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">리포트 제목</label>
+            <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">리포트 제목</label>
             <input
               value={reportTitle}
               onChange={(event) => setReportTitle(event.target.value)}
-              className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#1e3a5f] focus:ring-1 focus:ring-[#1e3a5f]/20 dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white dark:focus:border-blue-400"
               placeholder="비워두면 AI가 생성합니다."
             />
           </div>
 
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">분석 지시</label>
+            <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">분석 지시</label>
             <textarea
               value={analysisPrompt}
               onChange={(event) => setAnalysisPrompt(event.target.value)}
               rows={6}
-              className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+              className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#1e3a5f] focus:ring-1 focus:ring-[#1e3a5f]/20 dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white dark:focus:border-blue-400"
             />
           </div>
         </div>
@@ -251,13 +253,13 @@ export default function ReportNew() {
         <button
           onClick={handleGenerate}
           disabled={submitting || resolvedArticleIds.length === 0}
-          className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-6 py-3 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
           내부 리포트 생성
         </button>
         {submitting && (
-          <span className="text-sm text-gray-500 dark:text-gray-400">AI가 리포트를 생성하고 있습니다.</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">AI가 리포트를 생성하고 있습니다…</span>
         )}
       </div>
     </div>

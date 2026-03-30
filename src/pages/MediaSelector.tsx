@@ -172,51 +172,49 @@ export default function MediaSelector() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto pb-12">
+    <div className="mx-auto max-w-5xl space-y-6 pb-24">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">매체 구독 선택</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
-            파이프라인에 포함할 매체를 선택하세요. 현재 <b>{selectedIds.size}개</b> 선택됨.
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">매체 구독 선택</h1>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            파이프라인에 포함할 매체를 선택하세요. 현재 <span className="font-bold text-[#1e3a5f] dark:text-blue-400">{selectedIds.size}개</span> 선택됨.
           </p>
         </div>
         {canEdit && (
           <button
             onClick={handleSave}
             disabled={saving}
-            className={`flex items-center px-5 py-2.5 rounded-lg font-medium text-sm shadow-sm transition-all ${
-              saved
-                ? 'bg-green-500 text-white'
-                : 'bg-[#1e3a5f] hover:bg-[#2a4a73] text-white'
-            } disabled:opacity-50`}
+            className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-all disabled:opacity-50 ${
+              saved ? 'bg-emerald-600 text-white' : 'bg-[#1e3a5f] text-white hover:bg-[#24456f]'
+            }`}
           >
-            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : saved ? <CheckCircle2 className="w-4 h-4 mr-2" /> : <Save className="w-4 h-4 mr-2" />}
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <CheckCircle2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}
             {saving ? '저장 중...' : saved ? '저장 완료!' : '구독 저장'}
           </button>
         )}
       </div>
 
-      <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-100">
-        회사 구독 목록은 슈퍼어드민 매체 관리와 동일한 `globalSources`를 사용합니다. 더벨, 마켓인사이트 같은 외부 스크래핑 매체도 여기서 같은 기준으로 연결됩니다.
+      <div className="rounded-lg border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-4 py-3 text-xs text-[#1e3a5f] dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
+        회사 구독 목록은 슈퍼어드민 매체 관리와 동일한 globalSources를 사용합니다. 더벨, 마켓인사이트 같은 외부 스크래핑 매체도 여기서 같은 기준으로 연결됩니다.
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             placeholder="매체명 검색..."
-            className="pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#1e3a5f] w-48"
+            className="w-44 rounded-lg border border-gray-200 bg-white py-2 pl-8 pr-3 text-sm text-gray-900 outline-none transition focus:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-800/60 dark:text-white dark:focus:border-blue-400"
           />
         </div>
         <select
           value={filterCategory}
           onChange={e => setFilterCategory(e.target.value)}
-          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
+          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-gray-700/60 dark:bg-gray-800/60 dark:text-gray-200"
         >
           <option value="all">모든 분야</option>
           <option value="domestic">국내</option>
@@ -229,29 +227,19 @@ export default function MediaSelector() {
         <select
           value={filterType}
           onChange={e => setFilterType(e.target.value as SourceType | 'all')}
-          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white outline-none"
+          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-gray-700/60 dark:bg-gray-800/60 dark:text-gray-200"
         >
           <option value="all">모든 방식</option>
           <option value="rss">RSS</option>
           <option value="scraping">Scraping</option>
           <option value="api">API</option>
         </select>
-        <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="checkbox"
-            checked={filterOnlyFree}
-            onChange={e => setFilterOnlyFree(e.target.checked)}
-            className="rounded"
-          />
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+          <input type="checkbox" checked={filterOnlyFree} onChange={e => setFilterOnlyFree(e.target.checked)} className="rounded" />
           무료만
         </label>
-        <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
-          <input
-            type="checkbox"
-            checked={filterOnlySelected}
-            onChange={e => setFilterOnlySelected(e.target.checked)}
-            className="rounded"
-          />
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+          <input type="checkbox" checked={filterOnlySelected} onChange={e => setFilterOnlySelected(e.target.checked)} className="rounded" />
           선택된 것만
         </label>
         <button
@@ -260,14 +248,11 @@ export default function MediaSelector() {
             setSelectedIds(new Set(allActiveIds));
             setSaved(false);
           }}
-          className="ml-auto text-xs text-[#1e3a5f] dark:text-blue-400 hover:underline"
+          className="ml-auto text-xs text-[#1e3a5f] hover:underline dark:text-blue-400"
         >
           무료 전체 선택
         </button>
-        <button
-          onClick={() => { setSelectedIds(new Set()); setSaved(false); }}
-          className="text-xs text-gray-500 hover:underline"
-        >
+        <button onClick={() => { setSelectedIds(new Set()); setSaved(false); }} className="text-xs text-gray-400 hover:underline">
           전체 해제
         </button>
       </div>
@@ -278,9 +263,10 @@ export default function MediaSelector() {
         if (!items || items.length === 0) return null;
         return (
           <div key={cat}>
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">
-              {categoryLabel[cat] || cat}
-            </h2>
+            <div className="mb-3 flex items-center gap-3">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">{categoryLabel[cat] || cat}</span>
+              <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700/60" />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {items.sort((a, b) => b.relevanceScore - a.relevanceScore).map(source => {
                 const isSelected = selectedIds.has(source.id);
@@ -365,7 +351,10 @@ export default function MediaSelector() {
           if (!items || items.length === 0) return null;
           return (
             <div key={cat}>
-              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">{cat}</h2>
+              <div className="mb-3 flex items-center gap-3">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">{cat}</span>
+                <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700/60" />
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {items.map(source => (
                   <button
@@ -387,31 +376,31 @@ export default function MediaSelector() {
         })}
 
       {filtered.length === 0 && (
-        <div className="text-center py-16 text-gray-400">
-          <Filter className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p>조건에 맞는 매체가 없습니다.</p>
+        <div className="flex flex-col items-center gap-3 py-16 text-center text-gray-400">
+          <Filter className="h-8 w-8 opacity-30" />
+          <p className="text-sm">조건에 맞는 매체가 없습니다.</p>
         </div>
       )}
 
       {/* Fixed save bar */}
       {selectedIds.size > 0 && canEdit && (
-        <div className="fixed bottom-0 left-0 right-0 lg:left-64 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 px-6 py-3 flex items-center justify-between shadow-lg z-10">
+        <div className="fixed bottom-0 left-0 right-0 z-10 flex items-center justify-between border-t border-gray-200 bg-white/95 px-6 py-3 shadow-lg backdrop-blur-sm dark:border-gray-700/60 dark:bg-gray-900/95 lg:left-64">
           <div>
             <span className="text-sm text-gray-700 dark:text-gray-300">
               <span className="font-bold text-[#1e3a5f] dark:text-blue-400">{selectedIds.size}개</span> 매체 선택됨
             </span>
             {saved && (
-              <p className="text-xs text-green-600 dark:text-green-400 mt-0.5">✓ 저장 완료. 다음 파이프라인 실행 시 반영됩니다.</p>
+              <p className="mt-0.5 text-xs text-emerald-600 dark:text-emerald-400">저장 완료. 다음 파이프라인 실행 시 반영됩니다.</p>
             )}
           </div>
           <button
             onClick={handleSave}
             disabled={saving}
-            className={`flex items-center px-5 py-2 rounded-lg text-sm font-medium transition-all ${
-              saved ? 'bg-green-500 text-white' : 'bg-[#1e3a5f] hover:bg-[#2a4a73] text-white'
-            } disabled:opacity-50`}
+            className={`inline-flex items-center gap-2 rounded-xl px-5 py-2 text-sm font-semibold transition-all disabled:opacity-50 ${
+              saved ? 'bg-emerald-600 text-white' : 'bg-[#1e3a5f] text-white hover:bg-[#24456f]'
+            }`}
           >
-            {saving ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Save className="w-4 h-4 mr-1.5" />}
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? '저장 중...' : saved ? '저장 완료!' : '구독 저장'}
           </button>
         </div>

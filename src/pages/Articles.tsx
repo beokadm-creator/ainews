@@ -92,9 +92,9 @@ function TagInput({
   };
 
   return (
-    <div className="flex min-h-[42px] flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/30">
+    <div className="flex min-h-[38px] flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 transition focus-within:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-900/40">
       {tags.map((tag) => (
-        <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-[#1e3a5f]/10 px-2 py-1 text-xs font-medium text-[#1e3a5f] dark:text-blue-300">
+        <span key={tag} className="inline-flex items-center gap-1 rounded-md bg-[#1e3a5f]/10 px-2 py-0.5 text-xs font-medium text-[#1e3a5f] dark:bg-blue-500/10 dark:text-blue-300">
           {tag}
           <button type="button" onClick={() => onChange(tags.filter((item) => item !== tag))}>
             <X className="h-3 w-3" />
@@ -135,6 +135,39 @@ interface ArticleItem {
   keywordPrefilterReason?: string;
   content: string;
   url: string;
+}
+
+function normalizeReasonText(value?: string | null) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim();
+}
+
+function getAnalysisBasisLabel(basis?: ArticleItem['relevanceBasis']) {
+  switch (basis) {
+    case 'ai':
+      return '원문 AI 관련성 검토 통과';
+    case 'priority_source_override':
+      return '우선 매체 예외로 분석 진행';
+    case 'priority_source_fallback':
+      return '우선 매체 예외 보류 통과로 분석 진행';
+    case 'keyword_reject':
+      return '키워드 규칙 제외';
+    default:
+      return '분석 단계 진행';
+  }
+}
+
+function getArticleReasonDetails(article: ArticleItem) {
+  const collectedReason = normalizeReasonText(
+    article.keywordPrefilterReason || (article.keywordMatched ? `제목 키워드 매칭: "${article.keywordMatched}"` : '')
+  );
+  const analysisReasonRaw = normalizeReasonText(article.aiRelevanceReason || article.relevanceReason);
+  const analysisReason = analysisReasonRaw && analysisReasonRaw !== collectedReason ? analysisReasonRaw : '';
+
+  return {
+    collectedReason,
+    analysisReason,
+    analysisBasisLabel: getAnalysisBasisLabel(article.relevanceBasis),
+  };
 }
 
 interface SourceItem {
@@ -291,10 +324,11 @@ export default function Articles() {
 
   return (
     <div className="space-y-6 pb-12">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">기사 검색</h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">기사 검색</h1>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             최근 기간과 매체를 고른 뒤 기사 원문을 확인하고, 선택 기사 또는 검색 결과 전체로 내부 리포트를 생성합니다.
           </p>
         </div>
@@ -318,72 +352,53 @@ export default function Articles() {
         ) : null}
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
-          <Filter className="h-4 w-4 text-[#1e3a5f]" />
-          리포트용 검색 조건
+      {/* Filter card */}
+      <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+        <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+          <Filter className="h-3.5 w-3.5 text-[#1e3a5f] dark:text-blue-400" />
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">리포트용 검색 조건</span>
         </div>
 
-        <div className="mt-4 space-y-5">
+        <div className="space-y-4 p-4">
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">키워드</label>
-            <div className="mt-2">
-              <TagInput tags={keywords} onChange={setKeywords} placeholder="예: PE, 인수금융, 구조조정" />
-            </div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">키워드</label>
+            <TagInput tags={keywords} onChange={setKeywords} placeholder="예: PE, 인수금융, 구조조정" />
           </div>
 
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                <Calendar className="mr-1 inline h-3.5 w-3.5" />
-                기사 기간
+              <label className="mb-1.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                <Calendar className="h-3 w-3" />기사 기간
               </label>
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mb-2 flex flex-wrap gap-1.5">
                 {DATE_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => applyDatePreset(preset.hours)}
-                    className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-[#1e3a5f] hover:text-white dark:bg-gray-700 dark:text-gray-200"
-                  >
+                  <button key={preset.label} type="button" onClick={() => applyDatePreset(preset.hours)}
+                    className="rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-[#1e3a5f] hover:text-white dark:bg-gray-700 dark:text-gray-300">
                     {preset.label}
                   </button>
                 ))}
               </div>
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  type="datetime-local"
-                  value={startDate}
-                  onChange={(event) => setStartDate(event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
-                />
-                <span className="text-gray-400">~</span>
-                <input
-                  type="datetime-local"
-                  value={endDate}
-                  onChange={(event) => setEndDate(event.target.value)}
-                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
-                />
+              <div className="flex items-center gap-2">
+                <input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white" />
+                <span className="shrink-0 text-gray-400">~</span>
+                <input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white" />
               </div>
             </div>
 
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                <Newspaper className="mr-1 inline h-3.5 w-3.5" />
-                대상 매체
+              <label className="mb-1.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                <Newspaper className="h-3 w-3" />대상 매체
               </label>
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5">
                 {sources.map((source) => (
-                  <button
-                    key={source.id}
-                    type="button"
-                    onClick={() => toggleSource(source.id)}
-                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                  <button key={source.id} type="button" onClick={() => toggleSource(source.id)}
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                       selectedSourceIds.includes(source.id)
                         ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
-                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
-                    }`}
-                  >
+                        : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-gray-700/60 dark:bg-gray-900/30 dark:text-gray-300'
+                    }`}>
                     {source.name}
                   </button>
                 ))}
@@ -391,81 +406,57 @@ export default function Articles() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={handleSearch}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#24456f] disabled:opacity-50"
-            >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              검색
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={handleSearch} disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50">
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}검색
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                const next = getDefaultDateRange();
-                setKeywords([]);
-                setSelectedCategories([]);
-                setSelectedSourceIds([]);
-                setStartDate(next.startDate);
-                setEndDate(next.endDate);
-                setArticles([]);
-                setTotalResults(0);
-                setHasMore(false);
-                setSelectedIds(new Set());
-                setSearched(false);
-              }}
-              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700/40"
-            >
-              <RefreshCw className="h-4 w-4" />
-              초기화
+            <button type="button" onClick={() => {
+              const next = getDefaultDateRange();
+              setKeywords([]); setSelectedCategories([]); setSelectedSourceIds([]);
+              setStartDate(next.startDate); setEndDate(next.endDate);
+              setArticles([]); setTotalResults(0); setHasMore(false);
+              setSelectedIds(new Set()); setSearched(false);
+            }} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700/60 dark:text-gray-300 dark:hover:bg-white/5">
+              <RefreshCw className="h-4 w-4" />초기화
             </button>
           </div>
         </div>
       </div>
 
       {searched && (
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
-            <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-300">
-              <button
-                type="button"
-                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(articles.map((article) => article.id)))}
-                className="inline-flex items-center gap-1.5"
-              >
-                {allSelected ? <CheckSquare className="h-4 w-4 text-[#1e3a5f]" /> : <Square className="h-4 w-4" />}
+        <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+          {/* Results toolbar */}
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+            <div className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300">
+              <button type="button" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(articles.map((a) => a.id)))}
+                className="inline-flex items-center gap-1.5">
+                {allSelected ? <CheckSquare className="h-4 w-4 text-[#1e3a5f]" /> : <Square className="h-4 w-4 text-gray-400" />}
                 전체 선택
               </button>
+              <span className="text-gray-400">|</span>
               <span>검색 결과 {articles.length}건</span>
-              {selectedIds.size > 0 && <span className="font-medium text-[#1e3a5f]">{selectedIds.size}건 선택됨</span>}
+              {selectedIds.size > 0 && <span className="font-semibold text-[#1e3a5f] dark:text-blue-400">{selectedIds.size}건 선택됨</span>}
             </div>
             {articles.length > 0 && selectedIds.size === 0 && (
-              <button
-                onClick={createReportFromFilters}
-                className="rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-medium text-white hover:bg-[#24456f]"
-              >
+              <button onClick={createReportFromFilters} className="rounded-lg bg-[#1e3a5f] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#24456f]">
                 결과 전체 리포트
               </button>
             )}
           </div>
 
+          {/* Category filters */}
           {availableCategories.length > 0 && (
-            <div className="border-b border-gray-100 px-5 py-3 dark:border-gray-700">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  {'\uCE74\uD14C\uACE0\uB9AC \uC0C1\uC138 \uAC80\uC0C9'}
-                </span>
+            <div className="border-b border-gray-100 px-4 py-2.5 dark:border-gray-700/40">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">카테고리</span>
                 {availableCategories.map((category) => (
-                  <button
-                    key={category}
-                    type="button"
-                    onClick={() => toggleCategory(category)}
-                    className={`rounded-full border px-3 py-1 text-xs transition ${
+                  <button key={category} type="button" onClick={() => toggleCategory(category)}
+                    className={`rounded-md border px-2 py-0.5 text-[11px] transition ${
                       selectedCategories.includes(category)
                         ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
-                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
-                    }`}
-                  >
+                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700/60 dark:bg-gray-900/30 dark:text-gray-300'
+                    }`}>
                     {category}
                   </button>
                 ))}
@@ -473,85 +464,76 @@ export default function Articles() {
             </div>
           )}
 
+          {/* Article rows */}
           {loading ? (
             <div className="flex items-center justify-center py-16">
-              <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
+              <Loader2 className="h-6 w-6 animate-spin text-gray-300 dark:text-gray-600" />
             </div>
           ) : articles.length === 0 ? (
             <div className="py-16 text-center text-sm text-gray-400">조건에 맞는 분석 완료 기사가 없습니다.</div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-700">
+            <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
               {articles.map((article) => {
                 const selected = selectedIds.has(article.id);
+                const reasonDetails = getArticleReasonDetails(article);
                 return (
-                  <div
-                    key={article.id}
+                  <li key={article.id}
                     onClick={() => toggleSelect(article.id)}
-                    className={`flex cursor-pointer items-start gap-3 px-5 py-4 transition ${
-                      selected ? 'bg-blue-50/60 dark:bg-blue-900/10' : 'hover:bg-gray-50 dark:hover:bg-gray-700/20'
+                    className={`flex cursor-pointer items-start gap-3 px-4 py-3 transition ${
+                      selected ? 'bg-[#1e3a5f]/5 dark:bg-blue-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'
                     }`}
                   >
-                    <div className="mt-1">
-                      {selected ? <CheckSquare className="h-5 w-5 text-[#1e3a5f]" /> : <Square className="h-5 w-5 text-gray-300" />}
+                    <div className="mt-0.5 shrink-0">
+                      {selected ? <CheckSquare className="h-4 w-4 text-[#1e3a5f]" /> : <Square className="h-4 w-4 text-gray-300 dark:text-gray-600" />}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
                         <span>{article.source}</span>
-                        {article.category && (
-                          <span className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-700">{article.category}</span>
-                        )}
+                        {article.category && <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">{article.category}</span>}
                         {typeof article.relevanceScore === 'number' && (
-                          <span className="text-green-600 dark:text-green-400">관련도 {Math.round(article.relevanceScore)}/100</span>
+                          <span className="text-emerald-600 dark:text-emerald-400">관련도 {Math.round(article.relevanceScore)}/100</span>
                         )}
                         <span className="ml-auto">{formatPublishedAt(article.publishedAt)}</span>
                       </div>
-                      <h3 className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{article.title}</h3>
-                      <div className="mt-2 space-y-1">
+                      <p className="mt-0.5 text-sm font-medium text-gray-900 dark:text-white">{article.title}</p>
+                      <div className="mt-1 space-y-0.5">
                         {(article.summary || []).slice(0, 2).map((line, index) => (
-                          <p key={index} className="text-xs text-gray-600 dark:text-gray-300">- {line}</p>
+                          <p key={index} className="text-[11px] text-gray-500 dark:text-gray-400">— {line}</p>
                         ))}
                       </div>
-                      {(article.keywordMatched || article.relevanceReason) && (
-                        <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-gray-900/40 dark:text-gray-300">
-                          {article.keywordMatched ? <p>{`\uC81C\uBAA9 \uD0A4\uC6CC\uB4DC \uB9E4\uCE6D: "${article.keywordMatched}"`}</p> : null}
-                          {article.relevanceReason ? <p className="mt-1">{article.relevanceReason}</p> : null}
+                      {(reasonDetails.collectedReason || reasonDetails.analysisReason || article.relevanceBasis) && (
+                        <div className="mt-1.5 rounded-md bg-gray-50 px-2.5 py-1.5 text-[11px] text-gray-500 dark:bg-gray-900/40 dark:text-gray-400">
+                          {reasonDetails.collectedReason ? <p>수집: {reasonDetails.collectedReason}</p> : null}
+                          {article.relevanceBasis ? <p className="mt-0.5">분석: {reasonDetails.analysisBasisLabel}</p> : null}
+                          {reasonDetails.analysisReason ? <p className="mt-0.5">근거: {reasonDetails.analysisReason}</p> : null}
                         </div>
                       )}
                       {article.tags?.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1">
+                        <div className="mt-1.5 flex flex-wrap gap-1">
                           {article.tags.slice(0, 5).map((tagName) => (
-                            <span key={tagName} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
-                              <Tag className="h-2.5 w-2.5" />
-                              {tagName}
+                            <span key={tagName} className="inline-flex items-center gap-0.5 rounded-sm bg-gray-100 px-1.5 py-px text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                              <Tag className="h-2.5 w-2.5" />{tagName}
                             </span>
                           ))}
                         </div>
                       )}
                     </div>
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setPreviewArticle(article);
-                      }}
-                      className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 hover:border-[#1e3a5f] hover:text-[#1e3a5f] dark:border-gray-700 dark:text-gray-300"
-                    >
-                      원문 보기
+                    <button onClick={(e) => { e.stopPropagation(); setPreviewArticle(article); }}
+                      className="shrink-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] font-medium text-gray-500 hover:border-[#1e3a5f] hover:text-[#1e3a5f] dark:border-gray-700/60 dark:text-gray-300">
+                      원문
                     </button>
-                  </div>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           )}
 
           {hasMore && (
-            <div className="border-t border-gray-100 px-5 py-4 dark:border-gray-700">
-              <button
-                onClick={handleLoadMore}
-                disabled={loadingMore}
-                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
-              >
-                {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                ?? 50? ? ??
+            <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-700/40">
+              <button onClick={handleLoadMore} disabled={loadingMore}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700/60 dark:text-gray-300 dark:hover:bg-white/5">
+                {loadingMore ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                더 50건 불러오기
               </button>
             </div>
           )}
@@ -560,88 +542,85 @@ export default function Articles() {
 
       {selectedIds.size > 0 && (
         <div className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2">
-          <button
-            onClick={createReportFromSelection}
-            className="inline-flex items-center gap-2 rounded-full bg-[#d4af37] px-6 py-3 text-sm font-bold text-white shadow-xl hover:bg-[#c59f2c]"
-          >
-            <Plus className="h-4 w-4" />
-            선택 기사 {selectedIds.size}건으로 리포트 만들기
+          <button onClick={createReportFromSelection}
+            className="inline-flex items-center gap-2 rounded-full bg-[#d4af37] px-6 py-3 text-sm font-bold text-white shadow-xl hover:bg-[#c59f2c]">
+            <Plus className="h-4 w-4" />선택 기사 {selectedIds.size}건으로 리포트 만들기
           </button>
         </div>
       )}
 
+      {/* Article preview modal */}
       {previewArticle && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewArticle(null)}>
-          <div
-            className="mx-4 flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
-              <div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 backdrop-blur-sm" onClick={() => setPreviewArticle(null)}>
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700/60">
+              <div className="min-w-0 flex-1 pr-4">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
                   <span>{previewArticle.source}</span>
-                  {formatPublishedAt(previewArticle.publishedAt) && (
-                    <span>발행시각 {formatPublishedAt(previewArticle.publishedAt)}</span>
-                  )}
+                  {formatPublishedAt(previewArticle.publishedAt) && <span>{formatPublishedAt(previewArticle.publishedAt)}</span>}
                 </div>
-                <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
+                <h3 className="mt-2 text-base font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
-              <button onClick={() => setPreviewArticle(null)}>
-                <X className="h-5 w-5 text-gray-400" />
+              <button onClick={() => setPreviewArticle(null)} className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200">
+                <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {(() => {
+                const reasonDetails = getArticleReasonDetails(previewArticle);
+                return (reasonDetails.collectedReason || reasonDetails.analysisReason || previewArticle.relevanceBasis) ? (
+                  <div className="mb-4 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">수집 사유</p>
+                      <p className="mt-1.5 text-xs text-gray-700 dark:text-gray-300">{reasonDetails.collectedReason || '수집 근거 정보 없음'}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">분석 진행 사유</p>
+                      <div className="mt-1.5 space-y-1 text-xs text-gray-700 dark:text-gray-300">
+                        {previewArticle.relevanceBasis ? <p>{reasonDetails.analysisBasisLabel}</p> : null}
+                        {reasonDetails.analysisReason ? <p>{reasonDetails.analysisReason}</p> : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
               {previewArticle.summary?.length > 0 && (
-                <div className="mb-6">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI 요약</p>
-                  <div className="mt-3 space-y-2">
-                    {previewArticle.summary.map((line, index) => (
-                      <p key={index} className="text-sm text-gray-700 dark:text-gray-300">- {line}</p>
-                    ))}
+                <div className="mb-4">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">AI 요약</p>
+                  <div className="rounded-lg border border-[#1e3a5f]/10 bg-[#1e3a5f]/5 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+                    <ul className="space-y-1.5">
+                      {previewArticle.summary.map((line, index) => (
+                        <li key={index} className="flex gap-2 text-xs text-gray-700 dark:text-gray-300">
+                          <span className="shrink-0 text-gray-400">—</span><span>{line}</span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 </div>
               )}
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
-                {formatPublishedAt(previewArticle.publishedAt) && (
-                  <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
-                    <span className="font-semibold text-gray-800 dark:text-gray-100">발행시각</span>
-                    <span className="ml-2">{formatPublishedAt(previewArticle.publishedAt)}</span>
-                  </div>
-                )}
-                <div className="mt-3 space-y-4">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">기사 원문</p>
+                <div className="space-y-3">
                   {previewContentParagraphs.length > 0 ? (
                     previewContentParagraphs.map((paragraph, index) => (
-                      <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">
-                        {paragraph}
-                      </p>
+                      <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">{paragraph}</p>
                     ))
                   ) : (
-                    <p className="text-sm leading-7 text-gray-700 dark:text-gray-300">
-                      원문 전문이 저장되지 않은 기사입니다.
-                    </p>
+                    <p className="text-sm text-gray-400">원문 전문이 저장되지 않은 기사입니다.</p>
                   )}
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
-              <button
-                onClick={() => {
-                  toggleSelect(previewArticle.id);
-                  setPreviewArticle(null);
-                }}
-                className="rounded-xl bg-[#1e3a5f] px-4 py-2 text-sm font-medium text-white hover:bg-[#24456f]"
-              >
+            <div className="flex items-center gap-3 border-t border-gray-100 px-5 py-3 dark:border-gray-700/60">
+              <button onClick={() => { toggleSelect(previewArticle.id); setPreviewArticle(null); }}
+                className="rounded-xl bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white hover:bg-[#24456f]">
                 {selectedIds.has(previewArticle.id) ? '선택 해제' : '리포트에 추가'}
               </button>
               {previewArticle.url && (
-                <a
-                  href={previewArticle.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-sm text-gray-500 underline dark:text-gray-300"
-                >
-                  원문 링크 열기
+                <a href={previewArticle.url} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-xs text-gray-500 hover:text-gray-700 hover:underline dark:text-gray-400 dark:hover:text-gray-200">
+                  <Globe className="h-3.5 w-3.5" />원문 링크 열기
                 </a>
               )}
             </div>

@@ -111,7 +111,10 @@ export default function Briefing() {
     setSelectedOutput(output);
     setShareUrl(output.generatedOutput?.shareUrl || output.shareUrl || '');
 
-    const effectiveArticleIds = output.generatedOutput?.articleIds || output.articleIds || [];
+    // orderedArticleIds: GLM에 전달된 실제 순서 (각주 [1],[2],... 와 1:1 대응)
+    // articleIds는 원래 선택 순서라 각주 번호와 불일치 → orderedArticleIds 우선 사용
+    const effectiveArticleIds = output.generatedOutput?.orderedArticleIds || output.orderedArticleIds
+      || output.generatedOutput?.articleIds || output.articleIds || [];
     if (effectiveArticleIds.length > 0) {
       const docs = await Promise.all(effectiveArticleIds.map((id: string) => getDoc(doc(db, 'articles', id))));
       setArticles(docs.filter((item) => item.exists()).map((item) => ({ id: item.id, ...(item.data() as any) })));
@@ -252,9 +255,33 @@ export default function Briefing() {
   );
   const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
 
+  function StatusBadge({ status }: { status: string }) {
+    if (status === 'failed') {
+      return (
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
+          실패
+        </span>
+      );
+    }
+    if (status === 'pending' || status === 'processing') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+          <Loader2 className="h-2.5 w-2.5 animate-spin" />
+          생성중
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+        완료
+      </span>
+    );
+  }
+
   return (
-    <div className="max-w-6xl mx-auto space-y-6 pb-12">
-      <div className="flex items-start justify-between gap-4">
+    <div className="mx-auto max-w-6xl space-y-6 pb-12">
+      {/* Page header */}
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -270,222 +297,306 @@ export default function Briefing() {
         </Link>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+        {/* Left: report list */}
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">
-            <div className="font-semibold text-gray-900 dark:text-white">최근 리포트</div>
-            <button onClick={loadOutputs} className="text-gray-500 dark:text-gray-300">
-              <RefreshCw className="h-4 w-4" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 리포트</span>
+            <button
+              onClick={loadOutputs}
+              className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
           {loading ? (
-            <div className="flex items-center justify-center py-10">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
             </div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {outputs.map((output) => (
-                <button
-                  key={output.id}
-                  onClick={() => navigate(`/briefing?outputId=${output.id}`)}
-                  className={`w-full px-4 py-4 text-left transition hover:bg-gray-50 dark:hover:bg-gray-700/40 ${
-                    selectedOutput?.id === output.id ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''
-                  }`}
-                >
-                  <div className="text-sm font-medium text-gray-900 dark:text-white">{output.title || '리포트'}</div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span>{output.serviceMode === 'external' ? '외부' : '내부'}</span>
-                    <span>{output.status || 'completed'}</span>
-                    <span>{output.createdAt?.toDate ? format(output.createdAt.toDate(), 'MM.dd HH:mm') : ''}</span>
-                  </div>
-                </button>
-              ))}
+            <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
+              {outputs.map((output) => {
+                const isSelected = selectedOutput?.id === output.id;
+                return (
+                  <button
+                    key={output.id}
+                    onClick={() => navigate(`/briefing?outputId=${output.id}`)}
+                    className={`group w-full px-4 py-3.5 text-left transition ${
+                      isSelected
+                        ? 'bg-[#1e3a5f]/5 dark:bg-[#1e3a5f]/20'
+                        : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'
+                    }`}
+                  >
+                    {isSelected && (
+                      <div className="absolute left-0 top-0 h-full w-0.5 rounded-full bg-[#1e3a5f] dark:bg-blue-400" style={{ position: 'relative', display: 'none' }} />
+                    )}
+                    <div className="flex items-start justify-between gap-2">
+                      <p className={`text-sm font-medium leading-snug ${isSelected ? 'text-[#1e3a5f] dark:text-blue-300' : 'text-gray-900 dark:text-white'}`}>
+                        {output.title || '리포트'}
+                      </p>
+                      <StatusBadge status={output.status || 'completed'} />
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
+                      <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                        output.serviceMode === 'external'
+                          ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
+                          : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                      }`}>
+                        {output.serviceMode === 'external' ? '외부' : '내부'}
+                      </span>
+                      {output.createdAt?.toDate && (
+                        <span className="inline-flex items-center gap-1">
+                          <Clock3 className="h-3 w-3" />
+                          {format(output.createdAt.toDate(), 'MM.dd HH:mm')}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
               {outputs.length === 0 && (
-                <div className="px-4 py-10 text-sm text-gray-400">아직 생성된 리포트가 없습니다.</div>
+                <div className="px-4 py-12 text-center text-sm text-gray-400">
+                  아직 생성된 리포트가 없습니다.
+                </div>
               )}
             </div>
           )}
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        {/* Right: detail panel */}
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
           {!selectedOutput ? (
-            <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
-              <Sparkles className="h-10 w-10 text-gray-300" />
-              <p className="mt-3 text-sm text-gray-400">왼쪽 목록에서 리포트를 선택해주세요.</p>
+            <div className="flex min-h-[480px] flex-col items-center justify-center gap-3 text-center">
+              <div className="rounded-2xl border border-dashed border-gray-200 p-5 dark:border-gray-700">
+                <Sparkles className="h-8 w-8 text-gray-300 dark:text-gray-600" />
+              </div>
+              <p className="text-sm text-gray-400">왼쪽 목록에서 리포트를 선택해 주세요.</p>
             </div>
           ) : (
             <div>
+              {/* Detail header */}
               <div className="border-b border-gray-100 px-6 py-5 dark:border-gray-700">
                 <button
                   onClick={() => navigate('/briefing')}
-                  className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-400 transition hover:text-gray-700 dark:hover:text-gray-200"
                 >
-                  <ArrowLeft className="h-4 w-4" />
+                  <ArrowLeft className="h-3.5 w-3.5" />
                   목록으로
                 </button>
-                <h2 className="mt-3 text-xl font-bold text-gray-900 dark:text-white">{selectedOutput.title || '리포트'}</h2>
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-                  <span>{selectedOutput.serviceMode === 'external' ? '외부 배포용' : '내부 분석용'}</span>
-                  <span>{selectedOutput.status || 'completed'}</span>
-                  <span className="inline-flex items-center gap-1">
-                    <Clock3 className="h-3.5 w-3.5" />
-                    {selectedOutput.createdAt?.toDate ? format(selectedOutput.createdAt.toDate(), 'yyyy.MM.dd HH:mm') : ''}
+
+                <div className="mt-3 flex flex-wrap items-start gap-2">
+                  <h2 className="flex-1 text-xl font-bold leading-tight text-gray-900 dark:text-white">
+                    {selectedOutput.title || '리포트'}
+                  </h2>
+                  <StatusBadge status={selectedOutput.status || 'completed'} />
+                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                    selectedOutput.serviceMode === 'external'
+                      ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
+                      : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                  }`}>
+                    {selectedOutput.serviceMode === 'external' ? '외부 배포용' : '내부 분석용'}
                   </span>
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-gray-400 dark:text-gray-500">
+                  {selectedOutput.createdAt?.toDate && (
+                    <span className="inline-flex items-center gap-1">
+                      <Clock3 className="h-3.5 w-3.5" />
+                      {format(selectedOutput.createdAt.toDate(), 'yyyy.MM.dd HH:mm')}
+                    </span>
+                  )}
                   <span>참고 기사 {articles.length}건</span>
                 </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    onClick={() => downloadAsset('pdf')}
-                    disabled={downloadingFormat !== null}
-                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
-                  >
-                    {downloadingFormat === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    PDF 다운로드
-                  </button>
-                  <button
-                    onClick={() => downloadAsset('html')}
-                    disabled={downloadingFormat !== null}
-                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
-                  >
-                    {downloadingFormat === 'html' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    HTML 내려받기
-                  </button>
+
+                {/* Action bar */}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {/* Download group */}
+                  <div className="flex items-center divide-x divide-gray-200 overflow-hidden rounded-lg border border-gray-200 dark:divide-gray-700 dark:border-gray-700">
+                    <button
+                      onClick={() => downloadAsset('pdf')}
+                      disabled={downloadingFormat !== null}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
+                    >
+                      {downloadingFormat === 'pdf' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                      PDF
+                    </button>
+                    <button
+                      onClick={() => downloadAsset('html')}
+                      disabled={downloadingFormat !== null}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
+                    >
+                      {downloadingFormat === 'html' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                      HTML
+                    </button>
+                  </div>
+
                   {selectedOutput.status === 'failed' && (
                     <button
                       onClick={retryOutput}
-                      className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-400"
                     >
-                      <RotateCcw className="h-4 w-4" />
+                      <RotateCcw className="h-3.5 w-3.5" />
                       다시 시도
                     </button>
                   )}
+
                   {isAdmin && (
                     <>
                       <button
                         onClick={sendEmail}
                         disabled={sending}
-                        className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-3 py-2 text-sm text-white hover:bg-[#24456f] disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-medium text-white transition hover:bg-[#24456f] disabled:opacity-50"
                       >
-                        <Mail className="h-4 w-4" />
+                        {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
                         이메일 발송
                       </button>
                       <button
                         onClick={sendTelegram}
                         disabled={sending}
-                        className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-3 py-2 text-sm text-white hover:bg-sky-600 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-sky-600 disabled:opacity-50"
                       >
-                        <Send className="h-4 w-4" />
-                        텔레그램 발송
+                        {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                        텔레그램
                       </button>
                     </>
                   )}
                 </div>
+
                 {selectedOutput.errorMessage && (
-                  <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
                     {selectedOutput.errorMessage}
                   </div>
                 )}
                 {actionMessage && (
-                  <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-200">
+                  <div className="mt-3 rounded-xl border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-4 py-2.5 text-sm text-[#1e3a5f] dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-blue-300">
                     {actionMessage}
                   </div>
                 )}
               </div>
 
               <div className="space-y-6 px-6 py-6">
+                {/* Share link section (admin only) */}
                 {isAdmin && (
-                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900 dark:text-white">모바일 공유 링크</div>
-                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                          로그인 없이 열리는 모바일 최적화 리포트 페이지입니다.
-                        </div>
+                  <div className="rounded-xl border border-[#1e3a5f]/15 bg-[#1e3a5f]/[0.03] p-4 dark:border-[#1e3a5f]/30 dark:bg-[#1e3a5f]/10">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Link2 className="h-4 w-4 text-[#1e3a5f] dark:text-blue-400" />
+                        <span className="text-sm font-semibold text-gray-900 dark:text-white">모바일 공유 링크</span>
+                        <span className="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider bg-[#1e3a5f]/10 text-[#1e3a5f] dark:bg-blue-900/30 dark:text-blue-300">
+                          로그인 불필요
+                        </span>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => createShareUrl(false)}
-                          disabled={sharing}
-                          className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-3 py-2 text-sm text-white hover:bg-[#24456f] disabled:opacity-50"
-                        >
-                          {sharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-                          URL 생성
-                        </button>
-                        <button
-                          onClick={() => createShareUrl(true)}
-                          disabled={sharing}
-                          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
-                        >
-                          <RefreshCw className="h-4 w-4" />
-                          새 링크
-                        </button>
-                        <button
-                          onClick={copyShareUrl}
-                          disabled={!shareUrl}
-                          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
-                        >
-                          <Copy className="h-4 w-4" />
-                          복사
-                        </button>
-                        {shareUrl && (
+                    </div>
+
+                    {shareUrl ? (
+                      <div className="mt-3 rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                        <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
+                          <span className="flex-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400">
+                            {shareUrl}
+                          </span>
                           <a
                             href={shareUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700/40"
+                            className="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
                           >
-                            <ExternalLink className="h-4 w-4" />
-                            미리보기
+                            <ExternalLink className="h-3.5 w-3.5" />
                           </a>
-                        )}
+                        </div>
+                        <div className="flex items-center divide-x divide-gray-100 dark:divide-gray-700">
+                          <button
+                            onClick={copyShareUrl}
+                            className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/40"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            복사
+                          </button>
+                          <button
+                            onClick={() => createShareUrl(true)}
+                            disabled={sharing}
+                            className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
+                          >
+                            {sharing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                            새 링크 발급
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    {shareUrl && (
-                      <div className="mt-3 break-all rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                        {shareUrl}
+                    ) : (
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <p className="text-xs text-gray-400 dark:text-gray-500">
+                          아직 생성된 공유 링크가 없습니다.
+                        </p>
+                        <button
+                          onClick={() => createShareUrl(false)}
+                          disabled={sharing}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-medium text-white transition hover:bg-[#24456f] disabled:opacity-50"
+                        >
+                          {sharing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
+                          URL 생성
+                        </button>
                       </div>
                     )}
                   </div>
                 )}
+
+                {/* Report HTML content */}
                 {renderHtml ? (
                   <div className="prose max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: renderHtml }} />
                 ) : (
-                  <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-sm text-gray-400 dark:border-gray-700">
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400 dark:border-gray-700">
                     생성된 HTML 리포트가 아직 없습니다.
                   </div>
                 )}
 
+                {/* Reference articles */}
                 <div>
-                  <div className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">참고 기사</div>
-                  <div className="space-y-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">참고 기사</span>
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                      {articles.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
                     {articles.map((article, index) => (
-                      <div key={article.id} className="rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
-                        <div className="text-xs text-gray-500 dark:text-gray-400">{index + 1}. {article.source}</div>
-                        <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                        <div className="mt-2 flex flex-wrap gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setPreviewArticle(article)}
-                            className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] underline dark:text-blue-300"
-                          >
-                            원문 보기
-                          </button>
-                          {article.url && (
-                            <a
-                              href={article.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] underline dark:text-blue-300"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              원문 링크
-                            </a>
-                          )}
+                      <div
+                        key={article.id}
+                        className="group rounded-xl border border-gray-200 px-4 py-3 transition hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="mt-0.5 shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-gray-400 dark:bg-gray-700 dark:text-gray-500">
+                            {index + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[11px] font-medium text-gray-400 dark:text-gray-500">{article.source}</div>
+                            <div className="mt-0.5 text-sm font-medium leading-snug text-gray-900 dark:text-white">{article.title}</div>
+                            <div className="mt-2 flex flex-wrap gap-3">
+                              <button
+                                type="button"
+                                onClick={() => setPreviewArticle(article)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
+                              >
+                                원문 보기
+                              </button>
+                              {article.url && (
+                                <a
+                                  href={article.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  원문 링크
+                                </a>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ))}
                     {articles.length === 0 && (
-                      <div className="text-sm text-gray-400">참고 기사 정보가 없습니다.</div>
+                      <div className="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-gray-400 dark:border-gray-700">
+                        참고 기사 정보가 없습니다.
+                      </div>
                     )}
                   </div>
                 </div>
@@ -495,46 +606,61 @@ export default function Briefing() {
         </div>
       </div>
 
+      {/* Article preview modal */}
       {previewArticle && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={() => setPreviewArticle(null)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
+          onClick={() => setPreviewArticle(null)}
+        >
           <div
-            className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800"
+            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-start justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
-              <div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  <span>{previewArticle.source}</span>
+            {/* Modal header */}
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                    {previewArticle.source}
+                  </span>
                   {formatArticleDate(previewArticle.publishedAt) && (
-                    <span>발행시각 {formatArticleDate(previewArticle.publishedAt)}</span>
+                    <span className="text-[11px] text-gray-400">
+                      {formatArticleDate(previewArticle.publishedAt)}
+                    </span>
                   )}
                 </div>
-                <h3 className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
+                <h3 className="mt-2 text-base font-bold leading-snug text-gray-900 dark:text-white">
+                  {previewArticle.title}
+                </h3>
               </div>
-              <button onClick={() => setPreviewArticle(null)}>
-                <X className="h-5 w-5 text-gray-400" />
+              <button
+                onClick={() => setPreviewArticle(null)}
+                className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+              >
+                <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
+
+            {/* Modal body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
               {previewArticle.summary?.length > 0 && (
-                <div className="mb-6">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI 요약</p>
-                  <div className="mt-3 space-y-2">
+                <div className="rounded-xl border border-[#1e3a5f]/15 bg-[#1e3a5f]/[0.04] px-4 py-4 dark:border-[#1e3a5f]/30 dark:bg-[#1e3a5f]/10">
+                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#1e3a5f]/70 dark:text-blue-400">
+                    AI 요약
+                  </p>
+                  <div className="space-y-1.5">
                     {previewArticle.summary.map((line: string, index: number) => (
-                      <p key={index} className="text-sm text-gray-700 dark:text-gray-300">- {line}</p>
+                      <p key={index} className="flex gap-2 text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                        <span className="mt-0.5 shrink-0 text-[#1e3a5f]/40 dark:text-blue-400/60">—</span>
+                        {line}
+                      </p>
                     ))}
                   </div>
                 </div>
               )}
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
-                {formatArticleDate(previewArticle.publishedAt) && (
-                  <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
-                    <span className="font-semibold text-gray-800 dark:text-gray-100">발행시각</span>
-                    <span className="ml-2">{formatArticleDate(previewArticle.publishedAt)}</span>
-                  </div>
-                )}
-                <div className="mt-3 space-y-4">
+                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
+                <div className="space-y-4">
                   {previewContentParagraphs.length > 0 ? (
                     previewContentParagraphs.map((paragraph: string, index: number) => (
                       <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">
@@ -542,26 +668,26 @@ export default function Briefing() {
                       </p>
                     ))
                   ) : (
-                    <p className="text-sm leading-7 text-gray-700 dark:text-gray-300">
-                      원문 전문이 저장되지 않은 기사입니다.
-                    </p>
+                    <p className="text-sm leading-7 text-gray-400">원문 전문이 저장되지 않은 기사입니다.</p>
                   )}
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
-              {previewArticle.url && (
+
+            {/* Modal footer */}
+            {previewArticle.url && (
+              <div className="border-t border-gray-100 px-6 py-3 dark:border-gray-700">
                 <a
                   href={previewArticle.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-sm text-gray-500 underline dark:text-gray-300"
+                  className="inline-flex items-center gap-2 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
                 >
-                  <ExternalLink className="h-4 w-4" />
+                  <ExternalLink className="h-3.5 w-3.5" />
                   원문 링크 열기
                 </a>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}

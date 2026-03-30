@@ -88,6 +88,9 @@ export default function Layout({ children }: LayoutProps) {
     await logout();
   };
 
+  const mainNav = navigation.filter((item) => item.show && !['관리자 구성', '매체 마스터', '회사 관리'].includes(item.name));
+  const adminNav = navigation.filter((item) => item.show && ['관리자 구성', '매체 마스터', '회사 관리'].includes(item.name));
+
   const NavLink = ({ item }: { item: typeof navigation[0] }) => {
     const isActive = item.href === '/home'
       ? location.pathname === '/home' || location.pathname === '/'
@@ -95,14 +98,15 @@ export default function Layout({ children }: LayoutProps) {
 
     return (
       <Link
-        key={item.name}
         to={item.href}
-        className={`flex items-center px-4 py-2.5 text-sm font-medium rounded-lg transition-colors ${
-          isActive ? 'bg-[#d4af37] text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'
+        className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+          isActive
+            ? 'bg-white/12 text-white border-l-2 border-[#d4af37] pl-[10px]'
+            : 'text-white/70 hover:bg-white/8 hover:text-white border-l-2 border-transparent pl-[10px]'
         }`}
         onClick={() => setSidebarOpen(false)}
       >
-        <item.icon className="w-4 h-4 mr-3" />
+        <item.icon className="h-4 w-4 shrink-0" />
         {item.name}
       </Link>
     );
@@ -112,71 +116,87 @@ export default function Layout({ children }: LayoutProps) {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-gray-600 bg-opacity-75 z-20 lg:hidden"
+          className="fixed inset-0 z-20 bg-black/60 backdrop-blur-sm lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <div
-        className={`fixed inset-y-0 left-0 z-30 w-64 bg-[#1e3a5f] dark:bg-gray-950 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-64 flex-col bg-[#1e3a5f] dark:bg-gray-950 transition-transform duration-300 ease-in-out lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex flex-col h-full">
-          <div className="flex items-center justify-between h-16 px-6 border-b border-white/10 flex-shrink-0">
-            <div className="flex items-center">
-              <div className="w-8 h-8 bg-[#d4af37] rounded flex items-center justify-center mr-3">
-                <span className="text-white font-bold text-lg">E</span>
-              </div>
-              <span className="text-white font-semibold text-lg">NEWS</span>
+        {/* Logo */}
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#d4af37]">
+              <span className="text-sm font-black text-white">E</span>
             </div>
-            <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-gray-400 hover:text-white">
-              <X className="w-6 h-6" />
-            </button>
+            <span className="text-sm font-bold tracking-wide text-white">EUM NEWS</span>
           </div>
+          <button onClick={() => setSidebarOpen(false)} className="rounded-lg p-1 text-white/50 transition hover:bg-white/10 hover:text-white lg:hidden">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
-          <nav className="flex-1 px-4 py-5 space-y-1 overflow-y-auto">
-            {navigation.filter((item) => item.show).map((item) => (
+        {/* Main nav */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4">
+          <div className="space-y-0.5">
+            {mainNav.map((item) => (
               <NavLink key={item.name} item={item} />
             ))}
-          </nav>
+          </div>
 
-          <div className="p-4 border-t border-white/10 flex-shrink-0">
-            <div className="flex items-center mb-3">
-              <div className="w-8 h-8 bg-[#d4af37] rounded-full flex items-center justify-center mr-3 flex-shrink-0">
-                <span className="text-white text-sm font-medium">{user?.email?.charAt(0).toUpperCase()}</span>
+          {adminNav.length > 0 && (
+            <div className="mt-6">
+              <div className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-white/30">
+                Admin
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">{user?.email}</p>
-                <p className="text-xs text-gray-400">{getRoleLabel(role)}</p>
+              <div className="space-y-0.5">
+                {adminNav.map((item) => (
+                  <NavLink key={item.name} item={item} />
+                ))}
               </div>
+            </div>
+          )}
+        </nav>
+
+        {/* User section */}
+        <div className="shrink-0 border-t border-white/10 p-3">
+          <div className="flex items-center gap-3 rounded-lg px-2 py-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#d4af37] text-sm font-semibold text-white">
+              {user?.email?.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-white">{user?.email}</p>
+              <p className="text-[10px] text-white/40">{getRoleLabel(role)}</p>
             </div>
             <button
               onClick={handleLogout}
-              className="w-full flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+              className="shrink-0 rounded-lg p-1.5 text-white/40 transition hover:bg-white/10 hover:text-white"
+              title="로그아웃"
             >
-              <LogOut className="w-4 h-4 mr-2" />
-              {NAV_LABELS.logout}
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
         </div>
       </div>
 
       <div className="lg:pl-64">
-        <div className="sticky top-0 z-10 h-16 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 lg:px-8 transition-colors duration-200">
+        <div className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-gray-200 bg-white/95 px-4 backdrop-blur-sm transition-colors duration-200 dark:border-gray-700/60 dark:bg-gray-900/95 lg:px-8">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="lg:hidden text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 lg:hidden"
           >
-            <Menu className="w-6 h-6" />
+            <Menu className="h-5 w-5" />
           </button>
           <div className="flex-1" />
           <button
             onClick={toggleTheme}
-            className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+            className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             aria-label="Toggle theme"
           >
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
         </div>
 
