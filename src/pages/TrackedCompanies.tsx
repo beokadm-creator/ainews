@@ -28,6 +28,20 @@ function normalizeReasonText(value?: string | null) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim();
 }
 
+function isInternalExclusionReason(value?: string | null) {
+  const normalized = normalizeReasonText(value).toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    'sports context article',
+    '스포츠 문맥 기사 제외',
+    'contains excluded keyword',
+    'missing required keyword',
+    '제목 키워드 매칭',
+    '우선 매체 수집',
+  ].some((token) => normalized.includes(token.toLowerCase()));
+}
+
 function getAnalysisBasisLabel(basis?: TrackedArticle['relevanceBasis']) {
   switch (basis) {
     case 'ai':
@@ -37,23 +51,20 @@ function getAnalysisBasisLabel(basis?: TrackedArticle['relevanceBasis']) {
     case 'priority_source_fallback':
       return '우선 매체 예외 보류 통과로 분석 진행';
     case 'keyword_reject':
-      return '키워드 규칙 제외';
+      return '';
     default:
       return '분석 단계 진행';
   }
 }
 
 function getArticleReasonDetails(article: TrackedArticle) {
-  const collectedReason = normalizeReasonText(
-    article.keywordPrefilterReason || (article.keywordMatched ? `제목 키워드 매칭: "${article.keywordMatched}"` : '')
-  );
   const analysisReasonRaw = normalizeReasonText(article.aiRelevanceReason || article.relevanceReason);
-  const analysisReason = analysisReasonRaw && analysisReasonRaw !== collectedReason ? analysisReasonRaw : '';
+  const analysisReason = !isInternalExclusionReason(analysisReasonRaw) ? analysisReasonRaw : '';
+  const analysisBasisLabel = getAnalysisBasisLabel(article.relevanceBasis);
 
   return {
-    collectedReason,
     analysisReason,
-    analysisBasisLabel: getAnalysisBasisLabel(article.relevanceBasis),
+    analysisBasisLabel,
   };
 }
 
@@ -284,18 +295,12 @@ export default function TrackedCompanies() {
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {(() => {
                 const reasonDetails = getArticleReasonDetails(previewArticle);
-                return (reasonDetails.collectedReason || reasonDetails.analysisReason || previewArticle.relevanceBasis) ? (
-                  <div className="mb-5 grid gap-3 md:grid-cols-2">
-                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">수집 사유</p>
-                      <p className="mt-2 text-xs text-gray-700 dark:text-gray-300">{reasonDetails.collectedReason || '수집 근거 정보 없음'}</p>
-                    </div>
-                    <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">분석 진행 사유</p>
-                      <div className="mt-2 space-y-1 text-xs text-gray-700 dark:text-gray-300">
-                        {previewArticle.relevanceBasis ? <p>{reasonDetails.analysisBasisLabel}</p> : null}
-                        {reasonDetails.analysisReason ? <p>{reasonDetails.analysisReason}</p> : null}
-                      </div>
+                return (reasonDetails.analysisBasisLabel || reasonDetails.analysisReason) ? (
+                  <div className="mb-5 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700/40 dark:bg-gray-800/60">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">분석 근거</p>
+                    <div className="mt-2 space-y-1 text-xs text-gray-700 dark:text-gray-300">
+                      {reasonDetails.analysisBasisLabel ? <p>{reasonDetails.analysisBasisLabel}</p> : null}
+                      {reasonDetails.analysisReason ? <p>{reasonDetails.analysisReason}</p> : null}
                     </div>
                   </div>
                 ) : null;

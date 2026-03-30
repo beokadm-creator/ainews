@@ -5,7 +5,7 @@ import { extractTextFromHtml, normalizeArticleText } from '../utils/textUtils';
 const FETCH_TIMEOUT_MS = 15000;
 const USER_AGENT = 'Mozilla/5.0 (compatible; NewsBot/1.0; +https://eumnews.com)';
 const MIN_BODY_LENGTH = 500;
-const MAX_BODY_CHARS = 12000;
+const MAX_BODY_CHARS = 50000;
 const FORCE_FETCH_HOSTS = [
   'www.fnnews.com',
   'fnnews.com',
@@ -35,6 +35,21 @@ function shouldForceFetch(url?: string): boolean {
 export function isLikelyFullArticleBody(content?: string | null) {
   const normalized = `${content || ''}`.replace(/\s+/g, ' ').trim();
   return normalized.length >= MIN_BODY_LENGTH;
+}
+
+function selectPreferredBody(currentContent: string, fetchedContent: string) {
+  if (!fetchedContent) return currentContent;
+  if (!currentContent) return fetchedContent;
+
+  if (!isLikelyFullArticleBody(currentContent) && fetchedContent.length > currentContent.length) {
+    return fetchedContent;
+  }
+
+  if (isLikelyFullArticleBody(fetchedContent) && fetchedContent.length >= currentContent.length) {
+    return fetchedContent;
+  }
+
+  return currentContent;
 }
 
 export async function fetchArticleBodyByUrl(url: string): Promise<string> {
@@ -70,10 +85,11 @@ export async function enrichArticleBody<T extends { url: string; content?: strin
 
   try {
     const fetched = await fetchArticleBodyByUrl(article.url);
-    if (isLikelyFullArticleBody(fetched)) {
+    const preferredContent = selectPreferredBody(currentContent, fetched);
+    if (preferredContent) {
       return {
         ...article,
-        content: fetched,
+        content: preferredContent,
       };
     }
   } catch (error: any) {
