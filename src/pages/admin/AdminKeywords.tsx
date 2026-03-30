@@ -17,6 +17,7 @@ import {
 interface KeywordConfig {
   titleKeywords: string[];
   bypassSourcePatterns: string[];
+  trackedCompanies: string[];
 }
 
 // 딜 키워드 (엑셀 기준)
@@ -27,7 +28,7 @@ const DEAL_KEYWORDS = [
 ];
 
 export default function AdminKeywords() {
-  const [config, setConfig] = useState<KeywordConfig>({ titleKeywords: [], bypassSourcePatterns: [] });
+  const [config, setConfig] = useState<KeywordConfig>({ titleKeywords: [], bypassSourcePatterns: [], trackedCompanies: [] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -35,6 +36,7 @@ export default function AdminKeywords() {
   const [searchFilter, setSearchFilter] = useState('');
   const [showBypass, setShowBypass] = useState(false);
   const [newBypass, setNewBypass] = useState('');
+  const [newTrackedCompany, setNewTrackedCompany] = useState('');
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
 
@@ -60,7 +62,11 @@ export default function AdminKeywords() {
     setMessage(null);
     try {
       const fn = httpsCallable(functions, 'saveGlobalKeywords');
-      await fn({ titleKeywords: config.titleKeywords, bypassSourcePatterns: config.bypassSourcePatterns });
+      await fn({
+        titleKeywords: config.titleKeywords,
+        bypassSourcePatterns: config.bypassSourcePatterns,
+        trackedCompanies: config.trackedCompanies,
+      });
       setMessage({ type: 'success', text: `키워드 ${config.titleKeywords.length}개 저장 완료` });
     } catch (err: any) {
       setMessage({ type: 'error', text: `저장 실패: ${err.message}` });
@@ -89,6 +95,17 @@ export default function AdminKeywords() {
 
   const removeBypass = (bp: string) => {
     setConfig((prev) => ({ ...prev, bypassSourcePatterns: prev.bypassSourcePatterns.filter((b) => b !== bp) }));
+  };
+
+  const addTrackedCompany = () => {
+    const company = newTrackedCompany.trim();
+    if (!company || config.trackedCompanies.includes(company)) return;
+    setConfig((prev) => ({ ...prev, trackedCompanies: [...prev.trackedCompanies, company] }));
+    setNewTrackedCompany('');
+  };
+
+  const removeTrackedCompany = (company: string) => {
+    setConfig((prev) => ({ ...prev, trackedCompanies: prev.trackedCompanies.filter((item) => item !== company) }));
   };
 
   const handleResetAll = async () => {
@@ -248,6 +265,39 @@ export default function AdminKeywords() {
             {filteredKeywords.length}개 표시 (전체 {config.titleKeywords.length}개)
           </p>
         )}
+      </div>
+
+      <div className="bg-gray-900 border border-white/5 rounded-xl p-5">
+        <h2 className="text-sm font-semibold text-white mb-3">{'\uCD94\uC801 \uD68C\uC0AC \uBAA9\uB85D'}</h2>
+        <div className="flex gap-2 mb-3">
+          <input
+            value={newTrackedCompany}
+            onChange={(e) => setNewTrackedCompany(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addTrackedCompany()}
+            placeholder={'\uD68C\uC0AC\uBA85 \uC785\uB825'}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/25 focus:outline-none focus:border-[#d4af37]/50"
+          />
+          <button
+            onClick={addTrackedCompany}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#d4af37]/15 text-[#d4af37] border border-[#d4af37]/30 rounded-lg text-sm font-medium hover:bg-[#d4af37]/25 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            {'\uCD94\uAC00'}
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(config.trackedCompanies || []).map((company) => (
+            <span
+              key={company}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border bg-purple-500/10 text-purple-300 border-purple-500/20"
+            >
+              {company}
+              <button onClick={() => removeTrackedCompany(company)} className="hover:opacity-70 transition-opacity">
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Bypass sources */}

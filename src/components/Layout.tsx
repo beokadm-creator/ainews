@@ -12,6 +12,7 @@ import {
   Library,
   Users,
   Search,
+  Star,
   BookOpen,
   ShieldCheck,
   Database,
@@ -37,6 +38,22 @@ function getRoleLabel(role?: string) {
   }
 }
 
+const NAV_LABELS = {
+  home: '\uB300\uC2DC\uBCF4\uB4DC',
+  articles: '\uAE30\uC0AC \uAC80\uC0C9',
+  tracked: '\uAD00\uC2EC\uB4F1\uB85D\uD68C\uC0AC',
+  briefing: '\uB0B4\uBD80 \uB9AC\uD3EC\uD2B8',
+  history: '\uB9AC\uD3EC\uD2B8 \uC774\uB825',
+  delivery: '\uC678\uBD80 \uBA54\uC77C\uB9DD',
+  media: '\uB9E4\uCCB4 \uAD6C\uB3C5',
+  team: '\uC0AC\uC6A9\uC790 \uAD00\uB9AC',
+  settings: '\uD68C\uC0AC \uC124\uC815',
+  admin: '\uAD00\uB9AC\uC790 \uAD6C\uC131',
+  sources: '\uB9E4\uCCB4 \uB9C8\uC2A4\uD130',
+  companies: '\uD68C\uC0AC \uAD00\uB9AC',
+  logout: 'Logout',
+} as const;
+
 export default function Layout({ children }: LayoutProps) {
   const { user, logout } = useAuthStore();
   const { theme, toggleTheme } = useThemeStore();
@@ -53,17 +70,18 @@ export default function Layout({ children }: LayoutProps) {
   }, [theme]);
 
   const navigation = [
-    { name: '대시보드', href: '/home', icon: LayoutDashboard, show: true },
-    { name: '기사 검색', href: '/articles', icon: Search, show: true },
-    { name: '내부 리포트', href: '/briefing', icon: BookOpen, show: true },
-    { name: '리포트 이력', href: '/history', icon: History, show: isAdminOrAbove },
-    { name: '외부 메일링', href: '/delivery', icon: Send, show: role === 'company_admin' },
-    { name: '매체 구독', href: '/media', icon: Library, show: role === 'company_admin' },
-    { name: '사용자 관리', href: '/team', icon: Users, show: role === 'company_admin' },
-    { name: '회사 설정', href: '/settings', icon: Settings, show: role === 'company_admin' },
-    { name: '관리 도구', href: '#', icon: ShieldCheck, show: isSuperadmin },
-    { name: '매체 마스터', href: '/admin/sources', icon: Database, show: isSuperadmin },
-    { name: '회사 관리', href: '/admin/companies', icon: Users, show: isSuperadmin },
+    { name: NAV_LABELS.home, href: '/home', icon: LayoutDashboard, show: true },
+    { name: NAV_LABELS.articles, href: '/articles', icon: Search, show: true },
+    { name: NAV_LABELS.tracked, href: '/tracked-companies', icon: Star, show: true },
+    { name: NAV_LABELS.briefing, href: '/briefing', icon: BookOpen, show: true },
+    { name: NAV_LABELS.history, href: '/history', icon: History, show: isAdminOrAbove },
+    { name: NAV_LABELS.delivery, href: '/delivery', icon: Send, show: role === 'company_admin' },
+    { name: NAV_LABELS.media, href: '/media', icon: Library, show: role === 'company_admin' },
+    { name: NAV_LABELS.team, href: '/team', icon: Users, show: role === 'company_admin' },
+    { name: NAV_LABELS.settings, href: '/settings', icon: Settings, show: role === 'company_admin' },
+    { name: NAV_LABELS.admin, href: '#', icon: ShieldCheck, show: isSuperadmin },
+    { name: NAV_LABELS.sources, href: '/admin/sources', icon: Database, show: isSuperadmin },
+    { name: NAV_LABELS.companies, href: '/admin/companies', icon: Users, show: isSuperadmin },
   ];
 
   const handleLogout = async () => {
@@ -138,7 +156,7 @@ export default function Layout({ children }: LayoutProps) {
               className="w-full flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
             >
               <LogOut className="w-4 h-4 mr-2" />
-              Logout
+              {NAV_LABELS.logout}
             </button>
           </div>
         </div>

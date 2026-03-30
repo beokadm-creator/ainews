@@ -215,7 +215,7 @@ export async function processRssSources(options?: {
 
           // 키워드 필터 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
           // → processDeepAnalysis가 직접 심층 분석 (GLM 호출 1회로 절약)
-          const initialStatus = 'filtered';
+          const initialStatus = 'pending';
           const relevanceFields = {
             filteredAt: admin.firestore.FieldValue.serverTimestamp(),
             relevanceBasis: kw.isBypassSource ? 'priority_source_bypass' : 'keyword_prefilter',
@@ -226,6 +226,8 @@ export async function processRssSources(options?: {
               : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
             keywordMatched: kw.matchedKeyword || null,
             priorityAnalysis: kw.isBypassSource,
+            keywordPrefilterReason: kw.isBypassSource ? '우선 매체 수집' : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+            collectedByKeywordFilter: true,
           };
 
           const articleRef = db.collection('articles').doc();

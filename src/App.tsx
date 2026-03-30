@@ -13,6 +13,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import Login from '@/pages/Login';
 import UserHome from '@/pages/UserHome';
 import Articles from '@/pages/Articles';
+import TrackedCompanies from '@/pages/TrackedCompanies';
 import ReportNew from '@/pages/ReportNew';
 import Briefing from '@/pages/Briefing';
 import History from '@/pages/History';
@@ -67,6 +68,11 @@ export default function App() {
         <Route path="/articles" element={
           <ProtectedRoute requiredRole={['company_admin', 'company_editor', 'viewer']}>
             <Layout><Articles /></Layout>
+          </ProtectedRoute>
+        } />
+        <Route path="/tracked-companies" element={
+          <ProtectedRoute requiredRole={['company_admin', 'company_editor', 'viewer']}>
+            <Layout><TrackedCompanies /></Layout>
           </ProtectedRoute>
         } />
         <Route path="/reports/new" element={

@@ -109,11 +109,43 @@ export async function processApiSources(options?: {
 }
 
 function cleanNaverHtml(text: string): string {
-  return fixEncodingIssues(cleanHtmlContent((text || '')
+  let cleaned = fixEncodingIssues(cleanHtmlContent((text || '')
     .replace(/<\/?b>/gi, '')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
     .trim()));
+
+  // Naver API 가비지 텍스트 정제: 관련 없는 기사 제목들 제거
+  // 패턴: 줄 단위로 중복되는 제목들, 광고성 텍스트, 특수한 구조의 쓰레기
+  const lines = cleaned.split('\n');
+  const seenLines = new Set<string>();
+  const filtered: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 너무 짧은 줄 (1-2단어) 제거
+    if (trimmed.split(/\s+/).length < 3) continue;
+
+    // 중복된 줄 제거
+    if (seenLines.has(trimmed)) continue;
+    seenLines.add(trimmed);
+
+    // 기사 제목처럼 보이는 라인 중 반복되는 것 필터 (관련 없는 뉴스들)
+    // 예: "...기업 단독구리를..." "...국제 美 1만명..." 같은 단편적 제목들
+    const isGarbageHeadline = /^[가-힣a-zA-Z0-9]{2,50}\s+(기업|국제|정치|사회|단독|영상)/;
+    if (isGarbageHeadline.test(trimmed)) {
+      // 실제 본문 시작이 아니라면 제거
+      if (!trimmed.match(/^(서|이|그|하|스페이스X|더|결|원문|개|담)/)) continue;
+    }
+
+    filtered.push(trimmed);
+  }
+
+  // 최종 정제된 본문 (최소 5줄 이상, 너무 짧으면 가비지)
+  const result = filtered.join('\n').trim();
+  return result.length > 100 ? result : '';
 }
 
 async function collectFromNaverNews(
@@ -198,6 +230,8 @@ async function collectFromNaverNews(
         : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
       keywordMatched: kw.matchedKeyword || null,
       priorityAnalysis: kw.isBypassSource,
+      keywordPrefilterReason: kw.isBypassSource ? '우선 매체 수집' : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+      collectedByKeywordFilter: true,
     };
 
     const articleRef = db.collection('articles').doc();
@@ -212,7 +246,7 @@ async function collectFromNaverNews(
       sourceCategory: source.category || 'domestic',
       sourcePricingTier: source.pricingTier || 'free',
       collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'filtered',
+      status: 'pending',
       urlHash: hashUrl(article.url),
       titleHash: hashTitle(article.title),
       ...relevanceFields,
@@ -224,7 +258,7 @@ async function collectFromNaverNews(
       sourceId,
       globalSourceId: sourceId,
       source: source.name || '네이버 뉴스',
-      status: 'filtered',
+      status: 'pending',
       collectedAt: new Date(),
     });
     collected++;

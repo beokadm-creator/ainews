@@ -176,6 +176,8 @@ export async function processScrapingSources(options?: {
             : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
           keywordMatched: kw.matchedKeyword || null,
           priorityAnalysis: kw.isBypassSource,
+          keywordPrefilterReason: kw.isBypassSource ? '우선 매체 수집' : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+          collectedByKeywordFilter: true,
         };
 
         const articleRef = db.collection('articles').doc();
@@ -190,7 +192,7 @@ export async function processScrapingSources(options?: {
           sourceCategory: source.category || null,
           sourcePricingTier: (data as any).pricingTier || 'free',
           collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: 'filtered',
+          status: 'pending',
           urlHash: hashUrl(article.url),
           titleHash: hashTitle(article.title),
           ...relevanceFields,
@@ -202,7 +204,7 @@ export async function processScrapingSources(options?: {
           sourceId,
           globalSourceId: sourceId,
           source: source.name,
-          status: 'filtered',
+          status: 'pending',
           collectedAt: new Date(),
         });
         sourceCollected++;

@@ -1174,6 +1174,11 @@ export async function checkRelevance(
 
 ${extraGuidelines}
 
+Important:
+- Review both the title and the original body text together.
+- If a registered keyword appears only as a short alias, abbreviation, or incidental mention but the body is mainly about another topic, mark it as not relevant.
+- Only keep the article when the body materially relates to the matched company, tracked company, investment, fundraising, sale, restructuring, or transaction theme.
+
 Title: ${article.title}
 Content: ${article.content.substring(0, 2000)}
 Source: ${article.source}
@@ -1413,6 +1418,8 @@ export async function processRelevanceFiltering(options?: {
           ? null
           : toRelevancePoints(aiRelevanceResult?.confidence ?? result.confidence);
 
+        const collectedData = doc.data() as any;
+
         batch.update(doc.ref, {
           status: result.isRelevant ? 'filtered' : 'rejected',
           filteredAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1425,6 +1432,8 @@ export async function processRelevanceFiltering(options?: {
           aiRelevanceScore: toRelevancePoints(aiConfidence),
           aiRelevanceConfidence: aiConfidence,
           aiRelevanceReason: aiRelevanceResult?.reason ?? result.reason,
+          keywordMatched: collectedData?.keywordMatched || null,
+          keywordPrefilterReason: collectedData?.keywordPrefilterReason || null,
           priorityAnalysis: priorityDecision?.isPriority || false,
           analysisPriority: priorityDecision?.priority || 0,
           priorityAnalysisReason: priorityDecision?.reason || null,

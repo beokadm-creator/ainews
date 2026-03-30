@@ -130,6 +130,9 @@ interface ArticleItem {
   relevanceScore?: number;
   relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
   relevanceReason?: string;
+  aiRelevanceReason?: string;
+  keywordMatched?: string | null;
+  keywordPrefilterReason?: string;
   content: string;
   url: string;
 }
@@ -150,6 +153,7 @@ export default function Articles() {
   const defaults = getDefaultDateRange();
 
   const [keywords, setKeywords] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [startDate, setStartDate] = useState(defaults.startDate);
   const [endDate, setEndDate] = useState(defaults.endDate);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
@@ -166,6 +170,7 @@ export default function Articles() {
   useEffect(() => {
     const next = getDefaultDateRange();
     setKeywords([]);
+    setSelectedCategories([]);
     setSelectedSourceIds([]);
     setStartDate(next.startDate);
     setEndDate(next.endDate);
@@ -204,6 +209,7 @@ export default function Articles() {
       const result = await fn({
         companyId,
         keywords,
+        categories: selectedCategories,
         startDate,
         endDate,
         sourceIds: selectedSourceIds.length > 0 ? selectedSourceIds : undefined,
@@ -222,7 +228,7 @@ export default function Articles() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [companyId, endDate, keywords, selectedSourceIds, startDate]);
+  }, [companyId, endDate, keywords, selectedCategories, selectedSourceIds, startDate]);
 
   const handleSearch = useCallback(async () => {
     await runSearch(0, false);
@@ -242,6 +248,10 @@ export default function Articles() {
     setSelectedSourceIds((prev) => prev.includes(sourceId) ? prev.filter((id) => id !== sourceId) : [...prev, sourceId]);
   };
 
+  const toggleCategory = (category: string) => {
+    setSelectedCategories((prev) => prev.includes(category) ? prev.filter((item) => item !== category) : [...prev, category]);
+  };
+
   const toggleSelect = (articleId: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -259,6 +269,7 @@ export default function Articles() {
   const createReportFromFilters = () => {
     const params = new URLSearchParams();
     if (keywords.length > 0) params.set('keywords', keywords.join(','));
+    if (selectedCategories.length > 0) params.set('categories', selectedCategories.join(','));
     if (selectedSourceIds.length > 0) params.set('sourceIds', selectedSourceIds.join(','));
     if (startDate) params.set('startDate', startDate);
     if (endDate) params.set('endDate', endDate);
@@ -268,6 +279,10 @@ export default function Articles() {
   const allSelected = useMemo(
     () => articles.length > 0 && selectedIds.size === articles.length,
     [articles.length, selectedIds.size],
+  );
+  const availableCategories = useMemo(
+    () => Array.from(new Set(articles.map((article) => article.category).filter(Boolean))),
+    [articles],
   );
   const previewContentParagraphs = useMemo(
     () => formatArticleContentParagraphs(previewArticle?.content || ''),
@@ -390,6 +405,7 @@ export default function Articles() {
               onClick={() => {
                 const next = getDefaultDateRange();
                 setKeywords([]);
+                setSelectedCategories([]);
                 setSelectedSourceIds([]);
                 setStartDate(next.startDate);
                 setEndDate(next.endDate);
@@ -433,6 +449,30 @@ export default function Articles() {
             )}
           </div>
 
+          {availableCategories.length > 0 && (
+            <div className="border-b border-gray-100 px-5 py-3 dark:border-gray-700">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  {'\uCE74\uD14C\uACE0\uB9AC \uC0C1\uC138 \uAC80\uC0C9'}
+                </span>
+                {availableCategories.map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => toggleCategory(category)}
+                    className={`rounded-full border px-3 py-1 text-xs transition ${
+                      selectedCategories.includes(category)
+                        ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                        : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-300'
+                    }`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
@@ -471,6 +511,12 @@ export default function Articles() {
                           <p key={index} className="text-xs text-gray-600 dark:text-gray-300">- {line}</p>
                         ))}
                       </div>
+                      {(article.keywordMatched || article.relevanceReason) && (
+                        <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-gray-900/40 dark:text-gray-300">
+                          {article.keywordMatched ? <p>{`\uC81C\uBAA9 \uD0A4\uC6CC\uB4DC \uB9E4\uCE6D: "${article.keywordMatched}"`}</p> : null}
+                          {article.relevanceReason ? <p className="mt-1">{article.relevanceReason}</p> : null}
+                        </div>
+                      )}
                       {article.tags?.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {article.tags.slice(0, 5).map((tagName) => (

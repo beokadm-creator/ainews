@@ -1,8 +1,10 @@
 import * as admin from 'firebase-admin';
+import { DEFAULT_TRACKED_COMPANIES } from './trackedCompanyConfig';
 
 // ─── In-memory cache (per Cloud Function instance warm reuse) ────────────────
 let cachedTitleKeywords: string[] | null = null;
 let cachedBypassPatterns: string[] | null = null;
+let cachedTrackedCompanies: string[] | null = null;
 let cacheExpiresAt = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5분
 
@@ -68,6 +70,7 @@ export const SEED_TITLE_KEYWORDS: string[] = [
 export function invalidateKeywordCache(): void {
   cachedTitleKeywords = null;
   cachedBypassPatterns = null;
+  cachedTrackedCompanies = null;
   cacheExpiresAt = 0;
 }
 
@@ -82,14 +85,17 @@ async function loadKeywordConfig(): Promise<void> {
       const data = doc.data() as any;
       cachedTitleKeywords = Array.isArray(data.titleKeywords) ? data.titleKeywords.filter(Boolean) : [];
       cachedBypassPatterns = Array.isArray(data.bypassSourcePatterns) ? data.bypassSourcePatterns : DEFAULT_BYPASS_PATTERNS;
+      cachedTrackedCompanies = Array.isArray(data.trackedCompanies) ? data.trackedCompanies.filter(Boolean) : DEFAULT_TRACKED_COMPANIES;
     } else {
       cachedTitleKeywords = [];
       cachedBypassPatterns = DEFAULT_BYPASS_PATTERNS;
+      cachedTrackedCompanies = DEFAULT_TRACKED_COMPANIES;
     }
   } catch (err) {
     console.warn('[GlobalKeyword] Firestore 로드 실패, 캐시 유지:', err);
     if (cachedTitleKeywords === null) cachedTitleKeywords = [];
     if (cachedBypassPatterns === null) cachedBypassPatterns = DEFAULT_BYPASS_PATTERNS;
+    if (cachedTrackedCompanies === null) cachedTrackedCompanies = DEFAULT_TRACKED_COMPANIES;
   }
 
   cacheExpiresAt = Date.now() + CACHE_TTL_MS;
@@ -144,6 +150,45 @@ function isDefinitelyNotRelevant(title: string, keyword: string): boolean {
   return false;
 }
 
+const GENERIC_SHORT_KOREAN_KEYWORDS = new Set([
+  '인수',
+  '매각',
+  '회수',
+  '사모',
+  '엑시트',
+  '상장',
+  '공모',
+]);
+
+const COMPANY_ALIAS_CONTEXT_PATTERN = /(인베스트|인베스트먼트|파트너|파트너스|캐피탈|프라이빗|에쿼티|자산운용|홀딩스|벤처|pe|vc)/i;
+
+function hasLooseWordBoundary(text: string, start: number, length: number): boolean {
+  const before = start > 0 ? text[start - 1] : '';
+  const after = start + length < text.length ? text[start + length] : '';
+  return !/[a-z0-9가-힣]/i.test(before) && !/[a-z0-9가-힣]/i.test(after);
+}
+
+function isStrictKoreanAliasKeyword(keyword: string): boolean {
+  return /^[가-힣]{2,4}$/.test(keyword) && !GENERIC_SHORT_KOREAN_KEYWORDS.has(keyword);
+}
+
+function matchesStrictKoreanAlias(titleLower: string, keyword: string): boolean {
+  let idx = titleLower.indexOf(keyword);
+  while (idx !== -1) {
+    const windowStart = Math.max(0, idx - 8);
+    const windowEnd = Math.min(titleLower.length, idx + keyword.length + 16);
+    const nearbyText = titleLower.slice(windowStart, windowEnd);
+
+    if (hasLooseWordBoundary(titleLower, idx, keyword.length) || COMPANY_ALIAS_CONTEXT_PATTERN.test(nearbyText)) {
+      if (!isDefinitelyNotRelevant(titleLower, keyword)) return true;
+    }
+
+    idx = titleLower.indexOf(keyword, idx + 1);
+  }
+
+  return false;
+}
+
 /** 키워드 매칭 내부 로직 (isBypass 이미 확인된 후) */
 function findMatchedKeyword(titleLower: string, keywords: string[]): string | null {
   for (const kw of keywords) {
@@ -160,6 +205,8 @@ function findMatchedKeyword(titleLower: string, keywords: string[]): string | nu
         }
         idx = titleLower.indexOf(k, idx + 1);
       }
+    } else if (isStrictKoreanAliasKeyword(k)) {
+      if (matchesStrictKoreanAlias(titleLower, k)) return kw;
     } else if (titleLower.includes(k)) {
       if (!isDefinitelyNotRelevant(titleLower, k)) return kw;
     }
@@ -209,7 +256,7 @@ export async function checkKeywordFilter(
     return { passes: true, isBypassSource: true, matchedKeyword: null };
   }
 
-  const keywords = cachedTitleKeywords || [];
+  const keywords = Array.from(new Set([...(cachedTitleKeywords || []), ...(cachedTrackedCompanies || [])]));
   if (keywords.length === 0) {
     return { passes: true, isBypassSource: false, matchedKeyword: null };
   }
@@ -222,23 +269,30 @@ export async function checkKeywordFilter(
 export async function getGlobalKeywordConfig(): Promise<{
   titleKeywords: string[];
   bypassSourcePatterns: string[];
+  trackedCompanies: string[];
 }> {
   await loadKeywordConfig();
   return {
     titleKeywords: cachedTitleKeywords || [],
     bypassSourcePatterns: cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS,
+    trackedCompanies: cachedTrackedCompanies || DEFAULT_TRACKED_COMPANIES,
   };
 }
 
 export async function saveGlobalKeywordConfig(
   titleKeywords: string[],
   bypassSourcePatterns?: string[],
+  trackedCompanies?: string[],
 ): Promise<void> {
   const db = admin.firestore();
   const cleaned = titleKeywords.map((k) => `${k || ''}`.trim()).filter(Boolean);
+  const cleanedTrackedCompanies = (trackedCompanies || DEFAULT_TRACKED_COMPANIES)
+    .map((item) => `${item || ''}`.trim())
+    .filter(Boolean);
   await db.collection('systemSettings').doc('globalKeywords').set({
     titleKeywords: cleaned,
     bypassSourcePatterns: bypassSourcePatterns ?? DEFAULT_BYPASS_PATTERNS,
+    trackedCompanies: cleanedTrackedCompanies,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
   invalidateKeywordCache();
@@ -253,7 +307,7 @@ export async function seedGlobalKeywordsIfEmpty(): Promise<boolean> {
   if (doc.exists && Array.isArray((doc.data() as any).titleKeywords) && (doc.data() as any).titleKeywords.length > 0) {
     return false; // 이미 설정됨
   }
-  await saveGlobalKeywordConfig(SEED_TITLE_KEYWORDS, DEFAULT_BYPASS_PATTERNS);
+  await saveGlobalKeywordConfig(SEED_TITLE_KEYWORDS, DEFAULT_BYPASS_PATTERNS, DEFAULT_TRACKED_COMPANIES);
   console.log(`[GlobalKeyword] 초기 키워드 ${SEED_TITLE_KEYWORDS.length}개 시드 완료`);
   return true;
 }

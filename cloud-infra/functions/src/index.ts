@@ -1712,6 +1712,7 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
     internalPrompt,
     externalPrompt,
     smtp,
+    trackingCompanies,
   } = request.data || {};
 
   const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -1735,6 +1736,9 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
       from: `${smtp.from || ''}`.trim(),
     }
     : null;
+  const safeTrackingCompanies = Array.isArray(trackingCompanies)
+    ? trackingCompanies.map((item: string) => `${item || ''}`.trim()).filter(Boolean)
+    : [];
 
   await admin.firestore().collection('companySettings').doc(companyId).set({
     companyName: safeCompanyName,
@@ -1746,6 +1750,7 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
       publisherName: safePublisherName,
       logoDataUrl: safeLogoDataUrl,
     },
+    trackingCompanies: safeTrackingCompanies,
     ...(safeSmtp ? { smtp: safeSmtp } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
@@ -3161,6 +3166,7 @@ export const searchArticles = onCall(
       const {
         companyId: rawCompanyId,
         keywords = [],
+        categories = [],
         startDate,
         endDate,
         sourceIds = [],
@@ -3285,6 +3291,11 @@ export const searchArticles = onCall(
           category: data.category || '',
           tags: data.tags || [],
           relevanceScore: data.relevanceScore || 0,
+          relevanceBasis: data.relevanceBasis || null,
+          relevanceReason: data.relevanceReason || '',
+          aiRelevanceReason: data.aiRelevanceReason || '',
+          keywordMatched: data.keywordMatched || null,
+          keywordPrefilterReason: data.keywordPrefilterReason || '',
           content: data.content || '',
           url: data.url || '',
           companyId: data.companyId,
@@ -3310,6 +3321,11 @@ export const searchArticles = onCall(
           ...(article.tags || []),
         ].join(' ').toLowerCase();
         return kwLower.some((kw) => text.includes(kw));
+      };
+
+      const matchesCategory = (article: any) => {
+        if (!categories || !Array.isArray(categories) || categories.length === 0) return true;
+        return (categories as string[]).includes(article.category || '');
       };
 
       const matchedArticles: any[] = [];
@@ -3343,6 +3359,7 @@ export const searchArticles = onCall(
             .filter((article) => allowedStatuses.includes(article.status))
             .filter(matchesSourceAccess)
             .filter(matchesKeyword)
+            .filter(matchesCategory)
         );
 
         if (matchedArticles.length >= requiredMatches || snap.size < scanBatchSize) {
@@ -3562,6 +3579,16 @@ export const getGlobalKeywords = onCall({ region: 'us-central1' }, async (reques
   return config;
 });
 
+export const getTrackedCompanies = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+  await assertCompanyAccess(request.auth.uid, companyId);
+  const config = await getGlobalKeywordConfig();
+  return {
+    trackedCompanies: Array.isArray(config.trackedCompanies) ? config.trackedCompanies : [],
+  };
+});
+
 export const saveGlobalKeywords = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const db = admin.firestore();
@@ -3569,11 +3596,11 @@ export const saveGlobalKeywords = onCall({ region: 'us-central1' }, async (reque
   if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
     throw new HttpsError('permission-denied', 'Superadmin only');
   }
-  const { titleKeywords, bypassSourcePatterns } = request.data || {};
+  const { titleKeywords, bypassSourcePatterns, trackedCompanies } = request.data || {};
   if (!Array.isArray(titleKeywords)) {
     throw new HttpsError('invalid-argument', 'titleKeywords must be an array');
   }
-  await saveGlobalKeywordConfig(titleKeywords, bypassSourcePatterns);
+  await saveGlobalKeywordConfig(titleKeywords, bypassSourcePatterns, trackedCompanies);
   invalidateKeywordCache();
   return { success: true, count: titleKeywords.length };
 });

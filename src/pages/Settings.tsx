@@ -16,6 +16,7 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
+import { DEFAULT_TRACKED_COMPANIES } from '@/lib/trackedCompanies';
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -43,17 +44,19 @@ export default function Settings() {
   const [smtpUser, setSmtpUser] = useState('');
   const [smtpPass, setSmtpPass] = useState('');
   const [smtpFrom, setSmtpFrom] = useState('');
+  const [trackingCompaniesText, setTrackingCompaniesText] = useState(DEFAULT_TRACKED_COMPANIES.join('\n'));
   const [usage, setUsage] = useState<any>(null);
 
   const loadAll = async () => {
     if (!companyId) return;
     setLoading(true);
     try {
-      const [settingsDoc, subDoc, sourceSnap, usageResult] = await Promise.all([
+      const [settingsDoc, subDoc, sourceSnap, usageResult, trackedCompaniesResult] = await Promise.all([
         getDoc(doc(db, 'companySettings', companyId)),
         getDoc(doc(db, 'companySourceSubscriptions', companyId)),
         getDocs(collection(db, 'globalSources')),
         httpsCallable(functions, 'getAiUsageSummary')({ companyId }).catch(() => ({ data: null }) as any),
+        httpsCallable(functions, 'getTrackedCompanies')({ companyId }).catch(() => ({ data: { trackedCompanies: DEFAULT_TRACKED_COMPANIES } }) as any),
       ]);
 
       const settings = settingsDoc.exists() ? (settingsDoc.data() as any) : {};
@@ -67,6 +70,11 @@ export default function Settings() {
       setSmtpUser(settings.smtp?.user || '');
       setSmtpPass(settings.smtp?.pass || '');
       setSmtpFrom(settings.smtp?.from || '');
+      setTrackingCompaniesText(
+        Array.isArray((trackedCompaniesResult as any)?.data?.trackedCompanies) && (trackedCompaniesResult as any).data.trackedCompanies.length > 0
+          ? (trackedCompaniesResult as any).data.trackedCompanies.join('\n')
+          : DEFAULT_TRACKED_COMPANIES.join('\n'),
+      );
 
       const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
       setSources(
@@ -241,6 +249,27 @@ export default function Settings() {
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             저장
           </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Building2 className="h-4 w-4 text-[#1e3a5f]" />
+          {'\uAD00\uC2EC\uB4F1\uB85D\uD68C\uC0AC'}
+        </div>
+        <div className="mt-4">
+          <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+            {'\uD68C\uC0AC\uBA85\uC744 \uD55C \uC904\uC5D0 \uD558\uB098\uC529 \uC785\uB825'}
+          </label>
+          <textarea
+            value={trackingCompaniesText}
+            rows={8}
+            readOnly
+            className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700 dark:bg-gray-900/30 dark:text-white"
+          />
+          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            {'\uC774 \uBAA9\uB85D\uC740 \uC288\uD37C\uC5B4\uB4DC\uBBFC \uD0A4\uC6CC\uB4DC \uAD00\uB9AC\uC5D0\uC11C \uB3D9\uAE30\uD654\uB418\uBA70, \uAD00\uC2EC\uB4F1\uB85D\uD68C\uC0AC \uBA54\uB274\uC640 \uD544\uD130 \uAE30\uC900\uC5D0 \uAC19\uC774 \uC0AC\uC6A9\uB429\uB2C8\uB2E4.'}
+          </p>
         </div>
       </div>
 
