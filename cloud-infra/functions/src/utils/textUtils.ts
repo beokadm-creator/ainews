@@ -110,6 +110,22 @@ const REMOVE_SELECTORS = [
   '.news_list',
   '.keyword',
   '.breadcrumb',
+  '[class*="related"]',
+  '[class*="recommend"]',
+  '[class*="popular"]',
+  '[class*="rank"]',
+  '[class*="best"]',
+  '[class*="aside"]',
+  '[class*="subscribe"]',
+  '[class*="banner"]',
+  '[class*="promo"]',
+  '[class*="ad-"]',
+  '[id*="related"]',
+  '[id*="recommend"]',
+  '[id*="popular"]',
+  '[id*="rank"]',
+  'section[aria-label*="related" i]',
+  'section[aria-label*="recommend" i]',
   '[role="navigation"]',
   '[aria-label*="share" i]',
   '[aria-label*="menu" i]',
@@ -360,14 +376,29 @@ function getPreferredSelectors(url?: string): string[] {
 
 function selectBestContentRoot($: cheerio.CheerioAPI, url?: string): cheerio.Cheerio<any> {
   let bestRoot: cheerio.Cheerio<any> = $('body');
-  let bestScore = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const selectors = [...getPreferredSelectors(url), ...CONTENT_SELECTORS];
+  const preferredSelectors = new Set(getPreferredSelectors(url));
 
-  for (const selector of [...getPreferredSelectors(url), ...CONTENT_SELECTORS]) {
+  for (const selector of selectors) {
     if (typeof selector !== 'string') continue;
     $(selector).each((_, element) => {
       const candidate = $(element).clone();
       cleanupNode(candidate);
-      const score = candidate.text().replace(/\s+/g, ' ').trim().length;
+      const textLength = candidate.text().replace(/\s+/g, ' ').trim().length;
+      const linkTextLength = candidate.find('a').text().replace(/\s+/g, ' ').trim().length;
+      const paragraphCount = candidate.find('p, blockquote').length;
+      const listCount = candidate.find('li').length;
+      const anchorCount = candidate.find('a').length;
+      const preferredBonus = preferredSelectors.has(selector) ? 200 : 0;
+      const score =
+        textLength +
+        preferredBonus +
+        (paragraphCount * 30) -
+        (listCount * 8) -
+        (anchorCount * 20) -
+        Math.floor(linkTextLength * 0.35);
+
       if (score > bestScore) {
         bestScore = score;
         bestRoot = $(element);
