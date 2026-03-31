@@ -85,7 +85,7 @@ async function loadKeywordConfig(): Promise<void> {
       const data = doc.data() as any;
       cachedTitleKeywords = Array.isArray(data.titleKeywords) ? data.titleKeywords.filter(Boolean) : [];
       cachedBypassPatterns = Array.isArray(data.bypassSourcePatterns) ? data.bypassSourcePatterns : DEFAULT_BYPASS_PATTERNS;
-      cachedTrackedCompanies = Array.isArray(data.trackedCompanies) ? data.trackedCompanies.filter(Boolean) : DEFAULT_TRACKED_COMPANIES;
+      cachedTrackedCompanies = Array.isArray(data.trackedCompanies) && data.trackedCompanies.filter(Boolean).length > 0 ? data.trackedCompanies.filter(Boolean) : DEFAULT_TRACKED_COMPANIES;
     } else {
       cachedTitleKeywords = [];
       cachedBypassPatterns = DEFAULT_BYPASS_PATTERNS;
@@ -295,7 +295,7 @@ export async function getGlobalKeywordConfig(): Promise<{
   return {
     titleKeywords: cachedTitleKeywords || [],
     bypassSourcePatterns: cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS,
-    trackedCompanies: cachedTrackedCompanies || DEFAULT_TRACKED_COMPANIES,
+    trackedCompanies: (cachedTrackedCompanies && cachedTrackedCompanies.length > 0) ? cachedTrackedCompanies : DEFAULT_TRACKED_COMPANIES,
   };
 }
 

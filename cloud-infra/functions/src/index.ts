@@ -1,4 +1,5 @@
 ﻿import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { logger } from 'firebase-functions';
@@ -19,7 +20,7 @@ import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyze
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
 import { buildOutputAssetBundle, buildOutputHtmlAsset } from './services/reportAssetService';
-import { sendBriefingToTelegram } from './services/telegramService';
+import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
 import { processPuppeteerSources } from './services/puppeteerSourceService';
@@ -33,6 +34,7 @@ import { saveApiKeyForCompany } from './utils/secretManager';
 import { seedGlobalSources, testGlobalSource as runGlobalSourceTest } from './services/globalSourceService';
 import { getGlobalKeywordConfig, saveGlobalKeywordConfig, seedGlobalKeywordsIfEmpty, invalidateKeywordCache } from './services/globalKeywordService';
 import { recordMetric } from './services/metricsService';
+import { DEFAULT_TRACKED_COMPANIES } from './services/trackedCompanyConfig';
 admin.initializeApp();
 admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
@@ -2261,6 +2263,27 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
+export const notifyTrackedCompanyArticleCreated = onDocumentCreated(
+  { region: 'us-central1', document: 'articles/{articleId}' },
+  async (event) => {
+    const article = event.data?.data();
+    if (!article) return;
+
+    const matchedKeyword = `${article.keywordMatched || ''}`.trim();
+    if (!matchedKeyword || !DEFAULT_TRACKED_COMPANIES.includes(matchedKeyword)) {
+      return;
+    }
+
+    try {
+      await sendTrackedCompanyTelegramAlert(article);
+    } catch (error: any) {
+      logger.error('notifyTrackedCompanyArticleCreated failed', {
+        articleId: event.params.articleId,
+        message: error?.message || 'Unknown error',
+      });
+    }
+  }
+);
 export const downloadReportAsset = onCall(
   { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true, invoker: 'public' },
   async (request) => {
@@ -3683,3 +3706,4 @@ export const resetAllArticlesHttp = onRequest(
     }
   }
 );
+

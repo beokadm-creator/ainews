@@ -183,3 +183,32 @@ export async function sendBriefingToTelegram(outputId: string) {
     throw error;
   }
 }
+
+export async function sendTrackedCompanyTelegramAlert(article: {
+  title?: string;
+  source?: string;
+  url?: string;
+  keywordMatched?: string | null;
+  collectedAt?: any;
+}) {
+  const trackedCompany = `${article.keywordMatched || ''}`.trim();
+  if (!trackedCompany) {
+    return { success: false, error: 'Tracked company missing' };
+  }
+
+  const collectedAt = article.collectedAt?.toDate
+    ? article.collectedAt.toDate()
+    : article.collectedAt
+      ? new Date(article.collectedAt)
+      : new Date();
+
+  const text =
+    `🔔 <b>[EUM PE] 추적회사 기사 감지</b>\n\n` +
+    `<b>회사:</b> ${escapeHtml(trackedCompany)}\n` +
+    `<b>매체:</b> ${escapeHtml(article.source || '-')}\n` +
+    `<b>시각:</b> ${escapeHtml(collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))}\n\n` +
+    `<b>제목:</b>\n${escapeHtml(article.title || '')}\n\n` +
+    (article.url ? `<a href="${article.url}">기사 열기</a>` : '');
+
+  return sendTelegramMessage(text, 'HTML');
+}

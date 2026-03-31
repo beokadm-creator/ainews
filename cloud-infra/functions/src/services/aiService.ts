@@ -8,6 +8,7 @@ import { RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from '../types/runtime
 import { syncArticlesToDedup } from './articleDedupService';
 import { recordMetric } from './metricsService';
 import { hasSportsContext } from './globalKeywordService';
+import { DEFAULT_TRACKED_COMPANIES } from './trackedCompanyConfig';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
 const OPENAI_COST_PER_1K_TOKENS = { input: 0.005, output: 0.015 };
@@ -608,6 +609,16 @@ async function getSourcePriorityDecision(article: any): Promise<SourcePriorityDe
       isPriority: true,
       priority: 100,
       reason: 'priority source name match',
+      sourceMeta,
+    };
+  }
+
+  const matchedKeyword = `${article?.keywordMatched || ''}`.trim();
+  if (matchedKeyword && DEFAULT_TRACKED_COMPANIES.includes(matchedKeyword)) {
+    return {
+      isPriority: true,
+      priority: 100,
+      reason: `tracked company match: ${matchedKeyword}`,
       sourceMeta,
     };
   }
