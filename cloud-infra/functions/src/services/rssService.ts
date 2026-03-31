@@ -39,12 +39,15 @@ interface ParsedArticle {
   publishedAt: Date;
 }
 
-function resolveKeywordFilter(articleTitle: string, source: any, sourceId: string) {
-  return checkKeywordFilter(articleTitle, source.name, sourceId).then((kw) => {
+function resolveKeywordFilter(article: ParsedArticle, source: any, sourceId: string) {
+  return checkKeywordFilter(article.title, source.name, sourceId).then((kw) => {
     if (kw.passes) return kw;
 
     const sourceKeywords = Array.isArray(source.defaultKeywords) ? source.defaultKeywords : [];
-    const sourceMatched = matchTitleAgainstKeywords(articleTitle, sourceKeywords);
+    const sourceMatched = matchTitleAgainstKeywords(
+      `${article.title || ''} ${article.content || ''}`,
+      sourceKeywords,
+    );
     if (sourceMatched) {
       return {
         passes: true,
@@ -190,7 +193,7 @@ export async function processRssSources(options?: {
       const keywordResults = await Promise.all(
         dateFiltered.map(async (article) => ({
           article,
-          kw: await resolveKeywordFilter(article.title, source, sourceId),
+          kw: await resolveKeywordFilter(article, source, sourceId),
         }))
       );
       const keywordFiltered = keywordResults.filter(({ kw }) => kw.passes);
