@@ -124,7 +124,23 @@ const SPORTS_CONTEXT_PATTERNS: RegExp[] = [
 export function hasSportsContext(text: string): boolean {
   const normalized = `${text || ''}`.trim();
   if (!normalized) return false;
-  return SPORTS_CONTEXT_PATTERNS.some((pattern) => pattern.test(normalized));
+  const strongPatterns = [
+    SPORTS_CONTEXT_PATTERNS[0],
+    SPORTS_CONTEXT_PATTERNS[2],
+    /\b(team|teams|league|leagues|athlete|athletes|goalkeeper|pitcher|batter)\b/i,
+    /\b(mlb|nba|nfl|epl|kbo|uefa|fifa)\b/i,
+  ];
+  const weakPatterns = [
+    SPORTS_CONTEXT_PATTERNS[1],
+    /\b(player|players|coach|match|game|goal|season|tournament|transfer)\b/i,
+  ];
+
+  const strongMatches = strongPatterns.filter((pattern) => pattern.test(normalized)).length;
+  const weakMatches = weakPatterns.filter((pattern) => pattern.test(normalized)).length;
+
+  if (strongMatches >= 2) return true;
+  if (strongMatches >= 1 && weakMatches >= 1) return true;
+  return false;
 }
 
 /**
@@ -244,7 +260,11 @@ export async function checkKeywordFilter(
     return { passes: false, isBypassSource: false, matchedKeyword: null };
   }
 
-  const bypassPatterns = cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS;
+  const bypassPatterns = (cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS)
+    .filter((pattern) => {
+      const normalizedPattern = `${pattern || ''}`.trim().toLowerCase();
+      return normalizedPattern !== 'thebell' && normalizedPattern !== '더벨';
+    });
   const sourceNameLower = `${sourceName || ''}`.toLowerCase();
   const sourceIdLower = `${sourceId || ''}`.toLowerCase();
 
