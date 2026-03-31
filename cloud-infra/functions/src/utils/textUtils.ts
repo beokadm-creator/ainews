@@ -287,6 +287,9 @@ function applySiteSpecificTextCleanup(text: string, url?: string): string {
     hostname.includes('asiae.co.kr') ||
     hostname.includes('sedaily.com') ||
     hostname.includes('fnnews.com') ||
+    hostname.includes('mt.co.kr') ||
+    hostname.includes('moneytoday.co.kr') ||
+    hostname.includes('chosun.com') ||
     hostname.includes('chosunbiz.com') ||
     hostname.includes('biz.chosun.com')
   ) {
@@ -294,7 +297,11 @@ function applySiteSpecificTextCleanup(text: string, url?: string): string {
     lines = stripKnownTrailingNoise(lines, hostname);
   }
 
-  return lines.join('\n\n').trim();
+  return lines
+    .join('\n\n')
+    .replace(/\n{2,}</g, '')
+    .replace(/\s*<\s*$/g, '')
+    .trim();
 }
 
 function cleanupNode($root: cheerio.Cheerio<any>) {
@@ -307,13 +314,32 @@ function getPreferredSelectors(url?: string): string[] {
   const hostname = getHostname(url);
   if (!hostname) return [];
 
-  if (hostname.includes('chosunbiz.com') || hostname.includes('biz.chosun.com')) {
+  if (
+    hostname.includes('chosun.com') ||
+    hostname.includes('chosunbiz.com') ||
+    hostname.includes('biz.chosun.com')
+  ) {
     return [
       '[itemprop="articleBody"]',
+      'article',
+      'main',
       '.news_article',
       '.article-body',
       '.article__body',
       '.par',
+    ];
+  }
+
+  if (hostname.includes('mt.co.kr') || hostname.includes('moneytoday.co.kr')) {
+    return [
+      '[itemprop="articleBody"]',
+      'article',
+      'main',
+      '.article-body',
+      '.article_content',
+      '.news_body',
+      '.view_cont',
+      '.contents',
     ];
   }
 
@@ -394,6 +420,82 @@ function extractTextFromJsonLd(html: string): string {
   return chunks.join('\n\n').trim();
 }
 
+function extractTextFromFusionGlobalContent(html: string): string {
+  const marker = 'Fusion.globalContent=';
+  const start = html.indexOf(marker);
+  if (start < 0) return '';
+
+  const fromMarker = html.slice(start + marker.length);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let endIndex = -1;
+
+  for (let index = 0; index < fromMarker.length; index += 1) {
+    const char = fromMarker[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        endIndex = index + 1;
+        break;
+      }
+    }
+  }
+
+  if (endIndex < 0) return '';
+
+  const rawJson = fromMarker.slice(0, endIndex).trim();
+  if (!rawJson.startsWith('{')) return '';
+
+  try {
+    const parsed = JSON.parse(rawJson) as {
+      content_elements?: Array<{ type?: string; content?: string }>;
+      description?: string;
+    };
+
+    const parts = Array.isArray(parsed.content_elements)
+      ? parsed.content_elements
+          .filter((item) => item && item.type === 'text' && typeof item.content === 'string')
+          .map((item) => normalizeLine(item.content || ''))
+          .filter((item) => item.length >= 20)
+      : [];
+
+    if (parts.length > 0) {
+      return parts.join('\n\n').trim();
+    }
+
+    return typeof parsed.description === 'string' ? normalizeLine(parsed.description) : '';
+  } catch {
+    return '';
+  }
+}
+
 function extractParagraphs($: cheerio.CheerioAPI, $root: cheerio.Cheerio<any>): string[] {
   const paragraphs: string[] = [];
   const blocks = $root.find('h1, h2, h3, p, li, blockquote');
@@ -430,6 +532,7 @@ function stripBoilerplate(lines: string[]): string[] {
   for (const line of lines) {
     const normalized = normalizeLine(line);
     if (!normalized) continue;
+    if (normalized === '<' || normalized === '>') continue;
     if (NOISE_LINE_PATTERNS.some((pattern) => pattern.test(normalized))) {
       continue;
     }
@@ -472,6 +575,11 @@ export function normalizeArticleText(text: string, url?: string): string {
 export function extractTextFromHtml(html: string, url?: string): string {
   if (!html) return '';
 
+  const fusionText = normalizeArticleText(extractTextFromFusionGlobalContent(html), url);
+  if (fusionText.length >= 200) {
+    return fusionText;
+  }
+
   const jsonLdText = normalizeArticleText(extractTextFromJsonLd(html), url);
   if (jsonLdText.length >= 500) {
     return jsonLdText;
@@ -491,7 +599,11 @@ export function extractTextFromHtml(html: string, url?: string): string {
     paragraphs = stripBoilerplate(extractParagraphs($, bodyClone));
   }
 
-  return paragraphs.join('\n\n').trim();
+  return paragraphs
+    .join('\n\n')
+    .replace(/\n{2,}<\s*$/g, '')
+    .replace(/\s*<\s*$/g, '')
+    .trim();
 }
 
 export function isContentSufficient(text: string, minLength: number = 100): boolean {

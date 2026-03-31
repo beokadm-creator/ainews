@@ -100,7 +100,7 @@ async function scrapeSourceArticles(source: ScrapingSource): Promise<ScrapedArti
         content = cleanHtmlContent(selected.html() || selected.text() || '');
       }
       if (!content) {
-        content = extractTextFromHtml(articleHtml);
+        content = extractTextFromHtml(articleHtml, url);
       }
     } catch (error: any) {
       console.warn(`[Scraping] Failed to fetch article body for ${url}: ${error.message}`);
