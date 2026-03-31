@@ -130,11 +130,12 @@ export async function processScrapingSources(options?: {
     .where('type', '==', 'scraping')
     .where('status', '==', 'active')
     .get();
+  const requestedSourceIds = new Set((options?.filters?.sourceIds || []).filter(Boolean));
 
   const allScrapingSources = snap.docs.map((doc) => ({
     id: doc.id,
     data: doc.data(),
-  }));
+  })).filter((source) => requestedSourceIds.size === 0 || requestedSourceIds.has(source.id));
 
   if (allScrapingSources.length === 0) {
     console.log('processScrapingSources: no active scraping sources found.');

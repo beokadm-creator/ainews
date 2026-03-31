@@ -230,6 +230,13 @@ function findMatchedKeyword(titleLower: string, keywords: string[]): string | nu
   return null;
 }
 
+export function matchTitleAgainstKeywords(title: string, keywords: string[]): string | null {
+  if (hasSportsContext(title)) return null;
+  const cleanedKeywords = (keywords || []).map((keyword) => `${keyword || ''}`.trim()).filter(Boolean);
+  if (cleanedKeywords.length === 0) return null;
+  return findMatchedKeyword(`${title || ''}`.toLowerCase(), cleanedKeywords);
+}
+
 /**
  * 기사 제목이 글로벌 키워드 필터를 통과하는지 확인.
  * - 우선 매체(더벨, 마켓인사이트): 항상 통과 (isBypassSource=true)

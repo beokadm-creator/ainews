@@ -9,7 +9,7 @@ import { RuntimeFilters, RuntimeAiConfig } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
 import { mapWithConcurrency } from '../utils/asyncUtils';
 import { enrichArticleBody } from './articleContentFetchService';
-import { checkKeywordFilter } from './globalKeywordService';
+import { checkKeywordFilter, matchTitleAgainstKeywords } from './globalKeywordService';
 
 const REQUEST_TIMEOUT_MS = 45000;
 const RSS_FETCH_TIMEOUT_MS = 60000;
@@ -37,6 +37,24 @@ interface ParsedArticle {
   url: string;
   content: string;
   publishedAt: Date;
+}
+
+function resolveKeywordFilter(articleTitle: string, source: any, sourceId: string) {
+  return checkKeywordFilter(articleTitle, source.name, sourceId).then((kw) => {
+    if (kw.passes) return kw;
+
+    const sourceKeywords = Array.isArray(source.defaultKeywords) ? source.defaultKeywords : [];
+    const sourceMatched = matchTitleAgainstKeywords(articleTitle, sourceKeywords);
+    if (sourceMatched) {
+      return {
+        passes: true,
+        isBypassSource: false,
+        matchedKeyword: sourceMatched,
+      };
+    }
+
+    return kw;
+  });
 }
 
 function preprocessXml(xml: string): string {
@@ -131,12 +149,14 @@ export async function processRssSources(options?: {
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
 
   const allSourcesToProcess: { id: string; data: any }[] = [];
+  const requestedSourceIds = new Set((options?.filters?.sourceIds || []).filter(Boolean));
   const allRssSnap = await db.collection('globalSources')
     .where('type', '==', 'rss')
     .where('status', '==', 'active')
     .get();
 
   allRssSnap.docs.forEach((d) => {
+    if (requestedSourceIds.size > 0 && !requestedSourceIds.has(d.id)) return;
     const data = d.data();
     const rssUrl = data.rssUrl || data.url;
     if (!rssUrl) return;
@@ -170,7 +190,7 @@ export async function processRssSources(options?: {
       const keywordResults = await Promise.all(
         dateFiltered.map(async (article) => ({
           article,
-          kw: await checkKeywordFilter(article.title, source.name, sourceId),
+          kw: await resolveKeywordFilter(article.title, source, sourceId),
         }))
       );
       const keywordFiltered = keywordResults.filter(({ kw }) => kw.passes);

@@ -31,11 +31,13 @@ export async function processApiSources(options?: {
   const { startDate, endDate } = getDateRangeBounds(options?.filters?.dateRange);
 
   const allApiSources: { id: string; data: any }[] = [];
+  const requestedSourceIds = new Set((options?.filters?.sourceIds || []).filter(Boolean));
   const snap = await db.collection('globalSources')
     .where('type', '==', 'api')
     .where('status', '==', 'active')
     .get();
   snap.docs.forEach((d) => {
+    if (requestedSourceIds.size > 0 && !requestedSourceIds.has(d.id)) return;
     allApiSources.push({ id: d.id, data: d.data() });
   });
 
