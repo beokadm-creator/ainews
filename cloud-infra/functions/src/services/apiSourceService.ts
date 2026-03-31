@@ -12,6 +12,12 @@ import { checkKeywordFilter } from './globalKeywordService';
 
 const API_SOURCE_CONCURRENCY = 2;
 const API_BODY_ENRICH_CONCURRENCY = 3;
+const NAVER_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+
+let cachedNaverConfig: {
+  expiresAt: number;
+  value: { clientId?: string; clientSecret?: string };
+} | null = null;
 
 function isNaverApiSource(source: any) {
   return (
@@ -159,8 +165,7 @@ async function collectFromNaverNews(
 ): Promise<number> {
   const db = admin.firestore();
 
-  const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
-  const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+  const cfg = await loadNaverConfig(db);
   const clientId = cfg.clientId;
   const clientSecret = cfg.clientSecret;
   if (!clientId || !clientSecret) {
@@ -268,4 +273,25 @@ async function collectFromNaverNews(
 
   console.log(`Naver News: saved ${collected} / ${candidates.length} articles`);
   return collected;
+}
+
+async function loadNaverConfig(db: FirebaseFirestore.Firestore): Promise<{ clientId?: string; clientSecret?: string }> {
+  const now = Date.now();
+  if (cachedNaverConfig && cachedNaverConfig.expiresAt > now) {
+    return cachedNaverConfig.value;
+  }
+
+  const cfgDoc = await db.collection('systemSettings').doc('naverConfig').get();
+  const cfg = cfgDoc.exists ? (cfgDoc.data() as any) : {};
+  const value = {
+    clientId: cfg.clientId,
+    clientSecret: cfg.clientSecret,
+  };
+
+  cachedNaverConfig = {
+    expiresAt: now + NAVER_CONFIG_CACHE_TTL_MS,
+    value,
+  };
+
+  return value;
 }

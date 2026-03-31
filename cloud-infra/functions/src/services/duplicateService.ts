@@ -121,6 +121,36 @@ export async function isDuplicateArticle(
     }
   }
 
+  if (options?.fastMode) {
+    const recentArticlesSnapshot = await db.collection('articles')
+      .where('titleHash', '==', titleHash)
+      .limit(10)
+      .get();
+    const oneDayAgoMs = Date.now() - (24 * 60 * 60 * 1000);
+
+    for (const doc of recentArticlesSnapshot.docs) {
+      const existingArticle = doc.data();
+      if (options.companyId && existingArticle.companyId && existingArticle.companyId !== options.companyId) {
+        continue;
+      }
+      const collectedAt = existingArticle.collectedAt?.toDate
+        ? existingArticle.collectedAt.toDate().getTime()
+        : new Date(existingArticle.collectedAt || 0).getTime();
+      if (!Number.isFinite(collectedAt) || collectedAt < oneDayAgoMs) {
+        continue;
+      }
+      if (normalizeUrl(existingArticle.url) === normalizedUrl) {
+        return { isDuplicate: true, reason: 'Normalized URL match', duplicateOf: doc.id };
+      }
+      const titleSim = calculateTokenSimilarity(newArticle.title, existingArticle.title);
+      if (titleSim > 0.92) {
+        return { isDuplicate: true, reason: 'High title similarity', duplicateOf: doc.id };
+      }
+    }
+
+    return { isDuplicate: false };
+  }
+
   let exactUrlQuery: FirebaseFirestore.Query = db.collection('articles')
     .where('url', '==', newArticle.url);
   if (options?.companyId) {

@@ -29,6 +29,28 @@ const DEFAULT_AI_CONFIG: RuntimeAiConfig = {
   maxAnalysisBatch: 24,
 };
 
+const DEFAULT_OUTPUT_CONFIG: RuntimeOutputConfig = {
+  type: 'analysis_report',
+  title: 'AI News Analysis Report',
+  includeArticleBody: false,
+  maxArticles: 50
+};
+
+const DEFAULT_TIMEZONE = 'Asia/Seoul';
+const RUNTIME_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type RuntimeBaseConfig = {
+  companyId: string;
+  companyName: string;
+  timezone: string;
+  filters: RuntimeFilters;
+  ai: RuntimeAiConfig;
+  output: RuntimeOutputConfig;
+};
+
+const runtimeConfigCache = new Map<string, { expiresAt: number; value: RuntimeBaseConfig }>();
+let cachedSystemAiConfig: { expiresAt: number; value: RuntimeAiConfig } | null = null;
+
 function normalizeGlmModelConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig {
   if (aiConfig.provider !== 'glm') {
     return aiConfig;
@@ -47,15 +69,6 @@ function normalizeGlmModelConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig {
     fallbackModel: undefined,
   };
 }
-
-const DEFAULT_OUTPUT_CONFIG: RuntimeOutputConfig = {
-  type: 'analysis_report',
-  title: 'AI News Analysis Report',
-  includeArticleBody: false,
-  maxArticles: 50
-};
-
-const DEFAULT_TIMEZONE = 'Asia/Seoul';
 
 function mergeFilters(base: RuntimeFilters, override?: Partial<RuntimeFilters>): RuntimeFilters {
   const mergedDateRange = override?.dateRange ?? base.dateRange ?? DEFAULT_FILTERS.dateRange;
@@ -87,12 +100,42 @@ function mergeOutputConfig(base: RuntimeOutputConfig, override?: Partial<Runtime
   };
 }
 
-export async function getCompanyRuntimeConfig(
-  companyId: string,
-  overrides?: PipelineInvocationOverrides
-): Promise<RuntimePipelineConfig> {
+async function loadSystemAiConfig(): Promise<RuntimeAiConfig> {
+  const now = Date.now();
+  if (cachedSystemAiConfig && cachedSystemAiConfig.expiresAt > now) {
+    return cachedSystemAiConfig.value;
+  }
+
   const db = admin.firestore();
-  const companyDoc = await db.collection('companies').doc(companyId).get();
+  const sysDoc = await db.collection('systemSettings').doc('aiConfig').get();
+  const sysSettings = (sysDoc.data() || {}) as any;
+  const activeProvider: string = sysSettings['ai.provider'] || sysSettings.ai?.provider || DEFAULT_AI_CONFIG.provider;
+  const aiConfig = normalizeGlmModelConfig({
+    ...DEFAULT_AI_CONFIG,
+    provider: activeProvider as any,
+    model: sysSettings[`aiModels.${activeProvider}`] || sysSettings.ai?.model || DEFAULT_AI_CONFIG.model,
+    filteringModel: sysSettings[`aiFilteringModels.${activeProvider}`] || sysSettings.aiFilteringModels?.[activeProvider] || sysSettings.ai?.filteringModel || undefined,
+    fallbackProvider: (sysSettings[`aiFallbackProviders.${activeProvider}`] || sysSettings.aiFallbackProviders?.[activeProvider] || sysSettings.ai?.fallbackProvider) as AiProvider | undefined || undefined,
+    fallbackModel: sysSettings[`aiFallbackModels.${activeProvider}`] || sysSettings.aiFallbackModels?.[activeProvider] || sysSettings.ai?.fallbackModel || undefined,
+    baseUrl: sysSettings[`aiBaseUrls.${activeProvider}`] || sysSettings.ai?.baseUrl || null,
+  });
+
+  cachedSystemAiConfig = {
+    expiresAt: now + RUNTIME_CACHE_TTL_MS,
+    value: aiConfig,
+  };
+
+  return aiConfig;
+}
+
+async function loadBaseRuntimeConfig(companyId: string): Promise<RuntimeBaseConfig> {
+  const db = admin.firestore();
+  const [companyDoc, aiConfig, settingsDoc, subDoc] = await Promise.all([
+    db.collection('companies').doc(companyId).get(),
+    loadSystemAiConfig(),
+    db.collection('companySettings').doc(companyId).get(),
+    db.collection('companySourceSubscriptions').doc(companyId).get(),
+  ]);
 
   if (!companyDoc.exists) {
     throw new Error(`Company ${companyId} not found`);
@@ -107,33 +150,11 @@ export async function getCompanyRuntimeConfig(
     throw new Error(`Company ${companyId} is inactive`);
   }
 
-  // ── AI Config: 항상 systemSettings(superadmin)에서 로드
-  const sysDoc = await db.collection('systemSettings').doc('aiConfig').get();
-  const sysSettings = (sysDoc.data() || {}) as any;
-  const activeProvider: string = sysSettings['ai.provider'] || sysSettings.ai?.provider || DEFAULT_AI_CONFIG.provider;
-  const aiConfig: RuntimeAiConfig = {
-    ...DEFAULT_AI_CONFIG,
-    provider: activeProvider as any,
-    model: sysSettings[`aiModels.${activeProvider}`] || sysSettings.ai?.model || DEFAULT_AI_CONFIG.model,
-    filteringModel: sysSettings[`aiFilteringModels.${activeProvider}`] || sysSettings.aiFilteringModels?.[activeProvider] || sysSettings.ai?.filteringModel || undefined,
-    fallbackProvider: (sysSettings[`aiFallbackProviders.${activeProvider}`] || sysSettings.aiFallbackProviders?.[activeProvider] || sysSettings.ai?.fallbackProvider) as AiProvider | undefined || undefined,
-    fallbackModel: sysSettings[`aiFallbackModels.${activeProvider}`] || sysSettings.aiFallbackModels?.[activeProvider] || sysSettings.ai?.fallbackModel || undefined,
-    baseUrl: sysSettings[`aiBaseUrls.${activeProvider}`] || sysSettings.ai?.baseUrl || null,
-  };
-
-  // ── 회사별 설정 (필터, 출력 등)은 companySettings에서 로드
-  const settingsDoc = await db.collection('companySettings').doc(companyId).get();
   const runtimeSettings = (settingsDoc.data() || {}) as any;
   const legacySettings = (company.settings ?? {}) as Partial<CompanyRuntimeSettings>;
-
-  // Filters 병합 (companySettings -> legacySettings -> Subscriptions -> Default)
-  let subscribedSourceIds: string[] = runtimeSettings.filters?.sourceIds ?? legacySettings.filters?.sourceIds ?? [];
-  if (subscribedSourceIds.length === 0) {
-    const subDoc = await db.collection('companySourceSubscriptions').doc(companyId).get();
-    if (subDoc.exists) {
-      subscribedSourceIds = (subDoc.data() as any).subscribedSourceIds ?? [];
-    }
-  }
+  const subscribedSourceIds = runtimeSettings.filters?.sourceIds
+    ?? legacySettings.filters?.sourceIds
+    ?? (subDoc.exists ? ((subDoc.data() as any).subscribedSourceIds ?? []) : []);
 
   const baseFilters: RuntimeFilters = {
     ...DEFAULT_FILTERS,
@@ -142,7 +163,6 @@ export async function getCompanyRuntimeConfig(
     sourceIds: subscribedSourceIds,
   };
 
-  // Output Config 병합
   const baseOutput: RuntimeOutputConfig = {
     ...DEFAULT_OUTPUT_CONFIG,
     ...(legacySettings.output ?? {}),
@@ -153,9 +173,34 @@ export async function getCompanyRuntimeConfig(
     companyId,
     companyName: company.name,
     timezone: runtimeSettings.timezone || legacySettings.timezone || DEFAULT_TIMEZONE,
-    filters: mergeFilters(baseFilters, overrides?.filters),
-    ai: mergeAiConfig(normalizeGlmModelConfig(aiConfig), overrides?.ai),
-    output: mergeOutputConfig(baseOutput, overrides?.output)
+    filters: baseFilters,
+    ai: aiConfig,
+    output: baseOutput,
+  };
+}
+
+export async function getCompanyRuntimeConfig(
+  companyId: string,
+  overrides?: PipelineInvocationOverrides
+): Promise<RuntimePipelineConfig> {
+  const now = Date.now();
+  let baseConfig = runtimeConfigCache.get(companyId);
+
+  if (!baseConfig || baseConfig.expiresAt <= now) {
+    baseConfig = {
+      expiresAt: now + RUNTIME_CACHE_TTL_MS,
+      value: await loadBaseRuntimeConfig(companyId),
+    };
+    runtimeConfigCache.set(companyId, baseConfig);
+  }
+
+  return {
+    companyId: baseConfig.value.companyId,
+    companyName: baseConfig.value.companyName,
+    timezone: baseConfig.value.timezone,
+    filters: mergeFilters(baseConfig.value.filters, overrides?.filters),
+    ai: mergeAiConfig(baseConfig.value.ai, overrides?.ai),
+    output: mergeOutputConfig(baseConfig.value.output, overrides?.output)
   };
 }
 
@@ -190,14 +235,10 @@ export async function assertCompanyAccess(
     return { uid, role, companyIds, managedCompanyIds };
   }
 
-  // 회사 액세스 확인 (superadmin 아닌 경우)
   const canAccess = companyIds.includes(companyId) || managedCompanyIds.includes(companyId);
   if (!canAccess) {
     throw new Error(`User does not belong to company ${companyId}`);
   }
-
-  // AI 설정 저장은 company_admin만 가능 (editor는 불가)
-  // 파이프라인 실행은 company_admin, company_editor 모두 가능
 
   return { uid, role, companyIds, managedCompanyIds };
 }
@@ -214,7 +255,6 @@ export function getDateRangeBounds(dateRange?: RuntimeFilters['dateRange']): {
   if (typeof dateRange === 'string') {
     if (dateRange === 'week') days = 7;
     else if (dateRange === 'month') days = 30;
-    // 'today' is 1
   } else {
     if (dateRange.mode === 'absolute') {
       const startDate = dateRange.startDate ? new Date(dateRange.startDate) : null;
