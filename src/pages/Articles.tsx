@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { format, subHours } from 'date-fns';
-import { doc, getDoc, getDocs, collection } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { useNavigate } from 'react-router-dom';
 import { db, functions } from '@/lib/firebase';
@@ -24,6 +24,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
 import { getArticleReasonDetails as buildArticleReasonDetails } from '@/lib/articleReason';
+import { fetchSubscribedSources } from '@/lib/sourceSubscriptions';
 
 const DATE_PRESETS = [
   { label: '최근 24시간', hours: 24 },
@@ -230,13 +231,8 @@ export default function Articles() {
   useEffect(() => {
     if (!companyId) return;
     const loadSources = async () => {
-      const subDoc = await getDoc(doc(db, 'companySourceSubscriptions', companyId));
-      const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
-      const sourceSnap = await getDocs(collection(db, 'globalSources'));
       const available = dedupeSourceCatalog(
-        sourceSnap.docs
-        .map((item) => ({ id: item.id, ...(item.data() as any) }))
-        .filter((item) => subscribedIds.includes(item.id))
+        await fetchSubscribedSources(companyId)
       ).map((item) => ({ id: item.id, name: item.name, category: item.category, localScraperId: item.localScraperId }));
       setSources(available);
     };

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { fetchSubscribedSources } from '@/lib/sourceSubscriptions';
 
 type DatePreset = '24h' | '3d' | '7d' | '15d' | '30d';
 
@@ -139,13 +140,12 @@ export default function DeliveryCenter() {
       setDefaultReportTitle(publisherName ? `${publisherName} 외부 리포트` : '외부 메일링 리포트');
 
       const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
-        getDocs(collection(db, 'globalSources')),
+        Promise.resolve(await fetchSubscribedSources(companyId)),
         getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId))),
         getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'))),
       ]);
 
-      const availableSources = sourceSnap.docs
-        .map((item) => ({ id: item.id, ...(item.data() as any) }))
+      const availableSources = sourceSnap
         .filter((item) => subscribedIds.includes(item.id))
         .map((item) => ({ id: item.id, name: item.name }));
 

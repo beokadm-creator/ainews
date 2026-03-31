@@ -17,6 +17,7 @@ import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { dedupeSourceCatalog } from '@/lib/sourceCatalog';
 import { DEFAULT_TRACKED_COMPANIES } from '@/lib/trackedCompanies';
+import { fetchSubscribedSources } from '@/lib/sourceSubscriptions';
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -65,10 +66,10 @@ export default function Settings() {
     if (!companyId) return;
     setLoading(true);
     try {
-      const [settingsDoc, subDoc, sourceSnap, usageResult, trackedCompaniesResult] = await Promise.all([
+      const [settingsDoc, subDoc, sourceList, usageResult, trackedCompaniesResult] = await Promise.all([
         getDoc(doc(db, 'companySettings', companyId)),
         getDoc(doc(db, 'companySourceSubscriptions', companyId)),
-        getDocs(collection(db, 'globalSources')),
+        fetchSubscribedSources(companyId),
         httpsCallable(functions, 'getAiUsageSummary')({ companyId }).catch(() => ({ data: null }) as any),
         httpsCallable(functions, 'getTrackedCompanies')({ companyId }).catch(() => ({ data: { trackedCompanies: DEFAULT_TRACKED_COMPANIES } }) as any),
       ]);
@@ -93,8 +94,7 @@ export default function Settings() {
       const subscribedIds: string[] = subDoc.exists() ? ((subDoc.data() as any).subscribedSourceIds || []) : [];
       setSources(
         dedupeSourceCatalog(
-          sourceSnap.docs
-            .map((item) => ({ id: item.id, ...(item.data() as any) }))
+          sourceList
             .filter((item) => subscribedIds.includes(item.id)),
         ).map((item) => ({ id: item.id, name: item.name })),
       );

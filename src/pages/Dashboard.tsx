@@ -11,6 +11,7 @@ import { httpsCallable } from 'firebase/functions';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format, subDays, startOfDay } from 'date-fns';
 import { useAuthStore } from '@/store/useAuthStore';
+import { fetchSubscribedSources } from '@/lib/sourceSubscriptions';
 
 const DATE_RANGE_OPTIONS = [
   { value: 'today', label: '오늘' },
@@ -102,9 +103,7 @@ export default function Dashboard() {
       const subscribedIds: string[] = subDoc.exists() ? (subDoc.data() as any).subscribedSourceIds || [] : [];
       if (subscribedIds.length === 0) { setSourcesLoading(false); return; }
 
-      const snap = await getDocs(collection(db, 'globalSources'));
-      const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      const subscribed = all.filter(s => subscribedIds.includes(s.id)).map(s => ({ id: s.id, name: s.name }));
+      const subscribed = (await fetchSubscribedSources(companyId)).map(s => ({ id: s.id, name: s.name }));
       setSubscribedSources(subscribed);
       setSelectedSourceIds(subscribed.map(s => s.id)); // default: all selected
     } catch (err) {

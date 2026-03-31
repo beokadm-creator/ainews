@@ -758,6 +758,30 @@ async function executePipelineRun(options: {
   }
 }
 
+const SOURCE_BATCH_LIMIT = 30;
+
+function chunkItems<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function fetchGlobalSourcesByIds(db: admin.firestore.Firestore, sourceIds: string[]) {
+  if (!sourceIds.length) return [];
+
+  const snapshots = await Promise.all(
+    chunkItems(sourceIds, SOURCE_BATCH_LIMIT).map((batch) =>
+      db.collection('globalSources')
+        .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+        .get(),
+    ),
+  );
+
+  return snapshots.flatMap((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })));
+}
+
 async function loadAccessibleArticlesForManagedReport(
   companyId: string,
   filters?: ManagedReportFilters,
@@ -780,20 +804,7 @@ async function loadAccessibleArticlesForManagedReport(
     return { articles: [], matchedSourceNames: [], sourceCoverage: [] };
   }
 
-  const sourceIdBatches: string[][] = [];
-  for (let i = 0; i < requestedSourceIds.length; i += 30) {
-    sourceIdBatches.push(requestedSourceIds.slice(i, i + 30));
-  }
-
-  const requestedSources = (
-    await Promise.all(
-      sourceIdBatches.map((batch) =>
-        db.collection('globalSources')
-          .where(admin.firestore.FieldPath.documentId(), 'in', batch)
-          .get()
-      )
-    )
-  ).flatMap((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })));
+  const requestedSources = await fetchGlobalSourcesByIds(db, requestedSourceIds);
 
   const requestedSourceDefinitions: ManagedReportSourceDefinition[] = requestedSources.map((source) => ({
     id: source.id,
@@ -810,35 +821,26 @@ async function loadAccessibleArticlesForManagedReport(
     .map((keyword) => `${keyword || ''}`.trim().toLowerCase())
     .filter(Boolean);
   const targetLimit = Math.min(filters?.limit || 120, 200);
-  const pageSize = 200;
-  const maxScanCount = 2000;
+  const perStatusLimit = Math.min(Math.max(targetLimit * 2, 120), 300);
   const matchedArticles: any[] = [];
   const seenArticleIds = new Set<string>();
   const sourceCoverage = new Map<string, number>();
-  let scannedCount = 0;
-  let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+  const snaps = await Promise.all(
+    ['analyzed', 'published'].map((status) =>
+      db.collection('articles')
+        .where('status', '==', status)
+        .where('publishedAt', '>=', startDate)
+        .where('publishedAt', '<=', endDate)
+        .orderBy('publishedAt', 'desc')
+        .limit(perStatusLimit)
+        .get(),
+    ),
+  );
 
-  while (scannedCount < maxScanCount) {
-    let articleQuery = db.collection('articles')
-      .where('publishedAt', '>=', startDate)
-      .where('publishedAt', '<=', endDate)
-      .orderBy('publishedAt', 'desc')
-      .limit(pageSize);
-
-    if (lastDoc) {
-      articleQuery = articleQuery.startAfter(lastDoc) as any;
-    }
-
-    const snap = await articleQuery.get();
-    if (snap.empty) break;
-
-    scannedCount += snap.size;
-    lastDoc = snap.docs[snap.docs.length - 1];
-
+  for (const snap of snaps) {
     for (const doc of snap.docs) {
       const article: any = { id: doc.id, ...(doc.data() as any) };
       if (seenArticleIds.has(article.id)) continue;
-      if (!['analyzed', 'published'].includes(article.status)) continue;
       if (!articleMatchesSourcePool(article, requestedSourcePool)) continue;
 
       if (keywordPool.length > 0) {
@@ -862,13 +864,6 @@ async function loadAccessibleArticlesForManagedReport(
         sourceCoverage.set(sourceId, (sourceCoverage.get(sourceId) || 0) + 1);
       });
     }
-
-    const coveredSourceCount = requestedSourceDefinitions.filter((source) => (sourceCoverage.get(source.id) || 0) > 0).length;
-    if (matchedArticles.length >= targetLimit && coveredSourceCount === requestedSourceDefinitions.length) {
-      break;
-    }
-
-    if (snap.size < pageSize) break;
   }
 
   matchedArticles.sort((left, right) => {
@@ -3229,23 +3224,7 @@ export const searchArticles = onCall(
           return { articles: [], total: 0, hasMore: false };
         }
 
-        const batches: string[][] = [];
-        for (let i = 0; i < subscribedSourceIds.length; i += 30) {
-          batches.push(subscribedSourceIds.slice(i, i + 30));
-        }
-
-        const sourceDocs = (
-          await Promise.all(
-            batches.map((batch) =>
-              db.collection('globalSources')
-                .where(admin.firestore.FieldPath.documentId(), 'in', batch)
-                .get()
-            )
-          )
-        ).flatMap((snap) => snap.docs);
-
-        accessibleSources = sourceDocs
-          .map((doc) => ({ id: doc.id, ...(doc.data() as any) }))
+        accessibleSources = (await fetchGlobalSourcesByIds(db, subscribedSourceIds))
           .filter((source) => {
             if (source.status !== 'active') return false;
             const isPremium = source.pricingTier === 'paid' || source.pricingTier === 'requires_subscription';
@@ -3267,26 +3246,11 @@ export const searchArticles = onCall(
           ? requestedSourceIds.filter((id: string) => accessibleSourceIds.includes(id))
           : accessibleSourceIds;
 
-      let effectiveSources: any[] = [];
-      if (effectiveSourceIds.length > 0) {
-        const batches: string[][] = [];
-        for (let i = 0; i < effectiveSourceIds.length; i += 30) {
-          batches.push(effectiveSourceIds.slice(i, i + 30));
-        }
-
-        effectiveSources = (
-          await Promise.all(
-            batches.map((batch) =>
-              db.collection('globalSources')
-                .where(admin.firestore.FieldPath.documentId(), 'in', batch)
-                .get()
-                .then((snap) => snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) })))
-            )
-          )
-        ).flat();
-      } else if (!isSuperadmin) {
-        effectiveSources = accessibleSources;
-      }
+      const effectiveSources: any[] = isSuperadmin
+        ? (effectiveSourceIds.length > 0 ? await fetchGlobalSourcesByIds(db, effectiveSourceIds) : [])
+        : (requestedSourceIds.length > 0
+          ? accessibleSources.filter((source) => effectiveSourceIds.includes(source.id))
+          : accessibleSources);
 
       const accessibleSourcePool = new Set<string>();
       accessibleSources.forEach((source) => {
@@ -3352,43 +3316,38 @@ export const searchArticles = onCall(
       };
 
       const matchedArticles: any[] = [];
-      const scanBatchSize = 500;
-      const maxScan = 10000;
-      const safeLimit = Math.min(Number(limitNum || 50), 500);
-      const requiredMatches = Number(offsetNum || 0) + safeLimit + 100;
-      let scanned = 0;
-      let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+      const safeLimit = Math.min(Number(limitNum || 50), 200);
+      const requiredMatches = Number(offsetNum || 0) + safeLimit + 50;
+      const perStatusLimit = Math.min(Math.max(requiredMatches * 2, 120), 400);
 
-      while (scanned < maxScan) {
-        let articleQuery: FirebaseFirestore.Query = db.collection('articles')
-          .where('publishedAt', '>=', effectiveStart)
-          .where('publishedAt', '<=', effectiveEnd)
-          .orderBy('publishedAt', 'desc')
-          .limit(scanBatchSize);
+      const articleSnaps = await Promise.all(
+        allowedStatuses.map((status) =>
+          db.collection('articles')
+            .where('status', '==', status)
+            .where('publishedAt', '>=', effectiveStart)
+            .where('publishedAt', '<=', effectiveEnd)
+            .orderBy('publishedAt', 'desc')
+            .limit(perStatusLimit)
+            .get(),
+        ),
+      );
 
-        if (lastDoc) {
-          articleQuery = articleQuery.startAfter(lastDoc);
-        }
+      const scanned = articleSnaps.reduce((sum, snap) => sum + snap.size, 0);
 
-        const snap = await articleQuery.get();
-        if (snap.empty) break;
+      matchedArticles.push(
+        ...articleSnaps
+          .flatMap((snap) => snap.docs)
+          .map(normalizeArticle)
+          .filter(matchesSourceAccess)
+          .filter(matchesKeyword)
+          .filter(matchesCategory)
+      );
 
-        scanned += snap.size;
-        lastDoc = snap.docs[snap.docs.length - 1];
-
-        matchedArticles.push(
-          ...snap.docs
-            .map(normalizeArticle)
-            .filter((article) => allowedStatuses.includes(article.status))
-            .filter(matchesSourceAccess)
-            .filter(matchesKeyword)
-            .filter(matchesCategory)
-        );
-
-        if (matchedArticles.length >= requiredMatches || snap.size < scanBatchSize) {
-          break;
-        }
-      }
+      matchedArticles.sort((left, right) => {
+        const leftTime = left.publishedAt?.toDate ? left.publishedAt.toDate().getTime() : new Date(left.publishedAt || 0).getTime();
+        const rightTime = right.publishedAt?.toDate ? right.publishedAt.toDate().getTime() : new Date(right.publishedAt || 0).getTime();
+        return rightTime - leftTime;
+      });
 
       const total = matchedArticles.length;
       const paged = matchedArticles.slice(offsetNum, offsetNum + safeLimit);
