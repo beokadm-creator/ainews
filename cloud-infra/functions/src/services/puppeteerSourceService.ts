@@ -6,10 +6,12 @@ import { isDuplicateArticle, hashTitle, hashUrl } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { RuntimeAiConfig, RuntimeFilters } from '../types/runtime';
 import { getDateRangeBounds } from './runtimeConfigService';
+import { extractTextFromHtml } from '../utils/textUtils';
 
 const PAGE_TIMEOUT_MS = 30_000;
 const MAX_LIST_ITEMS = 20;
-const MAX_BODY_CHARS = 5000;
+const MIN_FULL_BODY_CHARS = 500;
+const MAX_BODY_CHARS = 50000;
 
 interface PuppeteerSource {
   id: string;
@@ -174,39 +176,54 @@ async function enrichArticles(browser: Browser, source: PuppeteerSource, baseArt
   try {
     const enriched: PuppeteerArticle[] = [];
     for (const article of baseArticles) {
-      if ((article.content || '').trim().length >= 120) {
+      const currentContent = `${article.content || ''}`.trim();
+      if (currentContent.length >= MIN_FULL_BODY_CHARS) {
         enriched.push(article);
         continue;
       }
 
       try {
         await articlePage.goto(article.url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS });
-        const content = await articlePage.evaluate((preferredSelector: string | null) => {
-          const selectors = [
-            preferredSelector,
-            'article',
-            '.article',
-            '.article_view',
-            '.article-body',
-            '.article_content',
-            '.news_body',
-            '.view_cont',
-            '.contents',
-            'main',
-          ].filter((value): value is string => Boolean(value));
+        const articleHtml = await articlePage.content();
+        let normalized = extractTextFromHtml(articleHtml, article.url)
+          .replace(/\r/g, '\n')
+          .replace(/[ \t]+/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
 
-          for (const selector of selectors) {
-            const node = document.querySelector(selector);
-            const text = node?.textContent?.trim();
-            if (text && text.length > 80) {
-              return text;
+        if (normalized.length < MIN_FULL_BODY_CHARS) {
+          const content = await articlePage.evaluate((preferredSelector: string | null) => {
+            const selectors = [
+              preferredSelector,
+              'article',
+              '.article',
+              '.article_view',
+              '.article-body',
+              '.article_content',
+              '.news_body',
+              '.view_cont',
+              '.contents',
+              'main',
+            ].filter((value): value is string => Boolean(value));
+
+            for (const selector of selectors) {
+              const node = document.querySelector(selector);
+              const text = node?.textContent?.trim();
+              if (text && text.length > 80) {
+                return text;
+              }
             }
-          }
 
-          return document.body?.textContent?.trim() || '';
-        }, source.contentSelector || null);
+            return document.body?.textContent?.trim() || '';
+          }, source.contentSelector || null);
 
-        const normalized = content.replace(/\s+/g, ' ').trim();
+          normalized = content
+            .replace(/\r/g, '\n')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        }
+
         if (normalized.length > 0) {
           enriched.push({
             ...article,
