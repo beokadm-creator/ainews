@@ -481,11 +481,12 @@ Default Format Requirements:
 2. The tone must be polished, analytical, and suitable for a PE firm's internal or client-facing report.
 3. Use modern, elegant layout sections. Avoid plain markdown, plain text dumps, or JSON.
 4. Synthesize the articles into insight, not article-by-article repetition.
-5. Cite article references inline using [1], [2] style superscripts where relevant.
+5. Cite article references inline using [1], [2] style superscripts where relevant. Wrap each in <sup>[N]</sup>.
 6. Include sections for executive summary, key developments, market map, factual implications, and reference list.
 7. Use concise Korean headings and professional business language.
 8. If input quality is uneven, still return strong HTML with clear structure and styled cards, tables, and callout panels where useful.
 9. Keep the final result presentation-ready for a premium PE firm.
+10. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white, near-white, or light gray as text color. All text must be readable on a white background without dark mode. Do NOT include any dark mode CSS or media queries.
 
 Default recommended structure (override if user specifies otherwise):
 - hero header

@@ -2427,16 +2427,26 @@ export const sharedReportPage = onRequest(
     }
 
     const output = { id: outputSnap.docs[0].id, ...(outputSnap.docs[0].data() as any) };
-    const htmlAsset = await buildOutputHtmlAsset(output.id);
-    const sharedHtml = htmlAsset.html.replace(
-      '</body>',
-      `<script>
-        (function () {
-          var title = document.querySelector('.report-title');
-          if (title) document.title = title.textContent || document.title;
-        })();
-      </script></body>`
-    );
+
+    // Serve the AI-generated htmlContent directly — no extra wrapper needed
+    const rawHtml = output.htmlContent || output.rawOutput || '';
+    if (!rawHtml) {
+      response.status(404).send('Report content not available');
+      return;
+    }
+
+    // Inject: (1) light-mode safety CSS, (2) title-update script
+    const safetyStyle = `<style>
+      :root { color-scheme: light; }
+      body { background: #ffffff !important; color: #111827 !important; }
+    </style>`;
+    let sharedHtml = rawHtml;
+    if (sharedHtml.includes('</head>')) {
+      sharedHtml = sharedHtml.replace('</head>', `${safetyStyle}</head>`);
+    }
+    if (sharedHtml.includes('</body>')) {
+      sharedHtml = sharedHtml.replace('</body>', `<script>(function(){var t=document.querySelector('.report-title,h1');if(t)document.title=t.textContent||document.title;})();</script></body>`);
+    }
 
     await outputSnap.docs[0].ref.set({
       shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp(),

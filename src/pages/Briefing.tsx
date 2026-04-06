@@ -576,7 +576,32 @@ export default function Briefing() {
 
                 {/* Report HTML content */}
                 {renderHtml ? (
-                  <div className="prose max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: renderHtml }} />
+                  <>
+                    {/* Make footnote superscripts clickable */}
+                    <style>{`
+                      .report-html-body sup { cursor: pointer; color: #1e3a5f; font-weight: 700; }
+                      .report-html-body sup:hover { text-decoration: underline; }
+                    `}</style>
+                    <div
+                      className="report-html-body prose max-w-none"
+                      dangerouslySetInnerHTML={{ __html: renderHtml }}
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement;
+                        const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
+                        if (sup && articles.length > 0) {
+                          const text = (sup.textContent || '').trim();
+                          const match = text.match(/\[?(\d+)\]?/);
+                          if (match) {
+                            const num = parseInt(match[1], 10);
+                            if (num >= 1 && num <= articles.length) {
+                              e.preventDefault();
+                              setPreviewArticle(articles[num - 1]);
+                            }
+                          }
+                        }
+                      }}
+                    />
+                  </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400 dark:border-gray-700">
                     생성된 HTML 리포트가 아직 없습니다.
