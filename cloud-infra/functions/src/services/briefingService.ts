@@ -443,6 +443,7 @@ export interface CustomReportOptions {
   articleIds: string[];
   keywords: string[];
   analysisPrompt: string;
+  savedPrompt?: string; // if set, stored in Firestore instead of analysisPrompt
   reportTitle?: string;
   requestedBy: string;
   aiConfig: RuntimeAiConfig;
@@ -527,7 +528,7 @@ ${articleDigest}`;
     type: 'custom_report',
     title: reportTitle,
     keywords: options.keywords,
-    analysisPrompt: options.analysisPrompt,
+    analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
     articleIds: options.articleIds,
     // GLM에 전달된 실제 기사 순서 (각주 [1],[2],... 와 1:1 대응)
     // 프론트엔드는 articleIds 대신 orderedArticleIds로 참조 목록 표시해야 함

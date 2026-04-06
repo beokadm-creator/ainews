@@ -920,18 +920,18 @@ function buildManagedReportPrompt(
   keywords: string[] = [],
 ) {
   const sourceText = sourceNames.length > 0
-    ? `???留ㅼ껜: ${sourceNames.join(', ')}`
-    : '???留ㅼ껜: 援щ룆 以묒씤 ?꾩껜 ?좏깮 留ㅼ껜';
+    ? `뉴스 출처: ${sourceNames.join(', ')}`
+    : '뉴스 출처: 구독 중인 전체 활성 출처';
   const keywordText = keywords.length > 0
-    ? `?듭떖 ?ㅼ썙?? ${keywords.join(', ')}`
-    : '?듭떖 ?ㅼ썙?? 蹂꾨룄 吏???놁쓬';
+    ? `키워드 필터: ${keywords.join(', ')}`
+    : '키워드 필터: 별도 지정 없음';
 
   const sharedRules = [
-    '紐⑤뱺 臾몄옣? ?쒓뎅?대줈 ?묒꽦?⑸땲??',
-    '?⑺듃 湲곕컲?쇰줈留??붿빟?섍퀬 遺꾩꽍?⑸땲??',
-    'AI???섍껄, ?ъ옄 議곗뼵, 異붽? ?쒖뼵, ?숆???鍮꾧????꾨쭩? ?ｌ? ?딆뒿?덈떎.',
-    '以묐났 湲곗궗??臾띔퀬, ?쒕줈 ?곸땐?섎뒗 ?⑺듃??援щ텇?댁꽌 ?곸뒿?덈떎.',
-    '湲곗궗?먯꽌 諛섎뱶??梨숆꺼遊먯빞 ???ъ씤?? ?볦튂湲??ъ슫 ?섏튂, ?댄빐愿怨꾩옄 蹂?붾쭔 ?뺣━?⑸땲??',
+    '전체 내용은 한국어로 작성합니다.',
+    '팩트 기반으로만 분석하고 작성합니다.',
+    'AI 추측, 투자 조언, 법적 의견, 미래 예측 등은 포함하지 않습니다.',
+    '수집된 기사만 다루고, 새로 발생하는 이슈는 자율적으로 추가하지 않습니다.',
+    '기사에서 확인된 수치나 사실관계 작성시 출처를 포함하기 어려우면, 출처없이 정보만 정리합니다.',
   ].join('\n');
 
   // When user has provided a specific prompt, it takes highest priority
@@ -949,30 +949,31 @@ function buildManagedReportPrompt(
   }
 
   if (mode === 'external') {
-    return `${sharedRules}
-${sourceText}
-${keywordText}
-?몃? 諛고룷???곗씪由?由ы룷???뺤떇?쇰줈 ?묒꽦?⑸땲??
-遺꾨웾? ?꾩썝 硫붿씪濡?諛붾줈 ?쎌쓣 ???덇쾶 媛꾧껐?섍쾶 ?좎??⑸땲??
-援ъ꽦? ?ㅼ쓬 ?쒖꽌瑜??곕쫭?덈떎:
-1. ?듭떖 ?붿빟
-2. 二쇱슂 湲곗궗 ?ъ씤??3~6媛?
-3. 二쇱쓽 源딄쾶 蹂?蹂???먮뒗 泥댄겕?ъ씤??
-4. 李멸퀬 湲곗궗 紐⑸줉
-${basePrompt || ''}`.trim();
+    return [`${sharedRules}`,
+      `${sourceText}`,
+      `${keywordText}`,
+      `외부 공유용 이메일/문서 형태로 작성합니다.`,
+      `문서의 특정 부분으로 바로 이동할 수 있도록 목차를 포함합니다.`,
+      `구성은 다음 섹션을 갖춥니다:`,
+      `1. 키워드 요약`,
+      `2. 주요 기사 요약 3~6건`,
+      `3. 시장의 방향으로 해석되는 시사점`,
+      `4. 참고 기사 목록`,
+    ].join('\n').trim();
   }
 
-  return `${sharedRules}
-${sourceText}
-${keywordText}
-?대? 遺꾩꽍??由ы룷???뺤떇?쇰줈 ?묒꽦?⑸땲??
-援ъ꽦? ?ㅼ쓬 ?쒖꽌瑜??곕쫭?덈떎:
-1. ?듭떖 ?붿빟
-2. 怨듯넻?곸쑝濡??쒕윭???먮쫫
-3. 留ㅼ껜蹂?湲곗궗援곕퀎 泥댄겕?ъ씤??
-4. ?볦튂硫????섎뒗 ?⑺듃
-5. 李멸퀬 湲곗궗 紐⑸줉
-${basePrompt || ''}`.trim();
+  return [
+    `${sharedRules}`,
+    `${sourceText}`,
+    `${keywordText}`,
+    `내부 업무용 문서 형태로 작성합니다.`,
+    `구성은 다음 섹션을 갖춥니다:`,
+    `1. 키워드 요약`,
+    `2. 업계별로 정렬된 요약`,
+    `3. 출처별 기사원문 시사점`,
+    `4. 주목해야하는 이슈`,
+    `5. 참고 기사 목록`,
+  ].join('\n').trim();
 }
 
 async function getCompanyReportPromptSettings(companyId: string): Promise<CompanyReportPromptSettings> {
@@ -1084,6 +1085,7 @@ async function executeManagedReport({
     articleIds: reportArticles.map((article) => article.id),
     keywords: keywordList,
     analysisPrompt: prompt,
+    savedPrompt: basePrompt,
     reportTitle,
     requestedBy: requestedBy || output.requestedBy || '__system__',
     aiConfig: runtime.ai,
@@ -3208,6 +3210,7 @@ export const processManagedReportHttp = onRequest(
           articleIds: reportArticles.map((article) => article.id),
           keywords: keywordList,
           analysisPrompt: prompt,
+          savedPrompt: basePrompt,
           reportTitle,
           requestedBy: requestedBy || output.requestedBy || '__system__',
           aiConfig: runtime.ai,
