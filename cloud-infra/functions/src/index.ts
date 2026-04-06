@@ -25,6 +25,7 @@ import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
 import { processPuppeteerSources } from './services/puppeteerSourceService';
 import { purgeRejectedArticlesPreservingDedupe, syncArticlesToDedup } from './services/articleDedupService';
+import { hashTitle, calculateTokenSimilarity } from './services/duplicateService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
 import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
@@ -36,6 +37,25 @@ import { getGlobalKeywordConfig, saveGlobalKeywordConfig, seedGlobalKeywordsIfEm
 import { recordMetric } from './services/metricsService';
 import { DEFAULT_TRACKED_COMPANIES } from './services/trackedCompanyConfig';
 admin.initializeApp();
+
+// ─── Module-level source ID cache (mirrors globalKeywordService pattern) ─────
+let cachedActiveSourceIds: string[] | null = null;
+let sourceCacheExpiresAt = 0;
+const SOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getActiveSourceIds(): Promise<string[]> {
+  const now = Date.now();
+  if (cachedActiveSourceIds !== null && now < sourceCacheExpiresAt) return cachedActiveSourceIds;
+  const snap = await admin.firestore().collection('globalSources').where('status', '==', 'active').get();
+  cachedActiveSourceIds = snap.docs.map((d) => d.id);
+  sourceCacheExpiresAt = Date.now() + SOURCE_CACHE_TTL_MS;
+  return cachedActiveSourceIds;
+}
+
+function invalidateSourceCache() {
+  cachedActiveSourceIds = null;
+  sourceCacheExpiresAt = 0;
+}
 admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
 // ensureCollectionsExist().catch(console.error);
@@ -229,6 +249,17 @@ function matchArticleToSources(article: any, sources: ManagedReportSourceDefinit
 const DRAIN_BUDGET_MS = 7 * 60 * 1000;
 
 async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: string) {
+  // Quick count check: skip heavy processing if nothing to do
+  const db = admin.firestore();
+  const [pendingSnap, filteredSnap] = await Promise.all([
+    db.collection('articles').where('status', '==', 'pending').count().get(),
+    db.collection('articles').where('status', '==', 'filtered').count().get(),
+  ]);
+  if (pendingSnap.data().count === 0 && filteredSnap.data().count === 0) {
+    logger.info('[drainQueue] No pending/filtered articles — skipping analysis cycle');
+    return { totalFiltered: 0, totalAnalyzed: 0 };
+  }
+
   let totalFiltered = 0;
   let totalAnalyzed = 0;
   const maxRounds = 20;
@@ -359,10 +390,7 @@ async function withWorkerLease<T>(
 }
 
 async function getContinuousCollectionContext(aiConfig: RuntimeAiConfig, companyId?: string) {
-  const db = admin.firestore();
-  const activeSourceIds = (await db.collection('globalSources').where('status', '==', 'active').get())
-    .docs
-    .map((doc) => doc.id);
+  const activeSourceIds = await getActiveSourceIds();
 
   return {
     companyId,
@@ -906,6 +934,20 @@ function buildManagedReportPrompt(
     '湲곗궗?먯꽌 諛섎뱶??梨숆꺼遊먯빞 ???ъ씤?? ?볦튂湲??ъ슫 ?섏튂, ?댄빐愿怨꾩옄 蹂?붾쭔 ?뺣━?⑸땲??',
   ].join('\n');
 
+  // When user has provided a specific prompt, it takes highest priority
+  if (basePrompt) {
+    return [
+      '[PRIMARY INSTRUCTION — FOLLOW STRICTLY]',
+      basePrompt,
+      '',
+      sourceText,
+      keywordText,
+      '',
+      '[Secondary structural guidance — apply only where user instructions do not specify otherwise]',
+      sharedRules,
+    ].join('\n').trim();
+  }
+
   if (mode === 'external') {
     return `${sharedRules}
 ${sourceText}
@@ -1272,6 +1314,7 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
     
     console.log('[upsertGlobalSource] ????깃났', { docId: docRef.id, mode: id ? 'update' : 'create' });
     
+    invalidateSourceCache();
     return { success: true, id: docRef.id };
   } catch (error: any) {
     console.error('[upsertGlobalSource] ????ㅽ뙣', { docId: docRef.id, error: error.message, stack: error.stack });
@@ -1288,6 +1331,7 @@ export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, in
   const { id } = request.data || {};
   if (!id) throw new HttpsError('invalid-argument', 'Source ID required');
   const db = admin.firestore();
+  invalidateSourceCache();
   await db.collection('globalSources').doc(id).delete();
 
   const subscriptionSnap = await db.collection('companySourceSubscriptions').get();
@@ -2981,6 +3025,62 @@ export const generateReportV2 = onCall(
 );
 export const generateReport = generateReportV2;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// regenerateReportContent: 기존 기사는 유지한 채 새 프롬프트로 리포트 재생성
+// ─────────────────────────────────────────────────────────────────────────────
+export const regenerateReportContent = onCall(
+  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const { outputId, newPrompt } = request.data || {};
+    if (!outputId) throw new HttpsError('invalid-argument', 'outputId is required');
+
+    const db = admin.firestore();
+    const outputDoc = await db.collection('outputs').doc(outputId).get();
+    if (!outputDoc.exists) throw new HttpsError('not-found', 'Output not found');
+
+    const output = outputDoc.data() as any;
+    await assertCompanyAccess(request.auth.uid, output.companyId);
+
+    const articleIds: string[] = output.articleIds || [];
+    if (articleIds.length === 0) {
+      throw new HttpsError('failed-precondition', 'No article IDs found on this output');
+    }
+
+    const keywords: string[] = output.keywords || [];
+    const reportTitle: string = output.title || 'Market Intelligence Report';
+    const analysisPrompt = (typeof newPrompt === 'string' && newPrompt.trim()) ? newPrompt.trim() : (output.analysisPrompt || '');
+
+    // Set status to processing immediately so frontend onSnapshot fires
+    await db.collection('outputs').doc(outputId).set({
+      status: 'processing',
+      analysisPrompt,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    // Fire background regeneration (reuses same outputId — htmlContent is overwritten)
+    executeStandaloneCustomReport({
+      outputId,
+      companyId: output.companyId,
+      articleIds,
+      keywords,
+      analysisPrompt,
+      reportTitle,
+      requestedBy: request.auth.uid,
+    }).catch((err: any) => {
+      console.error('[regenerateReportContent] Background failed:', err.message);
+      db.collection('outputs').doc(outputId).set({
+        status: 'failed',
+        errorMessage: err.message || 'Regeneration failed',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+
+    return { success: true, outputId };
+  }
+);
+
 // [NEW] generateReportContentHttp: 蹂닿퀬???댁슜 ?앹꽦 (諛깃렇?쇱슫?? 理쒕? 540珥?
 export const generateReportContentHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
@@ -3484,6 +3584,78 @@ export const deleteExcludedArticlesHttp = onRequest(
       console.error('deleteExcludedArticles error:', err);
       response.status(500).json({ error: err.message });
     }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// findAndRemoveDuplicates: 저장된 기사 중 제목/내용 중복 탐지 후 하위 중복 제거
+// ─────────────────────────────────────────────────────────────────────────────
+export const findAndRemoveDuplicates = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 120, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    await requireSuperadminUid(request.auth.uid);
+
+    const db = admin.firestore();
+    const statuses = ['pending', 'filtered', 'analyzed'];
+
+    const snaps = await Promise.all(
+      statuses.map((s) => db.collection('articles').where('status', '==', s).limit(500).get())
+    );
+
+    const all: any[] = [];
+    for (const snap of snaps) {
+      for (const d of snap.docs) {
+        all.push({ id: d.id, ...d.data() });
+      }
+    }
+
+    // Group by title hash
+    const groups = new Map<string, any[]>();
+    for (const article of all) {
+      const key: string = article.titleHash || hashTitle(article.title || '');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(article);
+    }
+
+    const batch = db.batch();
+    let removedCount = 0;
+    let groupsFound = 0;
+
+    for (const [, group] of groups) {
+      if (group.length < 2) continue;
+      // Keep the article with the highest relevance score (or most recent if tied)
+      const sorted = [...group].sort((a, b) => {
+        const scoreDiff = (b.relevanceScore || 0) - (a.relevanceScore || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : 0;
+        const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : 0;
+        return timeB - timeA;
+      });
+      const keep = sorted[0];
+      const candidates = sorted.slice(1);
+
+      // Secondary check: token similarity > 0.85
+      const duplicates = candidates.filter((c) => {
+        const sim = calculateTokenSimilarity(keep.title || '', c.title || '');
+        return sim > 0.85;
+      });
+      if (duplicates.length === 0) continue;
+
+      groupsFound++;
+      for (const dup of duplicates) {
+        batch.set(db.collection('articles').doc(dup.id), {
+          status: 'rejected',
+          filterReason: 'duplicate_detected',
+          duplicateOf: keep.id,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) await batch.commit();
+    return { success: true, removedCount, groupsFound };
   }
 );
 

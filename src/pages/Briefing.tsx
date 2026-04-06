@@ -74,6 +74,9 @@ export default function Briefing() {
   const [sharing, setSharing] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [regenModalOpen, setRegenModalOpen] = useState(false);
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const [regenerating, setRegenerating] = useState(false);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -165,6 +168,29 @@ export default function Briefing() {
     await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
     await loadOutputs();
     await loadOutputDetail(selectedOutput.id);
+  };
+
+  const openRegenModal = () => {
+    setRegenPrompt(selectedOutput?.analysisPrompt || '');
+    setRegenModalOpen(true);
+  };
+
+  const regenerateReport = async () => {
+    if (!selectedOutput) return;
+    setRegenerating(true);
+    setActionMessage(null);
+    try {
+      await httpsCallable(functions, 'regenerateReportContent')({
+        outputId: selectedOutput.id,
+        newPrompt: regenPrompt,
+      });
+      setRegenModalOpen(false);
+      setActionMessage('리포트 재생성을 시작했습니다. 완료되면 자동으로 업데이트됩니다.');
+    } catch (error: any) {
+      setActionMessage(error.message || '재발행에 실패했습니다.');
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   const sendEmail = async () => {
@@ -458,6 +484,15 @@ export default function Briefing() {
                         {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                         텔레그램
                       </button>
+                      {(selectedOutput?.htmlContent || selectedOutput?.rawOutput || selectedOutput?.generatedOutput?.htmlContent) && (
+                        <button
+                          onClick={openRegenModal}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-[#1e3a5f]/30 bg-[#1e3a5f]/10 px-3 py-2 text-xs font-medium text-[#1e3a5f] transition hover:bg-[#1e3a5f]/20 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-blue-300"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          리포트 재발행
+                        </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -688,6 +723,64 @@ export default function Briefing() {
                 </a>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Report re-publish modal */}
+      {regenModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
+          onClick={() => setRegenModalOpen(false)}
+        >
+          <div
+            className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700">
+              <div>
+                <h3 className="text-base font-bold text-gray-900 dark:text-white">리포트 재발행</h3>
+                <p className="mt-1 text-xs text-gray-400">
+                  동일한 기사를 사용하여 새로운 분석 방향으로 리포트를 재생성합니다.
+                </p>
+              </div>
+              <button
+                onClick={() => setRegenModalOpen(false)}
+                className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-6 py-5">
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                분석 방향 / 프롬프트
+              </label>
+              <textarea
+                value={regenPrompt}
+                onChange={(e) => setRegenPrompt(e.target.value)}
+                rows={5}
+                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                placeholder="분석 방향을 입력하세요. 예: 섹터별 PE 참여 현황과 밸류에이션 트렌드에 집중해서 분석해 주세요."
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
+              <button
+                onClick={() => setRegenModalOpen(false)}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400"
+              >
+                취소
+              </button>
+              <button
+                onClick={regenerateReport}
+                disabled={regenerating}
+                className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#24456f] disabled:opacity-50"
+              >
+                {regenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                재발행 시작
+              </button>
+            </div>
           </div>
         </div>
       )}

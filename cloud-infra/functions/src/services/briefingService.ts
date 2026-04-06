@@ -475,7 +475,7 @@ export async function generateCustomReport(options: CustomReportOptions) {
 const systemPrompt = `You are a senior private equity research editor.
 Create a premium HTML report in Korean for investment professionals.
 
-Requirements:
+Default Format Requirements:
 1. Output a complete HTML document from <!DOCTYPE html> to </html>.
 2. The tone must be polished, analytical, and suitable for a PE firm's internal or client-facing report.
 3. Use modern, elegant layout sections. Avoid plain markdown, plain text dumps, or JSON.
@@ -485,21 +485,23 @@ Requirements:
 7. Use concise Korean headings and professional business language.
 8. If input quality is uneven, still return strong HTML with clear structure and styled cards, tables, and callout panels where useful.
 9. Keep the final result presentation-ready for a premium PE firm.
-10. Do not include investment recommendations, suggestions, calls to action, opportunity lists, or next steps.
 
-Recommended structure:
+Default recommended structure (override if user specifies otherwise):
 - hero header
 - executive summary
 - key developments
 - market map
 - factual implications
-- reference list`;
+- reference list
+
+[CUSTOM ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
+The user has provided specific analysis instructions below. You MUST prioritize and strictly follow these instructions above the default format guidelines above. If the user requests a different structure, tone, focus area, or content scope, follow their instruction precisely.
+
+${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}`;
 
   const userPrompt = `Report title: ${reportTitle}
 Company: ${companyDisplayName}
 Priority keywords: ${keywordSummary}
-Additional direction: ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}
-Do not add investment recommendations or action items.
 Selected article count: ${articles.length}
 Use at most the strongest 50 articles already curated below.
 

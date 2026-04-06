@@ -321,6 +321,8 @@ export default function AdminArticles() {
   const [stats, setStats] = useState({ total: 0, collected: 0, analyzed: 0, rejected: 0 });
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeResult, setAnalyzeResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [deduping, setDeduping] = useState(false);
+  const [dedupResult, setDedupResult] = useState<{ removedCount: number } | null>(null);
   const [analysisWorker, setAnalysisWorker] = useState<RuntimeDoc>({});
   const [runtimeAccessError, setRuntimeAccessError] = useState<string | null>(null);
   const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
@@ -535,6 +537,24 @@ export default function AdminArticles() {
     }
   };
 
+  const handleFindAndRemoveDuplicates = async () => {
+    if (!window.confirm('중복 기사를 탐지하고 낮은 점수의 중복을 제외 처리합니다. 계속하시겠습니까?')) return;
+    setDeduping(true);
+    setDedupResult(null);
+    try {
+      const fn = httpsCallable(functions, 'findAndRemoveDuplicates');
+      const result = (await fn({})) as any;
+      setDedupResult({ removedCount: result.data.removedCount });
+      if (result.data.removedCount > 0) {
+        void loadArticles(true);
+      }
+    } catch (error: any) {
+      alert(`중복 제거 실패: ${error.message}`);
+    } finally {
+      setDeduping(false);
+    }
+  };
+
   const handleAnalyze = async (article: Article) => {
     setAnalyzing(true);
     setAnalyzeResult(null);
@@ -595,6 +615,14 @@ export default function AdminArticles() {
             새로고침
           </button>
           <button
+            onClick={handleFindAndRemoveDuplicates}
+            disabled={deduping || deleting}
+            className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${deduping ? 'animate-spin' : ''}`} />
+            중복 제거
+          </button>
+          <button
             onClick={handleDeleteExcluded}
             disabled={deleting}
             className="inline-flex items-center gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-1.5 text-xs text-orange-300 transition-colors hover:bg-orange-500/20 disabled:opacity-50"
@@ -646,6 +674,13 @@ export default function AdminArticles() {
         >
           {analyzeResult.success ? <CheckCircle className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
           {analyzeResult.message}
+        </div>
+      ) : null}
+
+      {dedupResult ? (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-300">
+          <CheckCircle className="h-4 w-4" />
+          중복 {dedupResult.removedCount}건이 제외 처리되었습니다.
         </div>
       ) : null}
 
