@@ -19,7 +19,7 @@ import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
-import { buildOutputAssetBundle, buildOutputHtmlAsset, getOutputHtmlDocument } from './services/reportAssetService';
+import { buildOutputAssetBundle, buildOutputHtmlAsset, buildSharedReportPage } from './services/reportAssetService';
 import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
@@ -2531,8 +2531,8 @@ export const sharedReportPage = onRequest(
       return;
     }
 
-    // Build interactive branded HTML with footnote modals
-    const sharedHtml = await getOutputHtmlDocument(output);
+    // Serve AI-generated HTML as-is with only footnote modal injected (no branded shell)
+    const sharedHtml = await buildSharedReportPage(output);
 
     await outputSnap.docs[0].ref.set({
       shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp(),

@@ -37,10 +37,14 @@ function sanitizeReportHtml(raw: string) {
   }
 
   const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
-  if (doctypeIdx >= 0) return cleaned.slice(doctypeIdx).trim();
-  const htmlIdx = cleaned.search(/<html[\s>]/i);
-  if (htmlIdx >= 0) return cleaned.slice(htmlIdx).trim();
-  return cleaned;
+  const result = doctypeIdx >= 0
+    ? cleaned.slice(doctypeIdx).trim()
+    : cleaned.search(/<html[\s>]/i) >= 0
+      ? cleaned.slice(cleaned.search(/<html[\s>]/i)).trim()
+      : cleaned;
+
+  // Strip [N] footnote reference numbers from the report body
+  return result.replace(/\[(\d{1,3})\]/g, '');
 }
 
 function formatArticleDate(value: any) {
@@ -181,6 +185,14 @@ export default function Briefing() {
     return () => unsubscribe();
   }, [companyId, searchParams]);
 
+  // Initialize contenteditable with body content when entering edit mode
+  useEffect(() => {
+    if (editMode && editRef.current && renderHtml) {
+      const bodyMatch = renderHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      editRef.current.innerHTML = bodyMatch ? bodyMatch[1] : renderHtml;
+    }
+  }, [editMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const retryOutput = async () => {
     if (!selectedOutput) return;
     await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
@@ -191,15 +203,14 @@ export default function Briefing() {
   const saveReportEdit = async () => {
     if (!selectedOutput || !editRef.current) return;
     const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
-    // Rebuild a minimal full HTML document wrapping the edited body
-    const bodyContent = editRef.current.innerHTML;
-    // Preserve the existing full HTML structure if possible, just replace body content
+    // Read edited content BEFORE any setState (React re-render would overwrite contenteditable)
+    const editedBody = editRef.current.innerHTML;
     const currentHtml = selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '';
-    let newHtml = currentHtml;
+    let newHtml: string;
     if (currentHtml.includes('<body')) {
-      newHtml = currentHtml.replace(/<body[^>]*>([\s\S]*?)<\/body>/i, `<body>${bodyContent}</body>`);
+      newHtml = currentHtml.replace(/<body[^>]*>[\s\S]*?<\/body>/i, `<body>${editedBody}</body>`);
     } else {
-      newHtml = bodyContent;
+      newHtml = editedBody;
     }
     setSavingEdit(true);
     setActionMessage(null);
@@ -703,7 +714,6 @@ export default function Briefing() {
                           contentEditable
                           suppressContentEditableWarning
                           className="report-html-body prose max-w-none overflow-x-auto rounded-lg border border-amber-200 p-3 dark:border-amber-700/40"
-                          dangerouslySetInnerHTML={{ __html: renderHtml }}
                         />
                       </div>
                     ) : (
@@ -765,16 +775,15 @@ export default function Briefing() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="text-[11px] font-medium text-gray-400 dark:text-gray-500">{article.source}</div>
-                            <div className="mt-0.5 text-sm font-medium leading-snug text-gray-900 dark:text-white">{article.title}</div>
-                            <div className="mt-2 flex flex-wrap gap-3">
-                              <button
-                                type="button"
-                                onClick={() => setPreviewArticle(article)}
-                                className="inline-flex items-center gap-1 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
-                              >
-                                원문 보기
-                              </button>
-                              {article.url && (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewArticle(article)}
+                              className="mt-0.5 w-full text-left text-sm font-medium leading-snug text-gray-900 transition hover:text-[#1e3a5f] hover:underline dark:text-white dark:hover:text-blue-300"
+                            >
+                              {article.title}
+                            </button>
+                            {article.url && (
+                              <div className="mt-2">
                                 <a
                                   href={article.url}
                                   target="_blank"
@@ -784,8 +793,8 @@ export default function Briefing() {
                                   <ExternalLink className="h-3 w-3" />
                                   원문 링크
                                 </a>
-                              )}
-                            </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>

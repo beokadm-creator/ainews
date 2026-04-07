@@ -172,7 +172,7 @@ function injectReferenceLinks(bodyHtml: string, articleCount: number) {
   return bodyHtml.replace(/\[(\d{1,3})\]/g, (match, rawIndex) => {
     const refIndex = Number(rawIndex);
     if (!Number.isInteger(refIndex) || refIndex < 1 || refIndex > articleCount) return match;
-    return `<button type="button" class="article-ref-trigger" data-article-ref="${refIndex - 1}" aria-label="참고 기사 ${refIndex}번 보기">[${refIndex}]</button>`;
+    return ''; // Strip [N] footnote numbers entirely
   });
 }
 
@@ -823,7 +823,7 @@ function buildInteractiveArticleReferenceSection(articles: any[]) {
         <article class="reference-card">
           <div class="reference-index">${index + 1}</div>
           <div class="reference-main">
-            <h3>${escapeHtml(article.title || '')}</h3>
+            <h3 class="article-ref-trigger" data-article-ref="${index}" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(30,58,95,0.3)">${escapeHtml(article.title || '')}</h3>
             <div class="reference-meta">${escapeHtml(article.source || '')}</div>
             <div class="reference-actions">
               <button type="button" class="reference-link reference-link-primary article-ref-trigger" data-article-ref="${index}">원문 보기</button>
@@ -1164,6 +1164,143 @@ export async function getOutputHtmlDocument(output: any, articles?: any[]) {
 
 export async function generateEmailHtml(output: any, articles?: any[]) {
   return getOutputHtmlDocument(output, articles);
+}
+
+/**
+ * Builds the shared-link page: serves the AI-generated HTML as-is (no branded shell,
+ * no toolbar) with only the footnote modal CSS/HTML/JS injected so article refs work.
+ */
+export async function buildSharedReportPage(output: any): Promise<string> {
+  const articles = await loadOutputArticles(output);
+  const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
+  const fallbackHtml = buildFallbackReportHtml(output, articles);
+  const sourceHtml = rawHtml || fallbackHtml;
+
+  const $ = load(sourceHtml);
+  const bodyEl = $('body');
+  const bodyHtml = bodyEl.length > 0 ? bodyEl.html() || '' : sourceHtml;
+  const linkedBodyHtml = injectReferenceLinks(bodyHtml, articles.length);
+  const bodyWithRefs = `${linkedBodyHtml}${buildInteractiveArticleReferenceSection(articles)}`;
+  const modalPayload = escapeJsonForHtml(articles.map(buildArticleModalPayload));
+
+  const modalCss = `
+    .article-ref-trigger{appearance:none;border:none;background:rgba(30,58,95,0.10);color:#1e3a5f;border-radius:4px;padding:1px 6px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+    .reference-list{display:grid;gap:8px}
+    .reference-card{display:flex;gap:12px;align-items:flex-start;border:1px solid #e3ebf4;border-radius:14px;background:#ffffff;padding:12px 14px;transition:border-color 0.15s}
+    .reference-card:hover{border-color:#c5d4e8}
+    .reference-index{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#1e3a5f;color:#fff;font-size:10px;font-weight:800;margin-top:1px}
+    .reference-main{min-width:0;flex:1}
+    .reference-card h3{margin:0;font-size:14px;line-height:1.4;color:#0f172a}
+    .reference-meta{margin-top:3px;font-size:11px;color:#64748b}
+    .reference-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+    .reference-link{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;text-decoration:none;cursor:pointer;transition:opacity 0.15s}
+    .reference-link:hover{opacity:0.82}
+    .reference-link-primary{background:#1e3a5f;color:#fff;border:none}
+    .reference-link-secondary{background:#eef4f9;color:#1e3a5f;border:none}
+    .article-modal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,0.65);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+    .article-modal.is-open{display:flex}
+    .article-modal-dialog{width:min(680px,100%);max-height:min(84vh,900px);overflow:hidden;display:flex;flex-direction:column;border-radius:20px;border:1px solid rgba(226,232,240,0.6);background:#fff;box-shadow:0 32px 64px rgba(15,23,42,0.28)}
+    .article-modal-header{padding:16px 20px;border-bottom:1px solid #f1f5f9}
+    .article-modal-footer{padding:12px 20px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .article-modal-body{padding:20px;overflow-y:auto;display:grid;gap:20px}
+    .article-modal-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+    .article-modal-title{margin:8px 0 0;font-size:18px;line-height:1.4;color:#0f172a;letter-spacing:-0.02em}
+    .article-modal-label{font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px}
+    .article-modal-summary-card{border:1px solid rgba(30,58,95,0.14);border-radius:12px;background:rgba(30,58,95,0.04);padding:14px 16px}
+    .article-modal-summary{margin:0;padding:0;list-style:none;display:grid;gap:6px}
+    .article-modal-summary li{display:flex;gap:8px;font-size:13px;line-height:1.65;color:#334155}
+    .article-modal-summary-dash{color:rgba(30,58,95,0.40);flex-shrink:0}
+    .article-modal-content{display:grid;gap:12px}
+    .article-modal-content p{margin:0;font-size:13px;line-height:1.78;color:#334155}
+    .article-modal-close{appearance:none;border:1px solid #e5e7eb;background:#f8fafc;color:#475569;font-size:18px;line-height:1;cursor:pointer;width:36px;height:36px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;transition:background 0.15s}
+    .article-modal-close:hover{background:#eef2f7}
+    .article-modal-open-link{display:inline-flex;align-items:center;gap:5px;color:#1e3a5f;font-size:12px;font-weight:700;text-decoration:none}
+    .article-modal-open-link:hover{text-decoration:underline}
+  `;
+
+  const modalHtml = `
+    <div class="article-modal" id="article-modal" aria-hidden="true">
+      <div class="article-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="article-modal-title">
+        <div class="article-modal-header">
+          <div class="article-modal-meta" id="article-modal-meta"></div>
+          <h2 class="article-modal-title" id="article-modal-title"></h2>
+        </div>
+        <div class="article-modal-body">
+          <section id="article-modal-published-section" hidden>
+            <div class="article-modal-label">발행시각</div>
+            <div class="article-modal-content" id="article-modal-published"></div>
+          </section>
+          <section id="article-modal-summary-section" hidden>
+            <div class="article-modal-label">AI 요약</div>
+            <div class="article-modal-summary-card">
+              <ul class="article-modal-summary" id="article-modal-summary"></ul>
+            </div>
+          </section>
+          <section>
+            <div class="article-modal-label">기사 원문</div>
+            <div class="article-modal-content" id="article-modal-content"></div>
+          </section>
+        </div>
+        <div class="article-modal-footer">
+          <a id="article-modal-link" class="article-modal-open-link" target="_blank" rel="noopener noreferrer" hidden>↗ 원문 링크 열기</a>
+          <button type="button" class="article-modal-close" data-close-modal aria-label="닫기">×</button>
+        </div>
+      </div>
+    </div>
+    <script id="article-modal-payload" type="application/json">${modalPayload}</script>
+    <script>
+      (function(){
+        var payloadEl=document.getElementById('article-modal-payload');
+        var payload=[];
+        try{payload=JSON.parse(payloadEl?payloadEl.textContent||'[]':'[]');}catch(e){payload=[];}
+        var modal=document.getElementById('article-modal');
+        var metaEl=document.getElementById('article-modal-meta');
+        var titleEl=document.getElementById('article-modal-title');
+        var pubSecEl=document.getElementById('article-modal-published-section');
+        var pubEl=document.getElementById('article-modal-published');
+        var sumSecEl=document.getElementById('article-modal-summary-section');
+        var sumEl=document.getElementById('article-modal-summary');
+        var contentEl=document.getElementById('article-modal-content');
+        var linkEl=document.getElementById('article-modal-link');
+        function closeModal(){if(!modal)return;modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true');}
+        function openModal(idx){
+          var a=payload[idx];
+          if(!a||!modal)return;
+          if(metaEl)metaEl.innerHTML='<span>'+(a.source||'')+'</span>'+(a.publishedAt?'<span>'+a.publishedAt+'</span>':'');
+          if(titleEl)titleEl.textContent=a.title||'제목 없음';
+          if(pubEl)pubEl.innerHTML='';
+          if(a.publishedAt&&pubSecEl){pubSecEl.hidden=false;var p=document.createElement('p');p.textContent=a.publishedAt;if(pubEl)pubEl.appendChild(p);}
+          else if(pubSecEl){pubSecEl.hidden=true;}
+          if(sumEl)sumEl.innerHTML='';
+          (a.summary||[]).forEach(function(line){var li=document.createElement('li');var d=document.createElement('span');d.className='article-modal-summary-dash';d.textContent='—';li.appendChild(d);li.appendChild(document.createTextNode(line));if(sumEl)sumEl.appendChild(li);});
+          if(sumSecEl)sumSecEl.hidden=(a.summary||[]).length===0;
+          if(contentEl){contentEl.innerHTML='';var ps=(a.contentParagraphs||[]);if(!ps.length)ps=['원문 전문이 저장되지 않은 기사입니다.'];ps.forEach(function(t){var p=document.createElement('p');p.textContent=t;contentEl.appendChild(p);});}
+          if(linkEl){if(a.url){linkEl.hidden=false;linkEl.href=a.url;}else{linkEl.hidden=true;linkEl.removeAttribute('href');}}
+          modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');
+        }
+        document.addEventListener('click',function(e){
+          var t=e.target;if(!t||!t.closest)return;
+          var tr=t.closest('[data-article-ref]');
+          if(tr){e.preventDefault();openModal(Number(tr.getAttribute('data-article-ref')));}
+        });
+        if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}
+        document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+      })();
+    </script>
+  `;
+
+  // Inject modal CSS into <head>, replace <body> with enriched content + modal
+  const headEl = $('head');
+  if (headEl.length > 0) {
+    headEl.append(`<style>${modalCss}</style>`);
+  }
+  if (bodyEl.length > 0) {
+    bodyEl.html(bodyWithRefs + modalHtml);
+    return $.html();
+  }
+
+  // Fallback: no html/body structure found, wrap minimally
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${escapeHtml(output.title || '리포트')}</title><style>${modalCss}</style></head><body>${bodyWithRefs}${modalHtml}</body></html>`;
 }
 
 export async function buildOutputHtmlAsset(outputId: string): Promise<OutputHtmlAsset> {
