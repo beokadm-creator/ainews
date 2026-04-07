@@ -203,6 +203,7 @@ export default function Articles() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [startDate, setStartDate] = useState(defaults.startDate);
   const [endDate, setEndDate] = useState(defaults.endDate);
+  const [focusedDateField, setFocusedDateField] = useState<'start' | 'end' | null>(null);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [articles, setArticles] = useState<ArticleItem[]>([]);
@@ -286,8 +287,49 @@ export default function Articles() {
     setEndDate(format(now, "yyyy-MM-dd'T'HH:mm"));
   };
 
+  const applyNineToNine = () => {
+    const now = new Date();
+    const today9am = new Date(now);
+    today9am.setHours(9, 0, 0, 0);
+    const yesterday9am = new Date(today9am);
+    yesterday9am.setDate(yesterday9am.getDate() - 1);
+    setStartDate(format(yesterday9am, "yyyy-MM-dd'T'HH:mm"));
+    setEndDate(format(today9am, "yyyy-MM-dd'T'HH:mm"));
+  };
+
+  const applyDateShortcut = (type: 'today' | 'morning9' | 'evening9' | 'now') => {
+    const field = focusedDateField;
+    if (!field) return;
+    const currentStr = field === 'start' ? startDate : endDate;
+    const base = currentStr ? new Date(currentStr) : new Date();
+    if (Number.isNaN(base.getTime())) return;
+    const now = new Date();
+    switch (type) {
+      case 'today':
+        base.setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
+        break;
+      case 'morning9':
+        base.setHours(9, 0, 0, 0);
+        break;
+      case 'evening9':
+        base.setHours(21, 0, 0, 0);
+        break;
+      case 'now':
+        base.setHours(now.getHours(), now.getMinutes(), 0, 0);
+        break;
+    }
+    const formatted = format(base, "yyyy-MM-dd'T'HH:mm");
+    if (field === 'start') setStartDate(formatted);
+    else setEndDate(formatted);
+  };
+
   const toggleSource = (sourceId: string) => {
     setSelectedSourceIds((prev) => prev.includes(sourceId) ? prev.filter((id) => id !== sourceId) : [...prev, sourceId]);
+  };
+
+  const toggleAllSources = () => {
+    if (selectedSourceIds.length === sources.length) setSelectedSourceIds([]);
+    else setSelectedSourceIds(sources.map((s) => s.id));
   };
 
   const toggleCategory = (category: string) => {
@@ -323,9 +365,12 @@ export default function Articles() {
     [articles.length, selectedIds.size],
   );
   const availableCategories = useMemo(
-    () => Array.from(new Set(articles.map((article) => article.category).filter(Boolean))),
+    () => Array.from(new Set(articles.map((article) => article.category).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, 'ko')),
     [articles],
   );
+  const allSourcesSelected = sources.length > 0 && selectedSourceIds.length === sources.length;
+  const allCategoriesSelected = availableCategories.length > 0 && selectedCategories.length === availableCategories.length;
   const previewContentParagraphs = useMemo(
     () => formatArticleContentParagraphs(previewArticle?.content || ''),
     [previewArticle],
@@ -386,13 +431,34 @@ export default function Articles() {
                     {preset.label}
                   </button>
                 ))}
+                <button type="button" onClick={applyNineToNine}
+                  className="rounded-md border border-[#1e3a5f]/30 bg-[#1e3a5f]/5 px-2.5 py-1 text-[11px] font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f] hover:text-white dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300">
+                  최근 9 to 9
+                </button>
               </div>
               <div className="flex items-center gap-2">
-                <input type="datetime-local" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white" />
+                <input type="datetime-local" value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  onFocus={() => setFocusedDateField('start')}
+                  className={`w-full rounded-lg border bg-gray-50 px-3 py-2 text-sm outline-none transition dark:bg-gray-900/40 dark:text-white ${focusedDateField === 'start' ? 'border-[#1e3a5f] ring-1 ring-[#1e3a5f]/20 dark:border-blue-400' : 'border-gray-200 dark:border-gray-700/60'}`} />
                 <span className="shrink-0 text-gray-400">~</span>
-                <input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white" />
+                <input type="datetime-local" value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  onFocus={() => setFocusedDateField('end')}
+                  className={`w-full rounded-lg border bg-gray-50 px-3 py-2 text-sm outline-none transition dark:bg-gray-900/40 dark:text-white ${focusedDateField === 'end' ? 'border-[#1e3a5f] ring-1 ring-[#1e3a5f]/20 dark:border-blue-400' : 'border-gray-200 dark:border-gray-700/60'}`} />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                  {focusedDateField === 'start' ? '시작' : focusedDateField === 'end' ? '종료' : '입력창 선택 후'} →
+                </span>
+                {(['today', 'morning9', 'evening9', 'now'] as const).map((type) => (
+                  <button key={type} type="button"
+                    disabled={!focusedDateField}
+                    onClick={() => applyDateShortcut(type)}
+                    className="rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-[#1e3a5f] hover:text-white disabled:opacity-40 dark:bg-gray-700 dark:text-gray-300">
+                    {type === 'today' ? '오늘' : type === 'morning9' ? '오전 9시' : type === 'evening9' ? '오후 9시' : '지금'}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -401,6 +467,14 @@ export default function Articles() {
                 <Newspaper className="h-3 w-3" />대상 매체
               </label>
               <div className="flex flex-wrap gap-1.5">
+                <button type="button" onClick={toggleAllSources}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition ${
+                    allSourcesSelected
+                      ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                      : 'border-[#1e3a5f]/40 bg-[#1e3a5f]/5 text-[#1e3a5f] hover:bg-[#1e3a5f] hover:text-white dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300'
+                  }`}>
+                  전체
+                </button>
                 {sources.map((source) => (
                   <button key={source.id} type="button" onClick={() => toggleSource(source.id)}
                     className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
@@ -459,6 +533,14 @@ export default function Articles() {
             <div className="border-b border-gray-100 px-4 py-2.5 dark:border-gray-700/40">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">카테고리</span>
+                <button type="button" onClick={() => allCategoriesSelected ? setSelectedCategories([]) : setSelectedCategories([...availableCategories])}
+                  className={`rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
+                    allCategoriesSelected
+                      ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                      : 'border-[#1e3a5f]/40 bg-[#1e3a5f]/5 text-[#1e3a5f] dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-300'
+                  }`}>
+                  전체
+                </button>
                 {availableCategories.map((category) => (
                   <button key={category} type="button" onClick={() => toggleCategory(category)}
                     className={`rounded-md border px-2 py-0.5 text-[11px] transition ${

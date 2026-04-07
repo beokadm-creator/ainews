@@ -117,7 +117,7 @@ export default function UserHome() {
   const userName = (user as any)?.displayName || user?.email?.split('@')[0] || '사용자';
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8 pb-12">
+    <div className="mx-auto max-w-6xl space-y-6 pb-12">
       {/* Header */}
       <div className="border-b border-gray-200 pb-5 dark:border-gray-700/60">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">

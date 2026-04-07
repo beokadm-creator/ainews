@@ -165,16 +165,16 @@ export default function MediaSelector() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-[#1e3a5f]" />
+      <div className="flex min-h-[320px] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-[#1e3a5f] dark:text-gray-400" />
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 pb-24">
+    <div className="mx-auto max-w-5xl space-y-6 pb-12">
       {/* Header */}
-      <div className="flex flex-col gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-white">매체 구독 선택</h1>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -281,7 +281,7 @@ export default function MediaSelector() {
                     className={`w-full text-left p-4 rounded-xl border transition-all ${
                       isSelected
                         ? 'border-[#1e3a5f] bg-[#1e3a5f]/5 dark:border-blue-500 dark:bg-blue-900/20 shadow-sm'
-                        : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
+                        : 'border-gray-200 dark:border-gray-700/60 bg-white dark:bg-gray-800/60 hover:border-gray-300 dark:hover:border-gray-600'
                     } ${!canEdit ? 'cursor-default' : 'cursor-pointer'}`}
                   >
                     <div className="flex items-start gap-3">
@@ -364,7 +364,7 @@ export default function MediaSelector() {
                     className={`w-full text-left p-4 rounded-xl border transition-all text-sm ${
                       selectedIds.has(source.id)
                         ? 'border-[#1e3a5f] bg-[#1e3a5f]/5 shadow-sm'
-                        : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+                        : 'border-gray-200 dark:border-gray-700/60 bg-white dark:bg-gray-800/60'
                     }`}
                   >
                     <span className="font-medium text-gray-900 dark:text-white">{source.name}</span>

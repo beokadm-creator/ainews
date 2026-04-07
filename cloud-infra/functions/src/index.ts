@@ -19,7 +19,7 @@ import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
-import { buildOutputAssetBundle, buildOutputHtmlAsset } from './services/reportAssetService';
+import { buildOutputAssetBundle, buildOutputHtmlAsset, getOutputHtmlDocument } from './services/reportAssetService';
 import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
@@ -2428,31 +2428,20 @@ export const sharedReportPage = onRequest(
 
     const output = { id: outputSnap.docs[0].id, ...(outputSnap.docs[0].data() as any) };
 
-    // Serve the AI-generated htmlContent directly — no extra wrapper needed
     const rawHtml = output.htmlContent || output.rawOutput || '';
     if (!rawHtml) {
       response.status(404).send('Report content not available');
       return;
     }
 
-    // Inject: (1) light-mode safety CSS, (2) title-update script
-    const safetyStyle = `<style>
-      :root { color-scheme: light; }
-      body { background: #ffffff !important; color: #111827 !important; }
-    </style>`;
-    let sharedHtml = rawHtml;
-    if (sharedHtml.includes('</head>')) {
-      sharedHtml = sharedHtml.replace('</head>', `${safetyStyle}</head>`);
-    }
-    if (sharedHtml.includes('</body>')) {
-      sharedHtml = sharedHtml.replace('</body>', `<script>(function(){var t=document.querySelector('.report-title,h1');if(t)document.title=t.textContent||document.title;})();</script></body>`);
-    }
+    // Build interactive branded HTML with footnote modals
+    const sharedHtml = await getOutputHtmlDocument(output);
 
     await outputSnap.docs[0].ref.set({
       shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    response.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.status(200).send(sharedHtml);
   },

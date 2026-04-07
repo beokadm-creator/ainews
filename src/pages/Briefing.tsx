@@ -1,21 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Clock3,
   Copy,
   Download,
+  Edit3,
   ExternalLink,
   Link2,
   Loader2,
   Mail,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Send,
   Sparkles,
   X,
 } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -77,6 +79,9 @@ export default function Briefing() {
   const [regenModalOpen, setRegenModalOpen] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const [regenerating, setRegenerating] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const editRef = useRef<HTMLDivElement>(null);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -133,10 +138,12 @@ export default function Briefing() {
   useEffect(() => {
     const outputId = searchParams.get('outputId');
     if (outputId) {
+      setEditMode(false);
       loadOutputDetail(outputId).catch(console.error);
     } else {
       setSelectedOutput(null);
       setArticles([]);
+      setEditMode(false);
     }
   }, [searchParams]);
 
@@ -168,6 +175,33 @@ export default function Briefing() {
     await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
     await loadOutputs();
     await loadOutputDetail(selectedOutput.id);
+  };
+
+  const saveReportEdit = async () => {
+    if (!selectedOutput || !editRef.current) return;
+    const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
+    // Rebuild a minimal full HTML document wrapping the edited body
+    const bodyContent = editRef.current.innerHTML;
+    // Preserve the existing full HTML structure if possible, just replace body content
+    const currentHtml = selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '';
+    let newHtml = currentHtml;
+    if (currentHtml.includes('<body')) {
+      newHtml = currentHtml.replace(/<body[^>]*>([\s\S]*?)<\/body>/i, `<body>${bodyContent}</body>`);
+    } else {
+      newHtml = bodyContent;
+    }
+    setSavingEdit(true);
+    setActionMessage(null);
+    try {
+      await setDoc(doc(db, 'outputs', targetId), { htmlContent: newHtml, rawOutput: newHtml }, { merge: true });
+      setEditMode(false);
+      setActionMessage('리포트 내용이 저장되었습니다. 공유 링크에도 즉시 반영됩니다.');
+      await loadOutputDetail(selectedOutput.id);
+    } catch (error: any) {
+      setActionMessage(error.message || '저장에 실패했습니다.');
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const openRegenModal = () => {
@@ -307,10 +341,10 @@ export default function Briefing() {
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-12">
       {/* Page header */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             생성된 분석 리포트를 확인하고, 실패한 작업은 재시도하거나 바로 발송할 수 있습니다.
           </p>
         </div>
@@ -325,8 +359,8 @@ export default function Briefing() {
 
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         {/* Left: report list */}
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
             <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 리포트</span>
             <button
               onClick={loadOutputs}
@@ -390,10 +424,10 @@ export default function Briefing() {
         </div>
 
         {/* Right: detail panel */}
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
           {!selectedOutput ? (
             <div className="flex min-h-[480px] flex-col items-center justify-center gap-3 text-center">
-              <div className="rounded-2xl border border-dashed border-gray-200 p-5 dark:border-gray-700">
+              <div className="rounded-2xl border border-dashed border-gray-200 p-5 dark:border-gray-700/60">
                 <Sparkles className="h-8 w-8 text-gray-300 dark:text-gray-600" />
               </div>
               <p className="text-sm text-gray-400">왼쪽 목록에서 리포트를 선택해 주세요.</p>
@@ -401,7 +435,7 @@ export default function Briefing() {
           ) : (
             <div>
               {/* Detail header */}
-              <div className="border-b border-gray-100 px-6 py-5 dark:border-gray-700">
+              <div className="border-b border-gray-100 px-6 py-5 dark:border-gray-700/40">
                 <button
                   onClick={() => navigate('/briefing')}
                   className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-400 transition hover:text-gray-700 dark:hover:text-gray-200"
@@ -437,7 +471,7 @@ export default function Briefing() {
                 {/* Action bar */}
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   {/* Download group */}
-                  <div className="flex items-center divide-x divide-gray-200 overflow-hidden rounded-lg border border-gray-200 dark:divide-gray-700 dark:border-gray-700">
+                  <div className="flex items-center divide-x divide-gray-200 overflow-hidden rounded-lg border border-gray-200 dark:divide-gray-700/40 dark:border-gray-700/60">
                     <button
                       onClick={() => downloadAsset('pdf')}
                       disabled={downloadingFormat !== null}
@@ -495,6 +529,34 @@ export default function Briefing() {
                       )}
                     </>
                   )}
+                  {renderHtml && !editMode && (
+                    <button
+                      onClick={() => setEditMode(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-400"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                      내용 편집
+                    </button>
+                  )}
+                  {editMode && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={saveReportEdit}
+                        disabled={savingEdit}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#24456f] disabled:opacity-50"
+                      >
+                        {savingEdit ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                        저장
+                      </button>
+                      <button
+                        onClick={() => setEditMode(false)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:border-gray-700/60 dark:text-gray-300"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        취소
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {selectedOutput.errorMessage && (
@@ -524,8 +586,8 @@ export default function Briefing() {
                     </div>
 
                     {shareUrl ? (
-                      <div className="mt-3 rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-                        <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
+                      <div className="mt-3 rounded-lg border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+                        <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700/40">
                           <span className="flex-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400">
                             {shareUrl}
                           </span>
@@ -538,7 +600,7 @@ export default function Briefing() {
                             <ExternalLink className="h-3.5 w-3.5" />
                           </a>
                         </div>
-                        <div className="flex items-center divide-x divide-gray-100 dark:divide-gray-700">
+                        <div className="flex items-center divide-x divide-gray-100 dark:divide-gray-700/40">
                           <button
                             onClick={copyShareUrl}
                             className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/40"
@@ -581,29 +643,46 @@ export default function Briefing() {
                     <style>{`
                       .report-html-body sup { cursor: pointer; color: #1e3a5f; font-weight: 700; }
                       .report-html-body sup:hover { text-decoration: underline; }
+                      .report-edit-mode [contenteditable="true"] { outline: 2px dashed #d4af37; border-radius: 4px; min-height: 200px; padding: 4px; }
+                      .report-edit-mode [contenteditable="true"]:focus { outline: 2px solid #d4af37; }
                     `}</style>
-                    <div
-                      className="report-html-body prose max-w-none"
-                      dangerouslySetInnerHTML={{ __html: renderHtml }}
-                      onClick={(e) => {
-                        const target = e.target as HTMLElement;
-                        const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
-                        if (sup && articles.length > 0) {
-                          const text = (sup.textContent || '').trim();
-                          const match = text.match(/\[?(\d+)\]?/);
-                          if (match) {
-                            const num = parseInt(match[1], 10);
-                            if (num >= 1 && num <= articles.length) {
-                              e.preventDefault();
-                              setPreviewArticle(articles[num - 1]);
+                    {editMode ? (
+                      <div className="report-edit-mode">
+                        <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-400">
+                          편집 모드: 텍스트를 직접 수정하거나 불필요한 내용을 선택 후 삭제하세요. 완료 후 저장 버튼을 누르세요.
+                        </div>
+                        <div
+                          ref={editRef}
+                          contentEditable
+                          suppressContentEditableWarning
+                          className="report-html-body prose max-w-none rounded-lg border border-amber-200 p-3 dark:border-amber-700/40"
+                          dangerouslySetInnerHTML={{ __html: renderHtml }}
+                        />
+                      </div>
+                    ) : (
+                      <div
+                        className="report-html-body prose max-w-none"
+                        dangerouslySetInnerHTML={{ __html: renderHtml }}
+                        onClick={(e) => {
+                          const target = e.target as HTMLElement;
+                          const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
+                          if (sup && articles.length > 0) {
+                            const text = (sup.textContent || '').trim();
+                            const match = text.match(/\[?(\d+)\]?/);
+                            if (match) {
+                              const num = parseInt(match[1], 10);
+                              if (num >= 1 && num <= articles.length) {
+                                e.preventDefault();
+                                setPreviewArticle(articles[num - 1]);
+                              }
                             }
                           }
-                        }
-                      }}
-                    />
+                        }}
+                      />
+                    )}
                   </>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400 dark:border-gray-700">
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-400 dark:border-gray-700/60">
                     생성된 HTML 리포트가 아직 없습니다.
                   </div>
                 )}
@@ -620,7 +699,7 @@ export default function Briefing() {
                     {articles.map((article, index) => (
                       <div
                         key={article.id}
-                        className="group rounded-xl border border-gray-200 px-4 py-3 transition hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600"
+                        className="group rounded-xl border border-gray-200 px-4 py-3 transition hover:border-gray-300 dark:border-gray-700/60 dark:hover:border-gray-600"
                       >
                         <div className="flex items-start gap-3">
                           <span className="mt-0.5 shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-gray-400 dark:bg-gray-700 dark:text-gray-500">
@@ -654,7 +733,7 @@ export default function Briefing() {
                       </div>
                     ))}
                     {articles.length === 0 && (
-                      <div className="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-gray-400 dark:border-gray-700">
+                      <div className="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-gray-400 dark:border-gray-700/60">
                         참고 기사 정보가 없습니다.
                       </div>
                     )}
@@ -673,11 +752,11 @@ export default function Briefing() {
           onClick={() => setPreviewArticle(null)}
         >
           <div
-            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900"
             onClick={(event) => event.stopPropagation()}
           >
             {/* Modal header */}
-            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700/40">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-700 dark:text-gray-400">
@@ -736,7 +815,7 @@ export default function Briefing() {
 
             {/* Modal footer */}
             {previewArticle.url && (
-              <div className="border-t border-gray-100 px-6 py-3 dark:border-gray-700">
+              <div className="border-t border-gray-100 px-6 py-3 dark:border-gray-700/40">
                 <a
                   href={previewArticle.url}
                   target="_blank"
@@ -759,10 +838,10 @@ export default function Briefing() {
           onClick={() => setRegenModalOpen(false)}
         >
           <div
-            className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+            className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700/40">
               <div>
                 <h3 className="text-base font-bold text-gray-900 dark:text-white">리포트 재발행</h3>
                 <p className="mt-1 text-xs text-gray-400">
@@ -785,12 +864,12 @@ export default function Briefing() {
                 value={regenPrompt}
                 onChange={(e) => setRegenPrompt(e.target.value)}
                 rows={5}
-                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-800 dark:text-white"
                 placeholder="분석 방향을 입력하세요. 예: 섹터별 PE 참여 현황과 밸류에이션 트렌드에 집중해서 분석해 주세요."
               />
             </div>
 
-            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700">
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700/40">
               <button
                 onClick={() => setRegenModalOpen(false)}
                 className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400"
