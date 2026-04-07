@@ -137,6 +137,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
     return [
       `[ARTICLE ${index + 1}]`,
       `TITLE: ${safeTitle}`,
+      `URL: ${article.url || ''}`,
       `SOURCE: ${safeSource}`,
       `DATE: ${pub}`,
       `RELEVANCE_SCORE: ${article.relevanceScore || 0}/100`,
@@ -485,6 +486,21 @@ Universal Requirements (always apply):
 3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
 4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
 5. Part/section numbers must be strictly sequential starting from 1.
+6. REQUIRED HTML structure for each article analysis block — use EXACTLY these class names:
+   <div class="article-block">
+     <div class="article-sector">[sector tag]</div>
+     <div class="article-title"><a href="[URL field from ARTICLE N]">[title]</a></div>
+     [analysis content paragraphs]
+   </div>
+7. REQUIRED HTML structure for the reference table at the end:
+   <table class="ref-table">
+     <thead><tr><th>번호</th><th>날짜</th><th>헤드라인</th><th>매체</th></tr></thead>
+     <tbody>
+       <tr><td>1</td><td>[date]</td><td>[headline]</td><td>[source]</td></tr>
+     </tbody>
+   </table>
+   Use the exact integer (1, 2, 3 …) from the ARTICLE number in the 번호 column.
+   For the href in each article-block title link, use the URL field provided in the ARTICLE digest.
 
 [ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
 Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope. Override any default behavior above if there is conflict.

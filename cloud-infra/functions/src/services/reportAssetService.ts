@@ -1234,18 +1234,29 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     bodyDiv.append(`<a href="${href}" class="article-source-btn">원문 보기 →</a>`);
   });
 
-  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref
-  let refRowIdx = 0;
+  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref.
+  // Derives 0-based index from first column (번호); strips non-digit chars for formats
+  // like "[1]", "1.", etc. Falls back to sequential counter when not a valid number.
+  let refRowSeq = 0;
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
-    if (!cells.length) return; // skip header row (has <th>)
+    if (!cells.length) return; // skip header row (has <th> only)
     const headlineCell = cells.eq(2);
-    if (headlineCell.length && !headlineCell.find('[data-article-ref], a, button').length) {
+    if (!headlineCell.length) return;
+
+    const rawNum = (cells.eq(0).text() || '').replace(/[^\d]/g, '').trim();
+    const articleNum = rawNum ? parseInt(rawNum, 10) : NaN;
+    const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
+    refRowSeq++;
+
+    const existingBtn = headlineCell.find('[data-article-ref]');
+    if (existingBtn.length) {
+      existingBtn.attr('data-article-ref', String(articleIdx));
+    } else if (!headlineCell.find('a, button').length) {
       headlineCell.html(
-        `<button class="article-ref-trigger" data-article-ref="${refRowIdx}">${headlineCell.html() || ''}</button>`,
+        `<button class="article-ref-trigger" data-article-ref="${articleIdx}">${headlineCell.html() || ''}</button>`,
       );
     }
-    refRowIdx++;
   });
 
   const bodyEl = $('body');

@@ -147,19 +147,29 @@ function sanitizeReportHtml(raw: string) {
     articleBlockIdx++;
   });
 
-  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref
-  // Use the article number from the first column (1-based) as the index so that
-  // the correct article is shown even if table rows are not in insertion order.
+  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref.
+  // Always re-derives the correct 0-based index from the first column (번호).
+  // Strips non-digit characters so formats like "[1]", "1.", "① 1" all parse correctly.
+  // Falls back to sequential row counter when the first column is not a valid number.
+  let refRowSeq = 0;
   tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td'));
-    if (cells.length < 3) return; // skip header row (has <th>)
+    if (cells.length < 3) return; // skip header row (has <th> only)
     const headlineCell = cells[2];
-    if (headlineCell && !headlineCell.querySelector('[data-article-ref], a, button')) {
-      // Article number in first column is 1-based; convert to 0-based index
-      const numText = (cells[0]?.textContent || '').trim();
-      const articleNum = parseInt(numText, 10);
-      const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : -1;
-      if (articleIdx < 0) return;
+    if (!headlineCell) return;
+
+    // Determine article index from first column, fall back to sequential counter
+    const rawNum = (cells[0]?.textContent || '').replace(/[^\d]/g, '').trim();
+    const articleNum = rawNum ? parseInt(rawNum, 10) : NaN;
+    const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
+    refRowSeq++;
+
+    // Find existing trigger button and update its index, or create a new one
+    const existingBtn = headlineCell.querySelector('[data-article-ref]') as HTMLElement | null;
+    if (existingBtn) {
+      existingBtn.setAttribute('data-article-ref', String(articleIdx));
+      existingBtn.className = 'ref-headline-btn';
+    } else if (!headlineCell.querySelector('a, button')) {
       const btn = tmpDoc.createElement('button');
       btn.setAttribute('data-article-ref', String(articleIdx));
       btn.className = 'ref-headline-btn';
