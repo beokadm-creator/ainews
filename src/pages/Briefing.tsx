@@ -82,6 +82,8 @@ export default function Briefing() {
   const [editMode, setEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const editRef = useRef<HTMLDivElement>(null);
+  const [currentTemplates, setCurrentTemplates] = useState<{ internal?: string; external?: string }>({});
+  const [settingTemplate, setSettingTemplate] = useState(false);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -133,6 +135,15 @@ export default function Briefing() {
 
   useEffect(() => {
     loadOutputs().catch(console.error);
+  }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId) return;
+    getDoc(doc(db, 'companySettings', companyId))
+      .then((snap) => {
+        if (snap.exists()) setCurrentTemplates((snap.data() as any)?.styleTemplates || {});
+      })
+      .catch(console.error);
   }, [companyId]);
 
   useEffect(() => {
@@ -310,6 +321,27 @@ export default function Briefing() {
     setActionMessage('공유 링크를 클립보드에 복사했습니다.');
   };
 
+  const setAsTemplate = async (mode: 'internal' | 'external', clear = false) => {
+    if (!selectedOutput || !companyId) return;
+    setSettingTemplate(true);
+    setActionMessage(null);
+    try {
+      const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
+      await httpsCallable(functions, 'saveCompanyStyleTemplate')({
+        companyId,
+        mode,
+        outputId: clear ? null : targetId,
+      });
+      const snap = await getDoc(doc(db, 'companySettings', companyId));
+      setCurrentTemplates(snap.exists() ? ((snap.data() as any)?.styleTemplates || {}) : {});
+      setActionMessage(clear ? '템플릿이 해제되었습니다.' : '이 리포트를 스타일 템플릿으로 설정했습니다.');
+    } catch (error: any) {
+      setActionMessage(error.message || '템플릿 설정에 실패했습니다.');
+    } finally {
+      setSettingTemplate(false);
+    }
+  };
+
   const renderHtml = sanitizeReportHtml(
     selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
   );
@@ -404,6 +436,11 @@ export default function Briefing() {
                       }`}>
                         {output.serviceMode === 'external' ? '외부' : '내부'}
                       </span>
+                      {currentTemplates[output.serviceMode as 'internal' | 'external'] === output.id && (
+                        <span className="rounded px-1 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                          TEMPLATE
+                        </span>
+                      )}
                       {output.createdAt?.toDate && (
                         <span className="inline-flex items-center gap-1">
                           <Clock3 className="h-3 w-3" />
@@ -538,6 +575,21 @@ export default function Briefing() {
                       내용 편집
                     </button>
                   )}
+                  {isAdmin && renderHtml && !editMode && (() => {
+                    const mode = (selectedOutput?.serviceMode as 'internal' | 'external') || 'internal';
+                    const targetId = selectedOutput?.generatedOutputId || selectedOutput?.id;
+                    const isCurrentTemplate = currentTemplates[mode] === targetId;
+                    return (
+                      <button
+                        onClick={() => setAsTemplate(mode, isCurrentTemplate)}
+                        disabled={settingTemplate}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 dark:border-gray-700/60 dark:text-gray-400 dark:hover:border-amber-700/40 dark:hover:bg-amber-900/20 dark:hover:text-amber-400"
+                      >
+                        {settingTemplate ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        {isCurrentTemplate ? '템플릿 해제' : '스타일 템플릿'}
+                      </button>
+                    );
+                  })()}
                   {editMode && (
                     <div className="flex items-center gap-2">
                       <button
@@ -665,6 +717,17 @@ export default function Briefing() {
                         dangerouslySetInnerHTML={{ __html: renderHtml }}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
+                          // Handle button.article-ref-trigger (0-based index from injectReferenceLinks in shared view)
+                          const refButton = target.closest('[data-article-ref]') as HTMLElement | null;
+                          if (refButton && articles.length > 0) {
+                            const idx = Number(refButton.getAttribute('data-article-ref'));
+                            if (!isNaN(idx) && idx >= 0 && idx < articles.length) {
+                              e.preventDefault();
+                              setPreviewArticle(articles[idx]);
+                              return;
+                            }
+                          }
+                          // Handle <sup>[N]</sup> (1-based, AI-generated pattern)
                           const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
                           if (sup && articles.length > 0) {
                             const text = (sup.textContent || '').trim();

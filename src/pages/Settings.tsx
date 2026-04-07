@@ -61,6 +61,8 @@ export default function Settings() {
   const [smtpFrom, setSmtpFrom] = useState('');
   const [trackingCompaniesText, setTrackingCompaniesText] = useState(DEFAULT_TRACKED_COMPANIES.join('\n'));
   const [usage, setUsage] = useState<any>(null);
+  const [styleTemplates, setStyleTemplates] = useState<{ internal?: string; external?: string }>({});
+  const [clearingTemplate, setClearingTemplate] = useState<'internal' | 'external' | null>(null);
 
   const loadAll = async () => {
     if (!companyId) return;
@@ -77,6 +79,7 @@ export default function Settings() {
       const settings = settingsDoc.exists() ? (settingsDoc.data() as any) : {};
       setInternalPrompt(settings.reportPrompts?.internal || internalPrompt);
       setExternalPrompt(settings.reportPrompts?.external || externalPrompt);
+      setStyleTemplates(settings.styleTemplates || {});
       setPublisherName(settings.branding?.publisherName || settings.companyName || '이음프라이빗에쿼티');
       setLogoDataUrl(settings.branding?.logoDataUrl || '');
       setSmtpHost(settings.smtp?.host || '');
@@ -248,6 +251,51 @@ export default function Settings() {
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             저장
           </button>
+        </div>
+      </SectionCard>
+
+      {/* Style Templates */}
+      <SectionCard icon={Sparkles} title="스타일 템플릿">
+        <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">
+          리포트 생성 시 참고할 구조 및 톤앤매너 템플릿입니다. Briefing 페이지에서 원하는 리포트를 스타일 템플릿으로 지정할 수 있습니다.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          {(['internal', 'external'] as const).map((mode) => (
+            <div key={mode} className="rounded-lg border border-gray-100 p-3 dark:border-gray-700/40">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                {mode === 'internal' ? '내부 리포트 템플릿' : '외부 리포트 템플릿'}
+              </div>
+              {styleTemplates[mode] ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-xs text-gray-600 dark:text-gray-300">
+                    {styleTemplates[mode]}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      if (!companyId) return;
+                      setClearingTemplate(mode);
+                      try {
+                        await httpsCallable(functions, 'saveCompanyStyleTemplate')({ companyId, mode, outputId: null });
+                        setStyleTemplates((prev) => {
+                          const next = { ...prev };
+                          delete next[mode];
+                          return next;
+                        });
+                      } finally {
+                        setClearingTemplate(null);
+                      }
+                    }}
+                    disabled={clearingTemplate === mode}
+                    className="shrink-0 text-xs text-red-500 transition hover:text-red-700 disabled:opacity-50"
+                  >
+                    {clearingTemplate === mode ? <Loader2 className="h-3.5 w-3.5 animate-spin inline" /> : '해제'}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">설정된 템플릿 없음 — Briefing에서 리포트를 선택 후 설정하세요.</p>
+              )}
+            </div>
+          ))}
         </div>
       </SectionCard>
 

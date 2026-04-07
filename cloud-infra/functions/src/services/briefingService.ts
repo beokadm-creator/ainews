@@ -449,6 +449,7 @@ export interface CustomReportOptions {
   aiConfig: RuntimeAiConfig;
   outputId?: string;
   outputMetadata?: Record<string, any>;
+  structureGuide?: string | null; // heading structure extracted from a style template output
 }
 
 export async function generateCustomReport(options: CustomReportOptions) {
@@ -499,7 +500,7 @@ Default recommended structure (override if user specifies otherwise):
 [CUSTOM ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
 The user has provided specific analysis instructions below. You MUST prioritize and strictly follow these instructions above the default format guidelines above. If the user requests a different structure, tone, focus area, or content scope, follow their instruction precisely.
 
-${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}`;
+${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}${options.structureGuide ? `\n\n${options.structureGuide}` : ''}`;
 
   const userPrompt = `Report title: ${reportTitle}
 Company: ${companyDisplayName}

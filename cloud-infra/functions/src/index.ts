@@ -106,6 +106,8 @@ interface CompanyReportPromptSettings {
   externalPrompt: string;
   companyName: string | null;
   publisherName: string | null;
+  internalTemplateOutputId?: string | null;
+  externalTemplateOutputId?: string | null;
 }
 
 interface ManagedReportSourceDefinition {
@@ -918,6 +920,7 @@ function buildManagedReportPrompt(
   sourceNames: string[],
   basePrompt?: string,
   keywords: string[] = [],
+  structureGuide?: string | null,
 ) {
   const sourceText = sourceNames.length > 0
     ? `뉴스 출처: ${sourceNames.join(', ')}`
@@ -936,7 +939,7 @@ function buildManagedReportPrompt(
 
   // When user has provided a specific prompt, it takes highest priority
   if (basePrompt) {
-    return [
+    const parts = [
       '[PRIMARY INSTRUCTION — FOLLOW STRICTLY]',
       basePrompt,
       '',
@@ -945,11 +948,14 @@ function buildManagedReportPrompt(
       '',
       '[Secondary structural guidance — apply only where user instructions do not specify otherwise]',
       sharedRules,
-    ].join('\n').trim();
+    ];
+    if (structureGuide) parts.push('', structureGuide);
+    return parts.join('\n').trim();
   }
 
   if (mode === 'external') {
-    return [`${sharedRules}`,
+    const parts = [
+      `${sharedRules}`,
       `${sourceText}`,
       `${keywordText}`,
       `외부 공유용 이메일/문서 형태로 작성합니다.`,
@@ -959,10 +965,12 @@ function buildManagedReportPrompt(
       `2. 주요 기사 요약 3~6건`,
       `3. 시장의 방향으로 해석되는 시사점`,
       `4. 참고 기사 목록`,
-    ].join('\n').trim();
+    ];
+    if (structureGuide) parts.push('', structureGuide);
+    return parts.join('\n').trim();
   }
 
-  return [
+  const parts = [
     `${sharedRules}`,
     `${sourceText}`,
     `${keywordText}`,
@@ -973,7 +981,9 @@ function buildManagedReportPrompt(
     `3. 출처별 기사원문 시사점`,
     `4. 주목해야하는 이슈`,
     `5. 참고 기사 목록`,
-  ].join('\n').trim();
+  ];
+  if (structureGuide) parts.push('', structureGuide);
+  return parts.join('\n').trim();
 }
 
 async function getCompanyReportPromptSettings(companyId: string): Promise<CompanyReportPromptSettings> {
@@ -985,7 +995,52 @@ async function getCompanyReportPromptSettings(companyId: string): Promise<Compan
     externalPrompt: `${settings?.reportPrompts?.external || ''}`.trim(),
     companyName: settings?.companyName || null,
     publisherName: settings?.branding?.publisherName || null,
+    internalTemplateOutputId: settings?.styleTemplates?.internal || null,
+    externalTemplateOutputId: settings?.styleTemplates?.external || null,
   };
+}
+
+async function extractTemplateStructureGuideFromOutputId(outputId: string): Promise<string | null> {
+  try {
+    const outputDoc = await admin.firestore().collection('outputs').doc(outputId).get();
+    if (!outputDoc.exists) return null;
+    const outputData = outputDoc.data() as any;
+    const rawHtml = outputData.htmlContent || outputData.rawOutput || '';
+    if (!rawHtml) return null;
+
+    const { load } = await import('cheerio');
+    const $ = load(rawHtml);
+    const headings: string[] = [];
+    $('h1, h2, h3').each((_: number, el: any) => {
+      const text = $(el).text().trim();
+      const tag = (el.tagName || el.name || 'h2').toLowerCase();
+      const depth = tag === 'h1' ? '' : (tag === 'h2' ? '  ' : '    ');
+      if (text) headings.push(`${depth}${text}`);
+    });
+    if (headings.length === 0) return null;
+
+    return [
+      '[STRUCTURE GUIDE — based on a reference report template]',
+      'Follow this section structure and hierarchy as closely as possible:',
+      headings.join('\n'),
+    ].join('\n');
+  } catch {
+    return null;
+  }
+}
+
+async function extractTemplateStructureGuide(companyId: string, mode: ManagedReportMode): Promise<string | null> {
+  try {
+    const settingsDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
+    const settings = (settingsDoc.data() || {}) as any;
+    const templateOutputId = mode === 'external'
+      ? settings?.styleTemplates?.external
+      : settings?.styleTemplates?.internal;
+    if (!templateOutputId) return null;
+    return extractTemplateStructureGuideFromOutputId(templateOutputId);
+  } catch {
+    return null;
+  }
 }
 
 async function resolveManagedReportBasePrompt(companyId: string, mode: ManagedReportMode, requestedPrompt?: string) {
@@ -1076,7 +1131,10 @@ async function executeManagedReport({
   const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
   const keywordList = Array.isArray(output.filters?.keywords) ? output.filters.keywords : [];
   const basePrompt = await resolveManagedReportBasePrompt(companyId, output.serviceMode || 'internal', output.analysisPrompt || '');
-  const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList);
+  const structureGuide = output.templateOutputId
+    ? await extractTemplateStructureGuideFromOutputId(output.templateOutputId)
+    : await extractTemplateStructureGuide(companyId, output.serviceMode || 'internal');
+  const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList, structureGuide);
   const runtime = await getCompanyRuntimeConfig(companyId);
   const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
 
@@ -1801,6 +1859,45 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
 
   return { success: true, companyId };
 });
+
+export const saveCompanyStyleTemplate = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+  const { companyId: rawCompanyId, mode, outputId } = request.data || {};
+
+  if (!['internal', 'external'].includes(mode)) {
+    throw new HttpsError('invalid-argument', 'mode must be internal or external');
+  }
+
+  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+  const access = await assertCompanyAccess(request.auth.uid, companyId);
+  if (!['superadmin', 'company_admin'].includes(access.role)) {
+    throw new HttpsError('permission-denied', 'Company admin or superadmin required');
+  }
+
+  const db = admin.firestore();
+
+  if (outputId) {
+    const outputDoc = await db.collection('outputs').doc(outputId).get();
+    if (!outputDoc.exists || outputDoc.data()?.companyId !== companyId) {
+      throw new HttpsError('not-found', 'Output not found or not accessible');
+    }
+  }
+
+  const updatePayload: Record<string, any> = {
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  };
+  if (outputId) {
+    updatePayload[`styleTemplates.${mode}`] = outputId;
+  } else {
+    updatePayload[`styleTemplates.${mode}`] = admin.firestore.FieldValue.delete();
+  }
+
+  await db.collection('companySettings').doc(companyId).set(updatePayload, { merge: true });
+
+  return { success: true, companyId, mode, outputId: outputId || null };
+});
 // ?????????????????????????????????????????
 // [NEW] Test AI Provider Connection
 // ?????????????????????????????????????????
@@ -2466,6 +2563,7 @@ export const requestManagedReport = onCall(
       scheduledAt = null,
       sourceNames = [],
       previewOnly = false,
+      templateOutputId = null,
     } = request.data || {};
 
     const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
@@ -2502,6 +2600,7 @@ export const requestManagedReport = onCall(
       requestedBy: request.auth.uid,
       attempts: 0,
       sourceNames: Array.isArray(sourceNames) ? sourceNames : [],
+      templateOutputId: templateOutputId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -3200,7 +3299,10 @@ export const processManagedReportHttp = onRequest(
         const sourceNames = Array.isArray(output.sourceNames) ? output.sourceNames : [];
         const keywordList = Array.isArray(output.filters?.keywords) ? output.filters.keywords : [];
         const basePrompt = await resolveManagedReportBasePrompt(companyId, output.serviceMode || 'internal', output.analysisPrompt || '');
-        const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList);
+        const structureGuide = output.templateOutputId
+          ? await extractTemplateStructureGuideFromOutputId(output.templateOutputId)
+          : await extractTemplateStructureGuide(companyId, output.serviceMode || 'internal');
+        const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList, structureGuide);
         const runtime = await getCompanyRuntimeConfig(companyId);
         const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
 

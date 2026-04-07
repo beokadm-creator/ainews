@@ -183,7 +183,7 @@ function escapeJsonForHtml(value: unknown) {
     .replace(/&/g, '\\u0026');
 }
 
-function sanitizeGeneratedReportBody(bodyHtml: string) {
+export function sanitizeGeneratedReportBody(bodyHtml: string) {
   if (!bodyHtml) return '';
 
   const $ = load(bodyHtml);
@@ -383,7 +383,7 @@ async function getFontCss() {
   return css.replace(/url\(\.\/files\/([^)]+)\)/g, `url("file:///${fontDir}/$1")`);
 }
 
-function buildBrandedShell({
+export function buildBrandedShell({
   output,
   bodyHtml,
   headStyles,
@@ -1148,8 +1148,8 @@ export async function getOutputHtmlDocument(output: any, articles?: any[]) {
 
   const $ = load(sourceHtml);
   const bodyHtml = $('body').length > 0 ? $('body').html() || '' : sourceHtml;
-  const sanitizedBodyHtml = sanitizeGeneratedReportBody(bodyHtml);
-  const linkedBodyHtml = injectReferenceLinks(sanitizedBodyHtml, loadedArticles.length);
+  // No sanitization: serve the HTML exactly as stored so shared links match the main app view
+  const linkedBodyHtml = injectReferenceLinks(bodyHtml, loadedArticles.length);
   const bodyHtmlWithReferences = `${linkedBodyHtml}${buildInteractiveArticleReferenceSection(loadedArticles)}`;
   const headStyles = $('style').toArray().map((element) => $.html(element)).join('\n');
 

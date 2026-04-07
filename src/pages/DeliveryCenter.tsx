@@ -103,6 +103,8 @@ export default function DeliveryCenter() {
   const [message, setMessage] = useState('');
   const [defaultExternalPrompt, setDefaultExternalPrompt] = useState('');
   const [defaultReportTitle, setDefaultReportTitle] = useState('');
+  const [externalTemplate, setExternalTemplate] = useState<{ id: string; title: string } | null>(null);
+  const [useTemplate, setUseTemplate] = useState(false);
 
   const [previewRequestId, setPreviewRequestId] = useState<string | null>(null);
   const [previewOutput, setPreviewOutput] = useState<any | null>(null);
@@ -138,6 +140,20 @@ export default function DeliveryCenter() {
       const publisherName = `${companySettings.branding?.publisherName || companySettings.companyName || ''}`.trim();
       setDefaultExternalPrompt(externalPrompt);
       setDefaultReportTitle(publisherName ? `${publisherName} 외부 리포트` : '외부 메일링 리포트');
+      // Load external style template if set
+      const externalTemplateId = companySettings?.styleTemplates?.external;
+      if (externalTemplateId) {
+        getDoc(doc(db, 'outputs', externalTemplateId)).then((snap) => {
+          if (snap.exists()) {
+            const output = snap.data() as any;
+            setExternalTemplate({ id: externalTemplateId, title: output.title || '스타일 템플릿' });
+            setUseTemplate(true);
+          }
+        }).catch(console.error);
+      } else {
+        setExternalTemplate(null);
+        setUseTemplate(false);
+      }
 
       const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
         Promise.resolve(await fetchSubscribedSources(companyId)),
@@ -303,6 +319,7 @@ export default function DeliveryCenter() {
         sendNow: !scheduledAt,
         scheduledAt: scheduledAt || null,
         sourceNames: selectedSourceNames,
+        templateOutputId: useTemplate && externalTemplate ? externalTemplate.id : null,
       });
 
       setMessage(scheduledAt ? '예약 발송을 등록했습니다.' : '외부 메일 리포트 생성과 즉시 발송을 시작했습니다.');
@@ -336,6 +353,7 @@ export default function DeliveryCenter() {
         scheduledAt: null,
         sourceNames: selectedSourceNames,
         previewOnly: true,
+        templateOutputId: useTemplate && externalTemplate ? externalTemplate.id : null,
       }) as any;
 
       setPreviewRequestId(result.data?.outputId || null);
@@ -447,6 +465,18 @@ export default function DeliveryCenter() {
                 <div>
                   <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">AI 분석 지시</label>
                   <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5} className={FIELD} placeholder="예: PE 관점에서 핵심 포인트와 체크포인트만 간결하게 정리" />
+                  {externalTemplate && (
+                    <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={useTemplate}
+                        onChange={(e) => setUseTemplate(e.target.checked)}
+                        className="rounded accent-[#d4af37]"
+                      />
+                      <Sparkles className="h-3 w-3 text-amber-500 shrink-0" />
+                      스타일 템플릿 적용: <span className="font-medium truncate">{externalTemplate.title}</span>
+                    </label>
+                  )}
                 </div>
               </div>
 

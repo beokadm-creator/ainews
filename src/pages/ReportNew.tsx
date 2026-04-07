@@ -44,6 +44,8 @@ export default function ReportNew() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState<{ outputId: string } | null>(null);
+  const [availableTemplate, setAvailableTemplate] = useState<{ id: string; title: string } | null>(null);
+  const [useTemplate, setUseTemplate] = useState(false);
 
   useEffect(() => {
     const loadArticles = async () => {
@@ -99,6 +101,16 @@ export default function ReportNew() {
       if (companyPrompt) {
         setAnalysisPrompt(companyPrompt);
       }
+      // Load internal style template if set
+      const internalTemplateId = settings?.styleTemplates?.internal;
+      if (internalTemplateId) {
+        const outputDoc = await getDoc(doc(db, 'outputs', internalTemplateId));
+        if (outputDoc.exists()) {
+          const output = outputDoc.data() as any;
+          setAvailableTemplate({ id: internalTemplateId, title: output.title || '스타일 템플릿' });
+          setUseTemplate(true);
+        }
+      }
     };
 
     loadCompanyPrompt().catch(console.error);
@@ -124,6 +136,7 @@ export default function ReportNew() {
             },
         reportTitle: reportTitle.trim() || undefined,
         prompt: analysisPrompt.trim(),
+        templateOutputId: useTemplate && availableTemplate ? availableTemplate.id : null,
       }) as any;
 
       setDone({ outputId: result.data.outputId });
@@ -246,6 +259,26 @@ export default function ReportNew() {
               className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#1e3a5f] focus:ring-1 focus:ring-[#1e3a5f]/20 dark:border-gray-700/60 dark:bg-gray-900/40 dark:text-white dark:focus:border-blue-400"
             />
           </div>
+
+          {availableTemplate && (
+            <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2.5 transition hover:bg-amber-50 dark:border-amber-800/40 dark:bg-amber-900/15">
+              <input
+                type="checkbox"
+                checked={useTemplate}
+                onChange={(e) => setUseTemplate(e.target.checked)}
+                className="rounded accent-[#d4af37]"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
+                  <Sparkles className="h-3 w-3 shrink-0" />
+                  스타일 템플릿 적용
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-amber-600/80 dark:text-amber-500/80">
+                  {availableTemplate.title}
+                </div>
+              </div>
+            </label>
+          )}
         </div>
       </div>
 
