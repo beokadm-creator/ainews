@@ -1391,9 +1391,14 @@ export async function buildSharedReportPage(output: any): Promise<string> {
           // data-article-ref: ref table buttons and sup references
           var tr=t.closest('[data-article-ref]');
           if(tr){e.preventDefault();openModal(Number(tr.getAttribute('data-article-ref')));return;}
-          // <a> links: match by URL to open article modal (원문 보기, article title links)
+          // <a> links: 원문 보기 button and article title links
           var anchor=t.closest('a');
           if(anchor){
+            e.preventDefault();
+            // 1. data-article-idx (position-based, set during post-processing — most reliable)
+            var idxAttr=anchor.getAttribute('data-article-idx');
+            if(idxAttr!==null){var ii=Number(idxAttr);if(!isNaN(ii)&&ii>=0&&ii<payload.length){openModal(ii);return;}}
+            // 2. URL pathname match
             var href=anchor.href||'';
             var matched=-1;
             payload.forEach(function(a,idx){
@@ -1402,7 +1407,7 @@ export async function buildSharedReportPage(output: any): Promise<string> {
                 catch(ex){if(a.url===href)matched=idx;}
               }
             });
-            if(matched>=0){e.preventDefault();openModal(matched);}
+            if(matched>=0){openModal(matched);}
           }
         });
         if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}
