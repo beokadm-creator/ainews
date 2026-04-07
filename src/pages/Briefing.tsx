@@ -406,7 +406,7 @@ export default function Briefing() {
               <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
             </div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-700/60">
+            <div className="divide-y divide-gray-100 dark:divide-gray-700/40">
               {outputs.map((output) => {
                 const isSelected = selectedOutput?.id === output.id;
                 return (
@@ -927,7 +927,7 @@ export default function Briefing() {
                 value={regenPrompt}
                 onChange={(e) => setRegenPrompt(e.target.value)}
                 rows={5}
-                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-800 dark:text-white"
+                className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-800/60 dark:text-white"
                 placeholder="분석 방향을 입력하세요. 예: 섹터별 PE 참여 현황과 밸류에이션 트렌드에 집중해서 분석해 주세요."
               />
             </div>
