@@ -1136,7 +1136,14 @@ async function executeManagedReport({
     : await extractTemplateStructureGuide(companyId, output.serviceMode || 'internal');
   const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList, structureGuide);
   const runtime = await getCompanyRuntimeConfig(companyId);
-  const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
+  const reportTitle = output.title || (output.serviceMode === 'external' ? '이음M&A NEWS' : '내부 분석 리포트');
+
+  // Compute sequential Vol. number for this company
+  const existingOutputsSnap = await db.collection('outputs')
+    .where('companyId', '==', companyId)
+    .where('status', '==', 'completed')
+    .get();
+  const volNumber = existingOutputsSnap.size + 1;
 
   const result = await generateCustomReport({
     companyId,
@@ -1145,6 +1152,7 @@ async function executeManagedReport({
     analysisPrompt: prompt,
     savedPrompt: basePrompt,
     reportTitle,
+    volNumber,
     requestedBy: requestedBy || output.requestedBy || '__system__',
     aiConfig: runtime.ai,
     outputId,
@@ -2586,7 +2594,7 @@ export const requestManagedReport = onCall(
       type: 'managed_report',
       status: scheduledAt ? 'scheduled' : 'pending',
       serviceMode: mode,
-      title: reportTitle || (mode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트'),
+      title: reportTitle || (mode === 'external' ? '이음M&A NEWS' : '내부 분석 리포트'),
       articleIds: Array.isArray(articleIds) ? articleIds : [],
       filters: filters || {},
       analysisPrompt: prompt || '',
@@ -2615,6 +2623,27 @@ export const requestManagedReport = onCall(
     }
 
     return { success: true, outputId: outputRef.id, status: scheduledAt ? 'scheduled' : 'pending' };
+  }
+);
+
+export const updateReportContent = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const { outputId, htmlContent } = request.data || {};
+    if (!outputId || typeof htmlContent !== 'string') {
+      throw new HttpsError('invalid-argument', 'outputId and htmlContent are required');
+    }
+    const db = admin.firestore();
+    const outputDoc = await db.collection('outputs').doc(outputId).get();
+    if (!outputDoc.exists) throw new HttpsError('not-found', 'Output not found');
+    const outputData = outputDoc.data() as any;
+    await assertCompanyAccess(request.auth.uid, outputData.companyId);
+    await db.collection('outputs').doc(outputId).set(
+      { htmlContent, rawOutput: htmlContent, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+    return { success: true };
   }
 );
 
@@ -3304,7 +3333,7 @@ export const processManagedReportHttp = onRequest(
           : await extractTemplateStructureGuide(companyId, output.serviceMode || 'internal');
         const prompt = buildManagedReportPrompt(output.serviceMode || 'internal', sourceNames, basePrompt, keywordList, structureGuide);
         const runtime = await getCompanyRuntimeConfig(companyId);
-        const reportTitle = output.title || (output.serviceMode === 'external' ? '외부 배포 리포트' : '내부 분석 리포트');
+        const reportTitle = output.title || (output.serviceMode === 'external' ? '이음M&A NEWS' : '내부 분석 리포트');
 
         const result = await generateCustomReport({
           companyId,

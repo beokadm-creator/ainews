@@ -1180,23 +1180,15 @@ export async function buildSharedReportPage(output: any): Promise<string> {
   const bodyEl = $('body');
   const bodyHtml = bodyEl.length > 0 ? bodyEl.html() || '' : sourceHtml;
   const linkedBodyHtml = injectReferenceLinks(bodyHtml, articles.length);
-  const bodyWithRefs = `${linkedBodyHtml}${buildInteractiveArticleReferenceSection(articles)}`;
+  // Do NOT append a separate reference section — article titles in the AI-generated list are clickable
+  const bodyWithRefs = linkedBodyHtml;
   const modalPayload = escapeJsonForHtml(articles.map(buildArticleModalPayload));
 
   const modalCss = `
+    /* Override AI-generated hero/header dark backgrounds */
+    .hero,.hero-header,.hero-section,.report-hero,[class*="hero"]{background:transparent!important;background-image:none!important;background-color:transparent!important;box-shadow:none!important;border:none!important}
+    .hero *,.hero-header *,.hero-section *,[class*="hero"] *{color:#111827!important}
     .article-ref-trigger{appearance:none;border:none;background:rgba(30,58,95,0.10);color:#1e3a5f;border-radius:4px;padding:1px 6px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
-    .reference-list{display:grid;gap:8px}
-    .reference-card{display:flex;gap:12px;align-items:flex-start;border:1px solid #e3ebf4;border-radius:14px;background:#ffffff;padding:12px 14px;transition:border-color 0.15s}
-    .reference-card:hover{border-color:#c5d4e8}
-    .reference-index{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#1e3a5f;color:#fff;font-size:10px;font-weight:800;margin-top:1px}
-    .reference-main{min-width:0;flex:1}
-    .reference-card h3{margin:0;font-size:14px;line-height:1.4;color:#0f172a}
-    .reference-meta{margin-top:3px;font-size:11px;color:#64748b}
-    .reference-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-    .reference-link{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;text-decoration:none;cursor:pointer;transition:opacity 0.15s}
-    .reference-link:hover{opacity:0.82}
-    .reference-link-primary{background:#1e3a5f;color:#fff;border:none}
-    .reference-link-secondary{background:#eef4f9;color:#1e3a5f;border:none}
     .article-modal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,0.65);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
     .article-modal.is-open{display:flex}
     .article-modal-dialog{width:min(680px,100%);max-height:min(84vh,900px);overflow:hidden;display:flex;flex-direction:column;border-radius:20px;border:1px solid rgba(226,232,240,0.6);background:#fff;box-shadow:0 32px 64px rgba(15,23,42,0.28)}

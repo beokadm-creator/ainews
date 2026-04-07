@@ -139,7 +139,7 @@ export default function DeliveryCenter() {
       const externalPrompt = `${companySettings.reportPrompts?.external || ''}`.trim();
       const publisherName = `${companySettings.branding?.publisherName || companySettings.companyName || ''}`.trim();
       setDefaultExternalPrompt(externalPrompt);
-      setDefaultReportTitle(publisherName ? `${publisherName} 외부 리포트` : '외부 메일링 리포트');
+      setDefaultReportTitle('이음M&A NEWS');
       // Load external style template if set
       const externalTemplateId = companySettings?.styleTemplates?.external;
       if (externalTemplateId) {
@@ -208,7 +208,7 @@ export default function DeliveryCenter() {
     setName(selectedGroup.name || '');
     setEmailsText((selectedGroup.emails || []).join('\n'));
     setKeywordsText((selectedGroup.keywords || []).join(', '));
-    setReportTitle(selectedGroup.reportTitle || '');
+    setReportTitle(selectedGroup.reportTitle || '이음M&A NEWS');
     setPrompt(selectedGroup.prompt || '');
     setDatePreset(selectedGroup.datePreset || '24h');
     setSourceIds(selectedGroup.sourceIds || []);

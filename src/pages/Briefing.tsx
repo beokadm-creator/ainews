@@ -17,7 +17,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -215,7 +215,7 @@ export default function Briefing() {
     setSavingEdit(true);
     setActionMessage(null);
     try {
-      await setDoc(doc(db, 'outputs', targetId), { htmlContent: newHtml, rawOutput: newHtml }, { merge: true });
+      await httpsCallable(functions, 'updateReportContent')({ outputId: targetId, htmlContent: newHtml });
       setEditMode(false);
       setActionMessage('리포트 내용이 저장되었습니다. 공유 링크에도 즉시 반영됩니다.');
       await loadOutputDetail(selectedOutput.id);
@@ -697,12 +697,26 @@ export default function Briefing() {
                 {/* Report HTML content */}
                 {renderHtml ? (
                   <>
-                    {/* Make footnote superscripts clickable */}
+                    {/* Make footnote superscripts clickable; override AI-generated hero dark backgrounds */}
                     <style>{`
                       .report-html-body sup { cursor: pointer; color: #1e3a5f; font-weight: 700; }
                       .report-html-body sup:hover { text-decoration: underline; }
                       .report-edit-mode [contenteditable="true"] { outline: 2px dashed #d4af37; border-radius: 4px; min-height: 200px; padding: 4px; }
                       .report-edit-mode [contenteditable="true"]:focus { outline: 2px solid #d4af37; }
+                      .report-html-body .hero,
+                      .report-html-body .hero-header,
+                      .report-html-body .hero-section,
+                      .report-html-body .report-hero,
+                      .report-html-body [class*="hero"] {
+                        background: transparent !important;
+                        background-image: none !important;
+                        background-color: transparent !important;
+                        box-shadow: none !important;
+                        border: none !important;
+                      }
+                      .report-html-body .hero *,
+                      .report-html-body .hero-header *,
+                      .report-html-body [class*="hero"] * { color: #111827 !important; }
                     `}</style>
                     {editMode ? (
                       <div className="report-edit-mode">
@@ -755,57 +769,15 @@ export default function Briefing() {
                   </div>
                 )}
 
-                {/* Reference articles */}
-                <div>
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">참고 기사</span>
+                {/* Article count summary only */}
+                {articles.length > 0 && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <span className="text-xs text-gray-400 dark:text-gray-500">참고 기사</span>
                     <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                      {articles.length}
+                      {articles.length}건
                     </span>
                   </div>
-                  <div className="space-y-2">
-                    {articles.map((article, index) => (
-                      <div
-                        key={article.id}
-                        className="group rounded-xl border border-gray-200 px-4 py-3 transition hover:border-gray-300 dark:border-gray-700/60 dark:hover:border-gray-600"
-                      >
-                        <div className="flex items-start gap-3">
-                          <span className="mt-0.5 shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-gray-400 dark:bg-gray-700 dark:text-gray-500">
-                            {index + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-medium text-gray-400 dark:text-gray-500">{article.source}</div>
-                            <button
-                              type="button"
-                              onClick={() => setPreviewArticle(article)}
-                              className="mt-0.5 w-full text-left text-sm font-medium leading-snug text-gray-900 transition hover:text-[#1e3a5f] hover:underline dark:text-white dark:hover:text-blue-300"
-                            >
-                              {article.title}
-                            </button>
-                            {article.url && (
-                              <div className="mt-2">
-                                <a
-                                  href={article.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
-                                >
-                                  <ExternalLink className="h-3 w-3" />
-                                  원문 링크
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    {articles.length === 0 && (
-                      <div className="rounded-xl border border-dashed border-gray-200 py-6 text-center text-sm text-gray-400 dark:border-gray-700/60">
-                        참고 기사 정보가 없습니다.
-                      </div>
-                    )}
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           )}

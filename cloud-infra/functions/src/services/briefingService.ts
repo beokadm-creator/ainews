@@ -445,6 +445,7 @@ export interface CustomReportOptions {
   analysisPrompt: string;
   savedPrompt?: string; // if set, stored in Firestore instead of analysisPrompt
   reportTitle?: string;
+  volNumber?: number;
   requestedBy: string;
   aiConfig: RuntimeAiConfig;
   outputId?: string;
@@ -473,6 +474,7 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const companyDisplayName = await resolveCompanyDisplayName(options.companyId);
   const keywordSummary = options.keywords.length > 0 ? options.keywords.join(', ') : 'deal flow, investment, portfolio, private equity';
   const reportTitle = options.reportTitle || `${companyDisplayName} Market Intelligence Report`;
+  const volNumber = options.volNumber || 1;
 
 const systemPrompt = `You are a senior private equity research editor.
 Create a premium HTML report in Korean for investment professionals.
@@ -482,7 +484,7 @@ Default Format Requirements:
 2. The tone must be polished, analytical, and suitable for a PE firm's internal or client-facing report.
 3. Use modern, elegant layout sections. Avoid plain markdown, plain text dumps, or JSON.
 4. Synthesize the articles into insight, not article-by-article repetition.
-5. Cite article references inline using [1], [2] style superscripts where relevant. Wrap each in <sup>[N]</sup>.
+5. Do NOT include reference numbers like [1], [2] in the report body. Section numbers (1), (2), (3)... must be strictly sequential starting from 1.
 6. Include sections for executive summary, key developments, market map, factual implications, and reference list.
 7. Use concise Korean headings and professional business language.
 8. If input quality is uneven, still return strong HTML with clear structure and styled cards, tables, and callout panels where useful.
@@ -504,6 +506,7 @@ ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and 
 
   const userPrompt = `Report title: ${reportTitle}
 Company: ${companyDisplayName}
+Vol.: ${volNumber}
 Priority keywords: ${keywordSummary}
 Selected article count: ${articles.length}
 Use at most the strongest 100 articles already curated below.
@@ -529,6 +532,7 @@ ${articleDigest}`;
     companyId: options.companyId,
     type: 'custom_report',
     title: reportTitle,
+    volNumber,
     keywords: options.keywords,
     analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
     articleIds: options.articleIds,
