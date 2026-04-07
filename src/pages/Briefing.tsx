@@ -707,13 +707,13 @@ export default function Briefing() {
                           ref={editRef}
                           contentEditable
                           suppressContentEditableWarning
-                          className="report-html-body prose max-w-none rounded-lg border border-amber-200 p-3 dark:border-amber-700/40"
+                          className="report-html-body prose max-w-none overflow-x-auto rounded-lg border border-amber-200 p-3 dark:border-amber-700/40"
                           dangerouslySetInnerHTML={{ __html: renderHtml }}
                         />
                       </div>
                     ) : (
                       <div
-                        className="report-html-body prose max-w-none"
+                        className="report-html-body prose max-w-none overflow-x-auto"
                         dangerouslySetInnerHTML={{ __html: renderHtml }}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;

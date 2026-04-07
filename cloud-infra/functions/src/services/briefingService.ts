@@ -120,7 +120,7 @@ function prioritizeArticlesForDigest(articles: any[]): any[] {
       const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : new Date(b.publishedAt || 0).getTime();
       return timeB - timeA;
     })
-    .slice(0, 50);
+    .slice(0, 100);
 }
 
 function buildCustomReportArticleDigest(articles: any[]): { digest: string; orderedArticles: any[] } {
@@ -255,7 +255,7 @@ export async function generatePipelineOutput(
     };
   }
 
-  const limitedArticles = articles.slice(0, options.outputConfig.maxArticles || 50);
+  const limitedArticles = articles.slice(0, options.outputConfig.maxArticles || 100);
   const digest = buildArticleDigest(limitedArticles, !!options.outputConfig.includeArticleBody);
 
   let prompt = '';
@@ -422,7 +422,7 @@ export async function createDailyBriefing(options?: OutputGenerationOptions) {
     .where('companyId', '==', options.companyId)
     .where('status', '==', 'analyzed')
     .orderBy('analyzedAt', 'desc')
-    .limit(50);
+    .limit(100);
 
   const articlesSnapshot = await queryRef.get();
   const articles: any[] = articlesSnapshot.docs.map(doc => ({
@@ -506,7 +506,7 @@ ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and 
 Company: ${companyDisplayName}
 Priority keywords: ${keywordSummary}
 Selected article count: ${articles.length}
-Use at most the strongest 50 articles already curated below.
+Use at most the strongest 100 articles already curated below.
 
 Article digest:
 ${articleDigest}`;
@@ -514,7 +514,7 @@ ${articleDigest}`;
   const response = await callAiProvider(
     `${systemPrompt}\n\n${userPrompt}`,
     reportAiConfig,
-    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 12000, temperature: 0.4 }),
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 16000, temperature: 0.4 }),
     options.companyId
   );
   await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
