@@ -373,16 +373,11 @@ export default function Briefing() {
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-12">
       {/* Page header */}
-      <div className="flex items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-gray-700/60">
-        <div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            생성된 분석 리포트를 확인하고, 실패한 작업은 재시도하거나 바로 발송할 수 있습니다.
-          </p>
-        </div>
+      <div className="flex items-center justify-between gap-4 border-b border-gray-200 pb-4 dark:border-gray-700/60">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-white">내부 리포트</h1>
         <Link
           to="/articles"
-          className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c59f2c]"
+          className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c59f2c]"
         >
           <Search className="h-4 w-4" />
           새 리포트 생성
