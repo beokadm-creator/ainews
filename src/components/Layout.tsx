@@ -111,7 +111,7 @@ export default function Layout({ children }: LayoutProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+    <div className="min-h-screen bg-gray-50">
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/60 backdrop-blur-sm lg:hidden"
@@ -120,7 +120,7 @@ export default function Layout({ children }: LayoutProps) {
       )}
 
       <div
-        className={`fixed inset-y-0 left-0 z-30 flex w-64 flex-col bg-[#1e3a5f] dark:bg-gray-950 transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-64 flex-col bg-[#1e3a5f] transition-transform duration-300 ease-in-out lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -181,15 +181,12 @@ export default function Layout({ children }: LayoutProps) {
       </div>
 
       <div className="lg:pl-64">
-        <div className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-gray-200 bg-white/95 px-4 backdrop-blur-sm transition-colors duration-200 dark:border-gray-700/60 dark:bg-gray-900/95 lg:px-8">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 lg:hidden"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-          <div className="flex-1" />
-        </div>
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="fixed top-3 left-3 z-10 rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 lg:hidden"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
 
         <main className="p-4 lg:p-8">{children}</main>
       </div>

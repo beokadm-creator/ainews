@@ -476,37 +476,23 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const reportTitle = options.reportTitle || `${companyDisplayName} Market Intelligence Report`;
   const volNumber = options.volNumber || 1;
 
-const systemPrompt = `You are a senior private equity research editor.
-Create a premium HTML report in Korean for investment professionals.
+const systemPrompt = `You are a senior private equity analyst.
+Output a complete HTML report in Korean for investment professionals.
 
-Default Format Requirements:
-1. Output a complete HTML document from <!DOCTYPE html> to </html>.
-2. The tone must be polished, analytical, and suitable for a PE firm's internal or client-facing report.
-3. Use modern, elegant layout sections. Avoid plain markdown, plain text dumps, or JSON.
-4. Synthesize the articles into insight, not article-by-article repetition.
-5. Do NOT include reference numbers like [1], [2] in the report body. Section numbers (1), (2), (3)... must be strictly sequential starting from 1.
-6. Include sections for executive summary, key developments, market map, factual implications, and reference list.
-7. Use concise Korean headings and professional business language.
-8. If input quality is uneven, still return strong HTML with clear structure and styled cards, tables, and callout panels where useful.
-9. Keep the final result presentation-ready for a premium PE firm.
-10. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white, near-white, or light gray as text color. All text must be readable on a white background without dark mode. Do NOT include any dark mode CSS or media queries.
+Universal Requirements (always apply):
+1. Output a COMPLETE HTML document: <!DOCTYPE html> through </html>, with <head> containing <meta charset="UTF-8"> and embedded <style>.
+2. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white or light-colored text. Do NOT include dark mode CSS or @media (prefers-color-scheme: dark).
+3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
+4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
+5. Part/section numbers must be strictly sequential starting from 1.
 
-Default recommended structure (override if user specifies otherwise):
-- hero header
-- executive summary
-- key developments
-- market map
-- factual implications
-- reference list
+[ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
+Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope. Override any default behavior above if there is conflict.
 
-[CUSTOM ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
-The user has provided specific analysis instructions below. You MUST prioritize and strictly follow these instructions above the default format guidelines above. If the user requests a different structure, tone, focus area, or content scope, follow their instruction precisely.
-
-${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implication, and PE relevance.'}${options.structureGuide ? `\n\n${options.structureGuide}` : ''}`;
+${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implications, and PE relevance.'}${options.structureGuide ? `\n\n${options.structureGuide}` : ''}`;
 
   const userPrompt = `Report title: ${reportTitle}
 Company: ${companyDisplayName}
-Vol.: ${volNumber}
 Priority keywords: ${keywordSummary}
 Selected article count: ${articles.length}
 Use at most the strongest 100 articles already curated below.
