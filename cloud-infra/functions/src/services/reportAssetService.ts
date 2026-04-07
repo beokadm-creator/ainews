@@ -353,9 +353,17 @@ function buildFallbackReportHtml(output: any, articles: any[]) {
 export async function loadOutputArticles(output: any) {
   const db = admin.firestore();
 
-  if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
+  // orderedArticleIds = the order articles were passed to the AI ([ARTICLE 1], [ARTICLE 2], …)
+  // This matches the footnote numbers and ref-table row numbers in the generated HTML.
+  // Fall back to articleIds only when orderedArticleIds is absent (legacy outputs).
+  const effectiveIds: string[] =
+    (Array.isArray(output.orderedArticleIds) && output.orderedArticleIds.length > 0)
+      ? output.orderedArticleIds
+      : output.articleIds;
+
+  if (Array.isArray(effectiveIds) && effectiveIds.length > 0) {
     const articleDocs = await Promise.all(
-      output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get()),
+      effectiveIds.map((articleId: string) => db.collection('articles').doc(articleId).get()),
     );
     return articleDocs
       .filter((doc) => doc.exists)
