@@ -139,21 +139,34 @@ function sanitizeReportHtml(raw: string) {
     bodyDiv.appendChild(btn);
   });
 
+  // Steps 2+3 complete: assign sequential data-article-idx to every 원문 보기 button
+  // so the click handler can resolve the correct article by position, bypassing URL matching.
+  let articleBlockIdx = 0;
+  tmpDoc.querySelectorAll('details.article-block .article-source-btn').forEach((btn) => {
+    btn.setAttribute('data-article-idx', String(articleBlockIdx));
+    articleBlockIdx++;
+  });
+
   // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref
-  let refRowIdx = 0;
+  // Use the article number from the first column (1-based) as the index so that
+  // the correct article is shown even if table rows are not in insertion order.
   tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td'));
     if (cells.length < 3) return; // skip header row (has <th>)
     const headlineCell = cells[2];
     if (headlineCell && !headlineCell.querySelector('[data-article-ref], a, button')) {
+      // Article number in first column is 1-based; convert to 0-based index
+      const numText = (cells[0]?.textContent || '').trim();
+      const articleNum = parseInt(numText, 10);
+      const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : -1;
+      if (articleIdx < 0) return;
       const btn = tmpDoc.createElement('button');
-      btn.setAttribute('data-article-ref', String(refRowIdx));
+      btn.setAttribute('data-article-ref', String(articleIdx));
       btn.className = 'ref-headline-btn';
       btn.innerHTML = headlineCell.innerHTML;
       headlineCell.innerHTML = '';
       headlineCell.appendChild(btn);
     }
-    refRowIdx++;
   });
 
   return scopedStyles.join('\n') + tmpDoc.body.innerHTML;
@@ -960,9 +973,17 @@ export default function Briefing() {
                           if (anchor) {
                             e.preventDefault();
                             if (articles.length > 0) {
+                              // 1. 원문 보기 버튼: data-article-idx attribute (position-based, most reliable)
+                              const articleIdxStr = (anchor as HTMLElement).getAttribute('data-article-idx');
+                              if (articleIdxStr !== null) {
+                                const articleIdx = Number(articleIdxStr);
+                                if (!isNaN(articleIdx) && articleIdx >= 0 && articleIdx < articles.length) {
+                                  setPreviewArticle(articles[articleIdx]);
+                                  return;
+                                }
+                              }
+                              // 2. Fallback: match by URL
                               const href = anchor.href || '';
-                              const linkText = (anchor.textContent || '').trim().toLowerCase();
-                              // Match by URL first
                               const byUrl = articles.find((a) => {
                                 if (!a.url || !href) return false;
                                 try {
@@ -971,7 +992,8 @@ export default function Briefing() {
                                   return aUrl === hUrl || a.url === href;
                                 } catch { return a.url === href; }
                               });
-                              // Fall back to title text match
+                              // 3. Fallback: title text match
+                              const linkText = (anchor.textContent || '').trim().toLowerCase();
                               const byTitle = !byUrl && linkText.length > 5 ? articles.find((a) => {
                                 const title = (a.title || '').toLowerCase();
                                 const slug = linkText.slice(0, 30);
