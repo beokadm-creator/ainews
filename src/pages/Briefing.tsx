@@ -736,16 +736,46 @@ export default function Briefing() {
                         dangerouslySetInnerHTML={{ __html: renderHtml }}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
-                          // Handle button.article-ref-trigger (0-based index from injectReferenceLinks in shared view)
-                          const refButton = target.closest('[data-article-ref]') as HTMLElement | null;
-                          if (refButton && articles.length > 0) {
-                            const idx = Number(refButton.getAttribute('data-article-ref'));
+
+                          // Handle data-article-ref buttons/elements (0-based index)
+                          const refEl = target.closest('[data-article-ref]') as HTMLElement | null;
+                          if (refEl && articles.length > 0) {
+                            const idx = Number(refEl.getAttribute('data-article-ref'));
                             if (!isNaN(idx) && idx >= 0 && idx < articles.length) {
                               e.preventDefault();
                               setPreviewArticle(articles[idx]);
                               return;
                             }
                           }
+
+                          // Intercept ALL <a> links — open article modal instead of navigating
+                          const anchor = (target.tagName === 'A' ? target : target.closest('a')) as HTMLAnchorElement | null;
+                          if (anchor) {
+                            e.preventDefault();
+                            if (articles.length > 0) {
+                              const href = anchor.href || '';
+                              const linkText = (anchor.textContent || '').trim().toLowerCase();
+                              // Match by URL first
+                              const byUrl = articles.find((a) => {
+                                if (!a.url || !href) return false;
+                                try {
+                                  const aUrl = new URL(a.url).pathname;
+                                  const hUrl = new URL(href).pathname;
+                                  return aUrl === hUrl || a.url === href;
+                                } catch { return a.url === href; }
+                              });
+                              // Fall back to title text match
+                              const byTitle = !byUrl && linkText.length > 5 ? articles.find((a) => {
+                                const title = (a.title || '').toLowerCase();
+                                const slug = linkText.slice(0, 30);
+                                return title.includes(slug) || slug.includes(title.slice(0, 30));
+                              }) : null;
+                              const matched = byUrl || byTitle || null;
+                              if (matched) setPreviewArticle(matched);
+                            }
+                            return;
+                          }
+
                           // Handle <sup>[N]</sup> (1-based, AI-generated pattern)
                           const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
                           if (sup && articles.length > 0) {

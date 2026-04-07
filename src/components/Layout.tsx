@@ -7,8 +7,6 @@ import {
   LogOut,
   Menu,
   X,
-  Moon,
-  Sun,
   Library,
   Users,
   Search,
@@ -56,7 +54,7 @@ const NAV_LABELS = {
 
 export default function Layout({ children }: LayoutProps) {
   const { user, logout } = useAuthStore();
-  const { theme, toggleTheme } = useThemeStore();
+  const { theme } = useThemeStore();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -191,13 +189,6 @@ export default function Layout({ children }: LayoutProps) {
             <Menu className="h-5 w-5" />
           </button>
           <div className="flex-1" />
-          <button
-            onClick={toggleTheme}
-            className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-            aria-label="Toggle theme"
-          >
-            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </button>
         </div>
 
         <main className="p-4 lg:p-8">{children}</main>
