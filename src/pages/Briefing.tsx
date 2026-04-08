@@ -25,7 +25,23 @@ import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
 
-function sanitizeReportHtml(raw: string) {
+// URL로 articles 배열에서 article ID를 찾는 헬퍼
+function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
+  if (!href || !articles.length) return null;
+  try {
+    const targetPath = new URL(href).pathname;
+    const match = articles.find((a) => {
+      if (!a.url) return false;
+      try { return new URL(a.url).pathname === targetPath; }
+      catch { return a.url === href; }
+    });
+    return match?.id || null;
+  } catch {
+    return articles.find((a) => a.url === href)?.id || null;
+  }
+}
+
+function sanitizeReportHtml(raw: string, articles: any[] = []) {
   const trimmed = (raw || '').trim();
   let cleaned = trimmed;
 
@@ -139,18 +155,21 @@ function sanitizeReportHtml(raw: string) {
     bodyDiv.appendChild(btn);
   });
 
-  // Steps 2+3 complete: assign sequential data-article-idx to every 원문 보기 button
-  // so the click handler can resolve the correct article by position, bypassing URL matching.
+  // Steps 2+3 complete: assign data-article-id to every 원문 보기 button.
+  // ID 기반 조회로 배열 순서 의존성을 제거 — URL 매칭 우선, 위치 인덱스 폴백.
   let articleBlockIdx = 0;
   tmpDoc.querySelectorAll('details.article-block .article-source-btn').forEach((btn) => {
+    const href = (btn as HTMLElement).getAttribute('href') || '';
+    const articleId = resolveArticleIdByUrl(href, articles) || articles[articleBlockIdx]?.id || null;
+    if (articleId) btn.setAttribute('data-article-id', articleId);
+    // 폴백용으로 idx도 유지
     btn.setAttribute('data-article-idx', String(articleBlockIdx));
     articleBlockIdx++;
   });
 
-  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref.
-  // Always re-derives the correct 0-based index from the first column (번호).
-  // Strips non-digit characters so formats like "[1]", "1.", "① 1" all parse correctly.
-  // Falls back to sequential row counter when the first column is not a valid number.
+  // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
+  // 번호 컬럼(1-based)으로 articles[N-1].id를 찾아 data-article-id를 심는다.
+  // 배열 순서 의존성 없이 ID로 직접 조회하기 위함.
   let refRowSeq = 0;
   tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td'));
@@ -164,14 +183,18 @@ function sanitizeReportHtml(raw: string) {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
-    // Find existing trigger button and update its index, or create a new one
+    const articleId = articles[articleIdx]?.id || null;
+
+    // Find existing trigger button and update, or create a new one
     const existingBtn = headlineCell.querySelector('[data-article-ref]') as HTMLElement | null;
     if (existingBtn) {
       existingBtn.setAttribute('data-article-ref', String(articleIdx));
+      if (articleId) existingBtn.setAttribute('data-article-id', articleId);
       existingBtn.className = 'ref-headline-btn';
     } else if (!headlineCell.querySelector('a, button')) {
       const btn = tmpDoc.createElement('button');
       btn.setAttribute('data-article-ref', String(articleIdx));
+      if (articleId) btn.setAttribute('data-article-id', articleId);
       btn.className = 'ref-headline-btn';
       btn.innerHTML = headlineCell.innerHTML;
       headlineCell.innerHTML = '';
@@ -490,6 +513,7 @@ export default function Briefing() {
 
   const renderHtml = sanitizeReportHtml(
     selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
+    articles,
   );
   const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
 
@@ -966,58 +990,71 @@ export default function Briefing() {
                         dangerouslySetInnerHTML={{ __html: renderHtml }}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
+                          if (!articles.length) return;
 
-                          // Handle data-article-ref buttons/elements (0-based index)
+                          // 공통 헬퍼: data-article-id → 직접 ID 조회 (배열 순서 무관)
+                          const findByDataId = (el: HTMLElement): any | null => {
+                            const id = el.getAttribute('data-article-id');
+                            if (!id) return null;
+                            return articles.find((a) => a.id === id) || null;
+                          };
+
+                          // 1. ref-table 헤드라인 버튼: data-article-id 우선, 폴백 data-article-ref 인덱스
                           const refEl = target.closest('[data-article-ref]') as HTMLElement | null;
-                          if (refEl && articles.length > 0) {
+                          if (refEl) {
+                            e.preventDefault();
+                            const byId = findByDataId(refEl);
+                            if (byId) { setPreviewArticle(byId); return; }
                             const idx = Number(refEl.getAttribute('data-article-ref'));
                             if (!isNaN(idx) && idx >= 0 && idx < articles.length) {
-                              e.preventDefault();
                               setPreviewArticle(articles[idx]);
-                              return;
-                            }
-                          }
-
-                          // Intercept ALL <a> links — open article modal instead of navigating
-                          const anchor = (target.tagName === 'A' ? target : target.closest('a')) as HTMLAnchorElement | null;
-                          if (anchor) {
-                            e.preventDefault();
-                            if (articles.length > 0) {
-                              // 1. 원문 보기 버튼: data-article-idx attribute (position-based, most reliable)
-                              const articleIdxStr = (anchor as HTMLElement).getAttribute('data-article-idx');
-                              if (articleIdxStr !== null) {
-                                const articleIdx = Number(articleIdxStr);
-                                if (!isNaN(articleIdx) && articleIdx >= 0 && articleIdx < articles.length) {
-                                  setPreviewArticle(articles[articleIdx]);
-                                  return;
-                                }
-                              }
-                              // 2. Fallback: match by URL
-                              const href = anchor.href || '';
-                              const byUrl = articles.find((a) => {
-                                if (!a.url || !href) return false;
-                                try {
-                                  const aUrl = new URL(a.url).pathname;
-                                  const hUrl = new URL(href).pathname;
-                                  return aUrl === hUrl || a.url === href;
-                                } catch { return a.url === href; }
-                              });
-                              // 3. Fallback: title text match
-                              const linkText = (anchor.textContent || '').trim().toLowerCase();
-                              const byTitle = !byUrl && linkText.length > 5 ? articles.find((a) => {
-                                const title = (a.title || '').toLowerCase();
-                                const slug = linkText.slice(0, 30);
-                                return title.includes(slug) || slug.includes(title.slice(0, 30));
-                              }) : null;
-                              const matched = byUrl || byTitle || null;
-                              if (matched) setPreviewArticle(matched);
                             }
                             return;
                           }
 
-                          // Handle <sup>[N]</sup> (1-based, AI-generated pattern)
+                          // 2. <a> 링크 (원문 보기 버튼 포함)
+                          const anchor = (target.tagName === 'A' ? target : target.closest('a')) as HTMLAnchorElement | null;
+                          if (anchor) {
+                            e.preventDefault();
+                            // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
+                            const byId = findByDataId(anchor as HTMLElement);
+                            if (byId) { setPreviewArticle(byId); return; }
+                            // 2-b. 폴백: data-article-idx (위치 기반)
+                            const articleIdxStr = (anchor as HTMLElement).getAttribute('data-article-idx');
+                            if (articleIdxStr !== null) {
+                              const articleIdx = Number(articleIdxStr);
+                              if (!isNaN(articleIdx) && articleIdx >= 0 && articleIdx < articles.length) {
+                                setPreviewArticle(articles[articleIdx]);
+                                return;
+                              }
+                            }
+                            // 2-c. 폴백: URL 매칭
+                            const href = anchor.href || '';
+                            const byUrl = articles.find((a) => {
+                              if (!a.url || !href) return false;
+                              try {
+                                const aUrl = new URL(a.url).pathname;
+                                const hUrl = new URL(href).pathname;
+                                return aUrl === hUrl || a.url === href;
+                              } catch { return a.url === href; }
+                            });
+                            if (byUrl) { setPreviewArticle(byUrl); return; }
+                            // 2-d. 폴백: 제목 텍스트 매칭
+                            const linkText = (anchor.textContent || '').trim().toLowerCase();
+                            if (linkText.length > 5) {
+                              const byTitle = articles.find((a) => {
+                                const title = (a.title || '').toLowerCase();
+                                const slug = linkText.slice(0, 30);
+                                return title.includes(slug) || slug.includes(title.slice(0, 30));
+                              });
+                              if (byTitle) setPreviewArticle(byTitle);
+                            }
+                            return;
+                          }
+
+                          // 3. <sup>[N]</sup> 각주 (1-based, AI 생성 패턴)
                           const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
-                          if (sup && articles.length > 0) {
+                          if (sup) {
                             const text = (sup.textContent || '').trim();
                             const match = text.match(/\[?(\d+)\]?/);
                             if (match) {

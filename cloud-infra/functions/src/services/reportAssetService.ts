@@ -144,6 +144,22 @@ function formatArticleContentParagraphs(value: string) {
     .flatMap(splitLongParagraph);
 }
 
+// URL로 articles 배열에서 article ID를 찾는 헬퍼
+function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
+  if (!href || !articles.length) return null;
+  try {
+    const targetPath = new URL(href).pathname;
+    const match = articles.find((a: any) => {
+      if (!a.url) return false;
+      try { return new URL(a.url).pathname === targetPath; }
+      catch { return a.url === href; }
+    });
+    return match?.id || null;
+  } catch {
+    return articles.find((a: any) => a.url === href)?.id || null;
+  }
+}
+
 function buildArticleModalPayload(article: any, index: number) {
   return {
     index: index + 1,
@@ -831,10 +847,10 @@ function buildInteractiveArticleReferenceSection(articles: any[]) {
         <article class="reference-card">
           <div class="reference-index">${index + 1}</div>
           <div class="reference-main">
-            <h3 class="article-ref-trigger" data-article-ref="${index}" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(30,58,95,0.3)">${escapeHtml(article.title || '')}</h3>
+            <h3 class="article-ref-trigger" data-article-id="${escapeHtml(article.id || '')}" data-article-ref="${index}" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(30,58,95,0.3)">${escapeHtml(article.title || '')}</h3>
             <div class="reference-meta">${escapeHtml(article.source || '')}</div>
             <div class="reference-actions">
-              <button type="button" class="reference-link reference-link-primary article-ref-trigger" data-article-ref="${index}">원문 보기</button>
+              <button type="button" class="reference-link reference-link-primary article-ref-trigger" data-article-id="${escapeHtml(article.id || '')}" data-article-ref="${index}">원문 보기</button>
               ${article.url ? `<a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="reference-link reference-link-secondary">원문 링크 ↗</a>` : ''}
             </div>
           </div>
@@ -1071,8 +1087,10 @@ function buildInteractiveBrandedShell({
           modal.classList.remove('is-open');
           modal.setAttribute('aria-hidden', 'true');
         }
-        function openModal(index) {
-          var article = payload[index];
+        // ID 기반 조회 — 배열 순서 무관, 항상 올바른 기사를 표시
+        function openModal(articleId) {
+          var article = payload.find(function(p) { return p.id === articleId; }) || null;
+          if (!article && typeof articleId === 'number') { article = payload[articleId] || null; } // 폴백: 구형 숫자 인덱스
           if (!article || !modal || !metaEl || !titleEl || !publishedSectionEl || !publishedEl || !summarySectionEl || !summaryEl || !contentEl || !linkEl) return;
           metaEl.innerHTML = '<span>' + (article.source || '') + '</span>' + (article.publishedAt ? '<span>' + article.publishedAt + '</span>' : '');
           titleEl.textContent = article.title || '제목 없음';
@@ -1122,10 +1140,12 @@ function buildInteractiveBrandedShell({
         document.addEventListener('click', function (event) {
           var target = event.target;
           if (!target || !target.closest) return;
+          // data-article-ref 버튼: data-article-id 우선, 폴백 인덱스
           var trigger = target.closest('[data-article-ref]');
           if (trigger) {
             event.preventDefault();
-            openModal(Number(trigger.getAttribute('data-article-ref')));
+            var aid = trigger.getAttribute('data-article-id');
+            openModal(aid || Number(trigger.getAttribute('data-article-ref')));
           }
         });
         if (modal) {
@@ -1212,9 +1232,11 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       }
     });
 
-    // Add 원문 보기 button (href matched by JS click handler → opens modal)
+    // Add 원문 보기 button — data-article-id로 ID 직접 조회 (URL 매칭 우선, 위치 폴백)
     if (href && !href.startsWith('javascript')) {
-      bodyParts.push(`<a href="${href}" class="article-source-btn">원문 보기 →</a>`);
+      const articleId = resolveArticleIdByUrl(href, articles);
+      const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
+      bodyParts.push(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
     }
 
     block.replaceWith(
@@ -1239,12 +1261,14 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       details.append(`<div class="article-body">${nonSummary.join('')}</div>`);
       bodyDiv = details.find('.article-body').first();
     }
-    bodyDiv.append(`<a href="${href}" class="article-source-btn">원문 보기 →</a>`);
+    const articleId = resolveArticleIdByUrl(href, articles);
+    const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
+    bodyDiv.append(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
   });
 
-  // 4. Make ref-table headline cells (3rd col) clickable via data-article-ref.
-  // Derives 0-based index from first column (번호); strips non-digit chars for formats
-  // like "[1]", "1.", etc. Falls back to sequential counter when not a valid number.
+  // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
+  // 번호 컬럼(1-based)으로 articles[N-1].id를 찾아 data-article-id를 심는다.
+  // 배열 순서 의존성 없이 ID로 직접 조회하기 위함.
   let refRowSeq = 0;
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
@@ -1257,12 +1281,15 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
+    const articleId = articles[articleIdx]?.id || '';
+
     const existingBtn = headlineCell.find('[data-article-ref]');
     if (existingBtn.length) {
       existingBtn.attr('data-article-ref', String(articleIdx));
+      if (articleId) existingBtn.attr('data-article-id', articleId);
     } else if (!headlineCell.find('a, button').length) {
       headlineCell.html(
-        `<button class="article-ref-trigger" data-article-ref="${articleIdx}">${headlineCell.html() || ''}</button>`,
+        `<button class="article-ref-trigger" data-article-ref="${articleIdx}"${articleId ? ` data-article-id="${articleId}"` : ''}>${headlineCell.html() || ''}</button>`,
       );
     }
   });
@@ -1371,8 +1398,10 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         var contentEl=document.getElementById('article-modal-content');
         var linkEl=document.getElementById('article-modal-link');
         function closeModal(){if(!modal)return;modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true');}
-        function openModal(idx){
-          var a=payload[idx];
+        // ID 기반 조회 — 배열 순서 무관, 항상 올바른 기사를 표시
+        function openModal(articleId){
+          var a=payload.find(function(p){return p.id===articleId;})||null;
+          if(!a&&typeof articleId==='number'){a=payload[articleId]||null;}// 폴백: 구형 숫자 인덱스
           if(!a||!modal)return;
           if(metaEl)metaEl.innerHTML='<span>'+(a.source||'')+'</span>'+(a.publishedAt?'<span>'+a.publishedAt+'</span>':'');
           if(titleEl)titleEl.textContent=a.title||'제목 없음';
@@ -1388,26 +1417,32 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         }
         document.addEventListener('click',function(e){
           var t=e.target;if(!t||!t.closest)return;
-          // data-article-ref: ref table buttons and sup references
-          var tr=t.closest('[data-article-ref]');
-          if(tr){e.preventDefault();openModal(Number(tr.getAttribute('data-article-ref')));return;}
-          // <a> links: 원문 보기 button and article title links
+          // 1. data-article-ref 버튼(ref-table, 참고기사 섹션): data-article-id 우선, 폴백 인덱스
+          var refEl=t.closest('[data-article-ref]');
+          if(refEl){
+            e.preventDefault();
+            var aid=refEl.getAttribute('data-article-id');
+            if(aid){openModal(aid);return;}
+            openModal(Number(refEl.getAttribute('data-article-ref')));
+            return;
+          }
+          // 2. <a> 링크: 원문 보기 버튼 및 기사 제목 링크
           var anchor=t.closest('a');
           if(anchor){
             e.preventDefault();
-            // 1. data-article-idx (position-based, set during post-processing — most reliable)
-            var idxAttr=anchor.getAttribute('data-article-idx');
-            if(idxAttr!==null){var ii=Number(idxAttr);if(!isNaN(ii)&&ii>=0&&ii<payload.length){openModal(ii);return;}}
-            // 2. URL pathname match
+            // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
+            var aid2=anchor.getAttribute('data-article-id');
+            if(aid2){openModal(aid2);return;}
+            // 2-b. 폴백: URL pathname 매칭
             var href=anchor.href||'';
-            var matched=-1;
-            payload.forEach(function(a,idx){
-              if(a.url&&href){
-                try{if(new URL(a.url).pathname===new URL(href).pathname||a.url===href)matched=idx;}
-                catch(ex){if(a.url===href)matched=idx;}
+            var matchedId=null;
+            payload.forEach(function(a){
+              if(a.url&&href&&!matchedId){
+                try{if(new URL(a.url).pathname===new URL(href).pathname||a.url===href)matchedId=a.id;}
+                catch(ex){if(a.url===href)matchedId=a.id;}
               }
             });
-            if(matched>=0){openModal(matched);}
+            if(matchedId){openModal(matchedId);}
           }
         });
         if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}
