@@ -1,4 +1,5 @@
 import * as admin from 'firebase-admin';
+import { load as cheerioLoad } from 'cheerio';
 import { callAiProvider, logPromptExecution, resolveAiCallOptions, trackAiCost } from './aiService';
 import { PROVIDER_DEFAULTS, RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
@@ -106,6 +107,75 @@ function resolveCustomReportAiConfig(aiConfig: RuntimeAiConfig): RuntimeAiConfig
     fallbackProvider: undefined,
     fallbackModel: undefined,
   };
+}
+
+/**
+ * AI가 생성한 HTML에 data-article-id를 영구 삽입하여 Firestore에 저장.
+ * 클라이언트에서 배열 순서에 의존하지 않고 ID로 직접 조회 가능하게 함.
+ *
+ * - article-block 원문 보기 버튼: href URL → orderedArticles URL 매칭으로 ID 결정
+ * - ref-table 헤드라인 버튼: 번호 컬럼(1-based) → orderedArticles[N-1].id
+ *   (AI가 원래 ARTICLE N 번호를 유지하면 정확, 재번호 매긴 경우 위치 폴백)
+ */
+function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
+  if (!html || !orderedArticles.length) return html;
+
+  const $ = cheerioLoad(html);
+
+  // URL → article ID 룩업맵 (pathname 기준)
+  const urlToId = new Map<string, string>();
+  for (const a of orderedArticles) {
+    if (a.url && a.id) {
+      try { urlToId.set(new URL(a.url).pathname, a.id); } catch { urlToId.set(a.url, a.id); }
+    }
+  }
+
+  function resolveIdByUrl(href: string): string | null {
+    if (!href) return null;
+    try {
+      const path = new URL(href).pathname;
+      return urlToId.get(path) || null;
+    } catch {
+      return urlToId.get(href) || null;
+    }
+  }
+
+  // 1. article-block 원문 보기 버튼에 data-article-id 삽입
+  let blockSeq = 0;
+  $('details.article-block .article-source-btn, div.article-block .article-source-btn').each(function () {
+    const href = ($(this).attr('href') || '').trim();
+    const articleId = resolveIdByUrl(href) || orderedArticles[blockSeq]?.id || null;
+    if (articleId) $(this).attr('data-article-id', articleId);
+    blockSeq++;
+  });
+
+  // 2. ref-table 헤드라인 셀에 data-article-id 삽입
+  let refRowSeq = 0;
+  $('.ref-table tr').each(function () {
+    const cells = $(this).find('td');
+    if (!cells.length) return;
+    const headlineCell = cells.eq(2);
+    if (!headlineCell.length) return;
+
+    const rawNum = (cells.eq(0).text() || '').replace(/[^\d]/g, '').trim();
+    const articleNum = rawNum ? parseInt(rawNum, 10) : NaN;
+    const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
+    refRowSeq++;
+
+    const articleId = orderedArticles[articleIdx]?.id || null;
+    if (!articleId) return;
+
+    const existingBtn = headlineCell.find('[data-article-ref], button, .ref-headline-btn');
+    if (existingBtn.length) {
+      existingBtn.attr('data-article-id', articleId);
+    } else {
+      // 헤드라인 텍스트를 버튼으로 감싸고 data-article-id 삽입
+      const inner = headlineCell.html() || '';
+      headlineCell.html(`<button class="ref-headline-btn" data-article-ref="${articleIdx}" data-article-id="${articleId}">${inner}</button>`);
+    }
+  });
+
+  return $.html();
 }
 
 // digest에 실제로 사용된 기사 순서(정렬 후)를 반환 — 각주 번호가 이 순서와 일치해야 함
@@ -524,7 +594,10 @@ ${articleDigest}`;
   );
   await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
 
-  const htmlContent = ensureHtmlDocument(response.content, reportTitle);
+  // AI 생성 HTML에 data-article-id를 영구 삽입 후 저장
+  // → 클라이언트(admin/공유 링크)가 배열 순서가 아닌 ID로 직접 기사를 조회할 수 있게 함
+  const rawHtmlContent = ensureHtmlDocument(response.content, reportTitle);
+  const htmlContent = embedArticleIdsInHtml(rawHtmlContent, orderedArticles);
 
   const outputRef = options.outputId
     ? db.collection('outputs').doc(options.outputId)

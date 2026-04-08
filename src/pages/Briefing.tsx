@@ -156,13 +156,15 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
   });
 
   // Steps 2+3 complete: assign data-article-id to every 원문 보기 button.
-  // ID 기반 조회로 배열 순서 의존성을 제거 — URL 매칭 우선, 위치 인덱스 폴백.
+  // 서버에서 이미 data-article-id가 삽입된 경우 유지, 없으면 URL 매칭·위치 폴백으로 보완.
   let articleBlockIdx = 0;
   tmpDoc.querySelectorAll('details.article-block .article-source-btn').forEach((btn) => {
-    const href = (btn as HTMLElement).getAttribute('href') || '';
-    const articleId = resolveArticleIdByUrl(href, articles) || articles[articleBlockIdx]?.id || null;
-    if (articleId) btn.setAttribute('data-article-id', articleId);
-    // 폴백용으로 idx도 유지
+    const existing = (btn as HTMLElement).getAttribute('data-article-id');
+    if (!existing) {
+      const href = (btn as HTMLElement).getAttribute('href') || '';
+      const articleId = resolveArticleIdByUrl(href, articles) || articles[articleBlockIdx]?.id || null;
+      if (articleId) btn.setAttribute('data-article-id', articleId);
+    }
     btn.setAttribute('data-article-idx', String(articleBlockIdx));
     articleBlockIdx++;
   });
@@ -183,15 +185,17 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
-    const articleId = articles[articleIdx]?.id || null;
-
-    // Find existing trigger button and update, or create a new one
-    const existingBtn = headlineCell.querySelector('[data-article-ref]') as HTMLElement | null;
+    // 서버에서 삽입된 data-article-id 우선 유지, 없으면 위치 기반으로 보완
+    const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
     if (existingBtn) {
       existingBtn.setAttribute('data-article-ref', String(articleIdx));
-      if (articleId) existingBtn.setAttribute('data-article-id', articleId);
+      if (!existingBtn.getAttribute('data-article-id')) {
+        const articleId = articles[articleIdx]?.id || null;
+        if (articleId) existingBtn.setAttribute('data-article-id', articleId);
+      }
       existingBtn.className = 'ref-headline-btn';
     } else if (!headlineCell.querySelector('a, button')) {
+      const articleId = articles[articleIdx]?.id || null;
       const btn = tmpDoc.createElement('button');
       btn.setAttribute('data-article-ref', String(articleIdx));
       if (articleId) btn.setAttribute('data-article-id', articleId);
