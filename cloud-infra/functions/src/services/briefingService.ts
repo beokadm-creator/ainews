@@ -519,7 +519,7 @@ ${articleDigest}`;
   const response = await callAiProvider(
     `${systemPrompt}\n\n${userPrompt}`,
     reportAiConfig,
-    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 16000, temperature: 0.4 }),
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 32000, temperature: 0.4 }),
     options.companyId
   );
   await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
