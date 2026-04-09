@@ -157,23 +157,53 @@ export default function AdminDashboard() {
   const [runningAction, setRunningAction] = useState<'collection' | 'premiumCollection' | 'analysis' | null>(null);
   const [keywordConfig, setKeywordConfig] = useState<{ titleKeywords: string[]; bypassSourcePatterns: string[] } | null>(null);
 
+  // Cache for count queries to reduce Firestore reads
+  const [countsCache, setCountsCache] = useState<{ data: any; timestamp: number } | null>(null);
+  const COUNTS_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
   const loadDashboard = async () => {
     setLoading(true);
     try {
       const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const [
-        globalSourcesSnap,
-        collectedSnap,
-        excludedSnap,
-        analyzedSnap,
-        errorsSnap,
-        recentArticlesSnap,
-      ] = await Promise.all([
+      // Check cache first for count queries
+      const now = Date.now();
+      let collectedCount, excludedCount, analyzedCount, errorsCount;
+
+      if (countsCache && (now - countsCache.timestamp) < COUNTS_CACHE_TTL) {
+        // Use cached counts
+        collectedCount = countsCache.data.collected;
+        excludedCount = countsCache.data.excluded;
+        analyzedCount = countsCache.data.analyzed;
+        errorsCount = countsCache.data.errors;
+      } else {
+        // Fetch fresh counts
+        const [collectedSnap, excludedSnap, analyzedSnap, errorsSnap] = await Promise.all([
+          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', COLLECTED_STATUSES))),
+          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', EXCLUDED_STATUSES))),
+          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ANALYZED_STATUSES))),
+          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
+        ]);
+
+        collectedCount = collectedSnap.data().count;
+        excludedCount = excludedSnap.data().count;
+        analyzedCount = analyzedSnap.data().count;
+        errorsCount = errorsSnap.data().count;
+
+        // Cache the counts
+        setCountsCache({
+          data: {
+            collected: collectedCount,
+            excluded: excludedCount,
+            analyzed: analyzedCount,
+            errors: errorsCount,
+          },
+          timestamp: now
+        });
+      }
+
+      // Fetch non-count queries
+      const [globalSourcesSnap, recentArticlesSnap] = await Promise.all([
         getDocs(query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'))),
-        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', COLLECTED_STATUSES))),
-        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', EXCLUDED_STATUSES))),
-        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ANALYZED_STATUSES))),
-        getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
         getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(100))),
       ]);
 
@@ -214,10 +244,10 @@ export default function AdminDashboard() {
       setSources(dedupedSources);
       setSourceHealth(healthRows);
       setCounts({
-        collected: collectedSnap.data().count,
-        excluded: excludedSnap.data().count,
-        analyzed: analyzedSnap.data().count,
-        errors: errorsSnap.data().count,
+        collected: collectedCount,
+        excluded: excludedCount,
+        analyzed: analyzedCount,
+        errors: errorsCount,
         activeSources: dedupedSources.filter((source) => source.status === 'active').length,
       });
     } finally {
@@ -257,6 +287,7 @@ export default function AdminDashboard() {
           : 'triggerContinuousAnalysisNow',
       );
       await fn({ resetLease: true });
+      setCountsCache(null); // Clear cache after processing
       await loadDashboard();
     } finally {
       setRunningAction(null);
@@ -297,7 +328,10 @@ export default function AdminDashboard() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => loadDashboard().catch(console.error)}
+            onClick={() => {
+              setCountsCache(null); // Clear cache on manual refresh
+              loadDashboard().catch(console.error);
+            }}
             className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10"
           >
             <RefreshCw className="h-4 w-4" />

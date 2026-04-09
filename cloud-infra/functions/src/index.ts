@@ -56,6 +56,10 @@ function invalidateSourceCache() {
   cachedActiveSourceIds = null;
   sourceCacheExpiresAt = 0;
 }
+
+function invalidatePipelineCountsCache() {
+  _pipelineCountsCache = null;
+}
 admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
 // ensureCollectionsExist().catch(console.error);
@@ -251,13 +255,13 @@ function matchArticleToSources(article: any, sources: ManagedReportSourceDefinit
 const DRAIN_BUDGET_MS = 7 * 60 * 1000;
 
 async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: string) {
-  // Quick count check: skip heavy processing if nothing to do
+  // Quick existence check: skip heavy processing if nothing to do
   const db = admin.firestore();
   const [pendingSnap, filteredSnap] = await Promise.all([
-    db.collection('articles').where('status', '==', 'pending').count().get(),
-    db.collection('articles').where('status', '==', 'filtered').count().get(),
+    db.collection('articles').where('status', '==', 'pending').limit(1).get(),
+    db.collection('articles').where('status', '==', 'filtered').limit(1).get(),
   ]);
-  if (pendingSnap.data().count === 0 && filteredSnap.data().count === 0) {
+  if (pendingSnap.empty && filteredSnap.empty) {
     logger.info('[drainQueue] No pending/filtered articles — skipping analysis cycle');
     return { totalFiltered: 0, totalAnalyzed: 0 };
   }
@@ -277,6 +281,11 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
     const filteringResult = await processRelevanceFiltering({ companyId, aiConfig });
     const filteredThisRound = Number(filteringResult?.processed || 0);
     totalFiltered += filteredThisRound;
+
+    // Invalidate pipeline counts cache after processing articles
+    if (filteredThisRound > 0) {
+      invalidatePipelineCountsCache();
+    }
     if (filteredThisRound > 0) {
       console.log(`[drainQueue] round=${round} filtered=${filteredThisRound} passed=${Number(filteringResult?.passed || 0)} failed=${Number(filteringResult?.failed || 0)}`);
       recordMetric({
@@ -300,6 +309,11 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
     const analysisResult = await processDeepAnalysis({ companyId, aiConfig });
     const analyzedThisRound = Number(analysisResult?.processed || 0);
     totalAnalyzed += analyzedThisRound;
+
+    // Invalidate pipeline counts cache after processing articles
+    if (analyzedThisRound > 0) {
+      invalidatePipelineCountsCache();
+    }
     if (analyzedThisRound > 0) {
       console.log(`[drainQueue] round=${round} analyzed=${analyzedThisRound} failed=${Number(analysisResult?.failed || 0)}`);
       recordMetric({
@@ -333,6 +347,10 @@ const CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS = 10 * 60 * 1000;
 // Instance-level cache for system AI config (avoids 3 Firestore reads per scheduled invocation)
 let _sysAiConfigCache: { data: { aiConfig: RuntimeAiConfig; companyId: string }; expiresAt: number } | null = null;
 const SYS_AI_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Instance-level cache for article pipeline counts (avoids 9 count() queries per scheduled invocation)
+let _pipelineCountsCache: { data: Record<string, number>; expiresAt: number } | null = null;
+const PIPELINE_COUNTS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes for near real-time updates
 
 async function withWorkerLease<T>(
   workerId: string,
@@ -489,6 +507,11 @@ async function runContinuousPremiumCollectionWorker(aiConfig: RuntimeAiConfig, c
 }
 
 async function getArticlePipelineCounts() {
+  const now = Date.now();
+  if (_pipelineCountsCache && _pipelineCountsCache.expiresAt > now) {
+    return _pipelineCountsCache.data;
+  }
+
   const db = admin.firestore();
   const [pending, filtering, filtered, analyzing, analyzed, published, rejected, aiError, analysisError] = await Promise.all([
     db.collection('articles').where('status', '==', 'pending').count().get(),
@@ -502,7 +525,7 @@ async function getArticlePipelineCounts() {
     db.collection('articles').where('status', '==', 'analysis_error').count().get(),
   ]);
 
-  return {
+  const counts = {
     pending: pending.data().count,
     filtering: filtering.data().count,
     filtered: filtered.data().count,
@@ -513,6 +536,9 @@ async function getArticlePipelineCounts() {
     aiError: aiError.data().count,
     analysisError: analysisError.data().count,
   };
+
+  _pipelineCountsCache = { data: counts, expiresAt: now + PIPELINE_COUNTS_CACHE_TTL_MS };
+  return counts;
 }
 
 async function updateContinuousPipelineRuntime(payload: Record<string, any>) {
@@ -729,6 +755,11 @@ async function executePipelineRun(options: {
       ...(filteringResult || {}),
     });
 
+    // Invalidate pipeline counts cache after filtering articles
+    if (filteringResult?.processed && filteringResult.processed > 0) {
+      invalidatePipelineCountsCache();
+    }
+
     await updatePipelineStep(pipelineRef, 'analysis', 'running');
     const analysisStartedAt = Date.now();
     const analysisResult = await processDeepAnalysis({
@@ -740,6 +771,11 @@ async function executePipelineRun(options: {
       duration: Date.now() - analysisStartedAt,
       ...(analysisResult || {}),
     });
+
+    // Invalidate pipeline counts cache after analysis
+    if (analysisResult?.processed && analysisResult.processed > 0) {
+      invalidatePipelineCountsCache();
+    }
 
     let outputResult: any = null;
     if (options.includeOutput !== false) {

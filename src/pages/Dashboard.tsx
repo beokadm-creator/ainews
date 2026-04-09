@@ -89,6 +89,10 @@ export default function Dashboard() {
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [recentArticles, setRecentArticles] = useState<any[]>([]);
 
+  // Simple cache for trend data to reduce Firestore reads
+  const [trendCache, setTrendCache] = useState<{ data: any[]; timestamp: number } | null>(null);
+  const TREND_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
   useEffect(() => {
     if (user) {
       fetchDashboardData();
@@ -136,17 +140,25 @@ export default function Dashboard() {
       const passed = passedSnap.data().count;
       setStats({ todayCollected: total, todayPassed: passed, successRate: total > 0 ? Math.round((passed / total) * 100) : 0 });
 
-      // 7-day trend
-      const trend = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = subDays(today, i);
-        const s = startOfDay(d);
-        const e = startOfDay(subDays(today, i - 1));
-        const dQ = query(articlesRef, ...base, where('collectedAt', '>=', s), where('collectedAt', '<', e));
-        const dSnap = await getCountFromServer(dQ);
-        trend.push({ name: format(d, 'MM/dd'), articles: dSnap.data().count });
+      // 7-day trend with cache
+      const now = Date.now();
+      if (trendCache && (now - trendCache.timestamp) < TREND_CACHE_TTL) {
+        // Use cached trend data
+        setTrendData(trendCache.data);
+      } else {
+        // Fetch new trend data
+        const trend = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = subDays(today, i);
+          const s = startOfDay(d);
+          const e = startOfDay(subDays(today, i - 1));
+          const dQ = query(articlesRef, ...base, where('collectedAt', '>=', s), where('collectedAt', '<', e));
+          const dSnap = await getCountFromServer(dQ);
+          trend.push({ name: format(d, 'MM/dd'), articles: dSnap.data().count });
+        }
+        setTrendData(trend);
+        setTrendCache({ data: trend, timestamp: now });
       }
-      setTrendData(trend);
 
       // Recent outputs
       const outputsQ = companyId && !isSuperadmin
