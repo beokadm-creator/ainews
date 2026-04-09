@@ -167,7 +167,7 @@ export default function AdminDashboard() {
       const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
       // Check cache first for count queries
       const now = Date.now();
-      let collectedCount, excludedCount, analyzedCount, errorsCount;
+      let collectedCount: number, excludedCount: number, analyzedCount: number, errorsCount: number;
 
       if (countsCache && (now - countsCache.timestamp) < COUNTS_CACHE_TTL) {
         // Use cached counts

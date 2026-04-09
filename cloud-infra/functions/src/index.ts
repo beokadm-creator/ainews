@@ -47,9 +47,9 @@ async function getActiveSourceIds(): Promise<string[]> {
   const now = Date.now();
   if (cachedActiveSourceIds !== null && now < sourceCacheExpiresAt) return cachedActiveSourceIds;
   const snap = await admin.firestore().collection('globalSources').where('status', '==', 'active').get();
-  cachedActiveSourceIds = snap.docs.map((d) => d.id);
+  cachedActiveSourceIds = snap.docs.map((doc: any) => doc.id);
   sourceCacheExpiresAt = Date.now() + SOURCE_CACHE_TTL_MS;
-  return cachedActiveSourceIds;
+  return cachedActiveSourceIds || [];
 }
 
 function invalidateSourceCache() {
