@@ -1,7 +1,7 @@
 import Parser from 'rss-parser';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
-import { isDuplicateArticle, hashUrl } from './duplicateService';
+import { isDuplicateArticle, hashUrl, batchFetchDedupEntries } from './duplicateService';
 import { hashTitle } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { cleanHtmlContent, decodeBuffer } from '../utils/encodingUtils';
@@ -233,18 +233,37 @@ export async function processRssSources(options?: {
 
       for (let i = 0; i < enrichedArticles.length; i += batchSize) {
         const chunk = enrichedArticles.slice(i, Math.min(i + batchSize, enrichedArticles.length));
-        const dupChecks = await Promise.all(
-          chunk.map(({ enriched }) => isDuplicateArticle(enriched, {
-            companyId: source.companyId || options?.companyId,
+        const effectiveCompanyId = source.companyId || options?.companyId;
+
+        // Batch-fetch dedup ledger: ceil(N/30) queries instead of N individual reads
+        const urlHashes = chunk.map(({ enriched }) => hashUrl(enriched.url));
+        const dedupEntries = await batchFetchDedupEntries(urlHashes);
+
+        // Articles confirmed as duplicate via ledger → skip immediately
+        // Articles not in ledger → run full individual check (includes titleHash fallback)
+        const dupResultByUrl = new Map<string, boolean>();
+        chunk.forEach(({ enriched }) => {
+          const urlHash = hashUrl(enriched.url);
+          const entry = dedupEntries.get(urlHash);
+          if (entry && (!effectiveCompanyId || (entry.companyId && entry.companyId === effectiveCompanyId))) {
+            dupResultByUrl.set(enriched.url, true);
+          }
+        });
+        const needsFullCheck = chunk.filter(({ enriched }) => !dupResultByUrl.has(enriched.url));
+        const fullChecks = await Promise.all(
+          needsFullCheck.map(({ enriched }) => isDuplicateArticle(enriched, {
+            companyId: effectiveCompanyId,
             fastMode: true,
           }))
         );
+        needsFullCheck.forEach(({ enriched }, idx) => {
+          dupResultByUrl.set(enriched.url, fullChecks[idx].isDuplicate);
+        });
 
         const batch = db.batch();
         const dedupWrites: Promise<any>[] = [];
-        dupChecks.forEach((check, idx) => {
-          if (check.isDuplicate) return;
-          const { enriched: article, kw } = chunk[idx];
+        chunk.forEach(({ enriched: article, kw }) => {
+          if (dupResultByUrl.get(article.url)) return;
 
           // 키워드 필터 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
           // → processDeepAnalysis가 직접 심층 분석 (GLM 호출 1회로 절약)

@@ -98,6 +98,26 @@ Content: ${(article2.content || '').substring(0, 300)}`;
   }
 }
 
+/**
+ * Batch-fetch dedup ledger entries for multiple URL hashes in a single query.
+ * Returns a map of urlHash → dedup document data (only for hashes that exist).
+ * Use this before individual isDuplicateArticle calls to avoid N separate reads.
+ */
+export async function batchFetchDedupEntries(urlHashes: string[]): Promise<Map<string, any>> {
+  const db = admin.firestore();
+  const result = new Map<string, any>();
+  if (urlHashes.length === 0) return result;
+  const unique = [...new Set(urlHashes)];
+  for (let i = 0; i < unique.length; i += 30) {
+    const chunk = unique.slice(i, i + 30);
+    const snap = await db.collection('articleDedup')
+      .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+      .get();
+    snap.docs.forEach((doc) => result.set(doc.id, doc.data()));
+  }
+  return result;
+}
+
 export async function isDuplicateArticle(
   newArticle: any,
   options?: { companyId?: string; aiConfig?: RuntimeAiConfig; fastMode?: boolean }

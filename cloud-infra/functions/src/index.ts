@@ -330,6 +330,10 @@ const CONTINUOUS_COLLECTION_LOCK_MS = 8 * 60 * 1000;
 const CONTINUOUS_ANALYSIS_LOCK_MS = 8 * 60 * 1000;
 const CONTINUOUS_PREMIUM_COLLECTION_LOCK_MS = 10 * 60 * 1000;
 
+// Instance-level cache for system AI config (avoids 3 Firestore reads per scheduled invocation)
+let _sysAiConfigCache: { data: { aiConfig: RuntimeAiConfig; companyId: string }; expiresAt: number } | null = null;
+const SYS_AI_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+
 async function withWorkerLease<T>(
   workerId: string,
   leaseMs: number,
@@ -1272,6 +1276,10 @@ async function executeStandaloneCustomReport({
 
 // superadmin?? systemSettings/aiConfig + systemSettings/promptConfig?먯꽌 AI ?ㅼ젙 濡쒕뱶
 async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; companyId: string }> {
+  const now = Date.now();
+  if (_sysAiConfigCache && _sysAiConfigCache.expiresAt > now) {
+    return _sysAiConfigCache.data;
+  }
   const db = admin.firestore();
   const [sysDoc, promptDoc] = await Promise.all([
     db.collection('systemSettings').doc('aiConfig').get(),
@@ -1305,7 +1313,9 @@ async function getSystemAiConfig(): Promise<{ aiConfig: RuntimeAiConfig; company
   // 泥?踰덉㎏ ?쒖꽦 ?뚯궗瑜?fallback companyId濡??ъ슜
   const companiesSnap = await db.collection('companies').where('active', '==', true).limit(1).get();
   const companyId = companiesSnap.empty ? '__system__' : companiesSnap.docs[0].id;
-  return { aiConfig, companyId };
+  const result = { aiConfig, companyId };
+  _sysAiConfigCache = { data: result, expiresAt: Date.now() + SYS_AI_CONFIG_CACHE_TTL_MS };
+  return result;
 }
 // ?????????????????????????????????????????
 // [NEW] Global Source Management (Superadmin)
