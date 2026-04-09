@@ -1170,6 +1170,12 @@ export default function Briefing() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // 명시적 window.open — 이벤트 인터셉트 우회
+                    e.preventDefault();
+                    window.open(previewArticle.url, '_blank', 'noopener,noreferrer');
+                  }}
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
                   원문 링크 열기

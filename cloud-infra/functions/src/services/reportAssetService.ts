@@ -1140,6 +1140,8 @@ function buildInteractiveBrandedShell({
         document.addEventListener('click', function (event) {
           var target = event.target;
           if (!target || !target.closest) return;
+          // 모달 내부 클릭은 인터셉트하지 않음 (원문 링크 열기 등)
+          if (target.closest('#article-modal')) return;
           // data-article-ref 버튼: data-article-id 우선, 폴백 인덱스
           var trigger = target.closest('[data-article-ref]');
           if (trigger) {
@@ -1417,6 +1419,8 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         }
         document.addEventListener('click',function(e){
           var t=e.target;if(!t||!t.closest)return;
+          // 모달 내부 클릭은 인터셉트하지 않음 (원문 링크 열기 등)
+          if(t.closest('#article-modal')){return;}
           // 1. data-article-ref 버튼(ref-table, 참고기사 섹션): data-article-id 우선, 폴백 인덱스
           var refEl=t.closest('[data-article-ref]');
           if(refEl){
@@ -1426,7 +1430,7 @@ export async function buildSharedReportPage(output: any): Promise<string> {
             openModal(Number(refEl.getAttribute('data-article-ref')));
             return;
           }
-          // 2. <a> 링크: 원문 보기 버튼 및 기사 제목 링크
+          // 2. <a> 링크: 원문 보기 버튼 및 기사 제목 링크 (모달 링크는 제외됨)
           var anchor=t.closest('a');
           if(anchor){
             e.preventDefault();
