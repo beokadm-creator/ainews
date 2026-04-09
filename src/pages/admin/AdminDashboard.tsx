@@ -174,7 +174,7 @@ export default function AdminDashboard() {
         getCountFromServer(query(collection(db, 'articles'), where('status', 'in', EXCLUDED_STATUSES))),
         getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ANALYZED_STATUSES))),
         getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
-        getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(500))),
+        getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(100))),
       ]);
 
       // 키워드 설정 로드

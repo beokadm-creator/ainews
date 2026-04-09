@@ -270,7 +270,7 @@ export default function MediaAdmin() {
       const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const [sourceSnap, articleSnap] = await Promise.all([
         getDocs(query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'))),
-        getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(500))),
+        getDocs(query(collection(db, 'articles'), where('collectedAt', '>=', since24h), orderBy('collectedAt', 'desc'), limit(200))),
       ]);
 
       const sourceRows = dedupeSourceCatalog(sourceSnap.docs.map((item) => ({ id: item.id, ...(item.data() as any) }))) as GlobalSource[];

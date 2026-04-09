@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
+import { collection, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -158,7 +158,7 @@ export default function DeliveryCenter() {
       const [sourceSnap, groupSnap, outputSnap] = await Promise.all([
         Promise.resolve(await fetchSubscribedSources(companyId)),
         getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId))),
-        getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'))),
+        getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'), limit(10))),
       ]);
 
       const availableSources = sourceSnap
@@ -239,11 +239,19 @@ export default function DeliveryCenter() {
 
       setPreviewOutput(output);
 
-      const effectiveArticleIds = output.generatedOutput?.orderedArticleIds || output.orderedArticleIds
+      const effectiveArticleIds: string[] = output.generatedOutput?.orderedArticleIds || output.orderedArticleIds
         || output.generatedOutput?.articleIds || output.articleIds || [];
       if (effectiveArticleIds.length > 0) {
-        const docs = await Promise.all(effectiveArticleIds.map((id: string) => getDoc(doc(db, 'articles', id))));
-        setPreviewArticles(docs.filter((item) => item.exists()).map((item) => ({ id: item.id, ...(item.data() as any) })));
+        const chunks: string[][] = [];
+        for (let i = 0; i < effectiveArticleIds.length; i += 30) {
+          chunks.push(effectiveArticleIds.slice(i, i + 30));
+        }
+        const snaps = await Promise.all(
+          chunks.map((chunk) => getDocs(query(collection(db, 'articles'), where(documentId(), 'in', chunk))))
+        );
+        const articleMap = new Map<string, any>();
+        snaps.forEach((snap) => snap.docs.forEach((d) => articleMap.set(d.id, { id: d.id, ...(d.data() as any) })));
+        setPreviewArticles(effectiveArticleIds.map((id) => articleMap.get(id)).filter(Boolean));
       } else {
         setPreviewArticles([]);
       }

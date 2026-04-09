@@ -17,7 +17,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { collection, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -289,11 +289,19 @@ export default function Briefing() {
 
     // orderedArticleIds: GLM에 전달된 실제 순서 (각주 [1],[2],... 와 1:1 대응)
     // articleIds는 원래 선택 순서라 각주 번호와 불일치 → orderedArticleIds 우선 사용
-    const effectiveArticleIds = output.generatedOutput?.orderedArticleIds || output.orderedArticleIds
+    const effectiveArticleIds: string[] = output.generatedOutput?.orderedArticleIds || output.orderedArticleIds
       || output.generatedOutput?.articleIds || output.articleIds || [];
     if (effectiveArticleIds.length > 0) {
-      const docs = await Promise.all(effectiveArticleIds.map((id: string) => getDoc(doc(db, 'articles', id))));
-      setArticles(docs.filter((item) => item.exists()).map((item) => ({ id: item.id, ...(item.data() as any) })));
+      const chunks: string[][] = [];
+      for (let i = 0; i < effectiveArticleIds.length; i += 30) {
+        chunks.push(effectiveArticleIds.slice(i, i + 30));
+      }
+      const snaps = await Promise.all(
+        chunks.map((chunk) => getDocs(query(collection(db, 'articles'), where(documentId(), 'in', chunk))))
+      );
+      const articleMap = new Map<string, any>();
+      snaps.forEach((snap) => snap.docs.forEach((d) => articleMap.set(d.id, { id: d.id, ...(d.data() as any) })));
+      setArticles(effectiveArticleIds.map((id) => articleMap.get(id)).filter(Boolean));
     } else {
       setArticles([]);
     }

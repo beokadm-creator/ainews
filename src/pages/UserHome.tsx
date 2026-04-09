@@ -11,7 +11,7 @@ import {
   Send,
   TrendingUp,
 } from 'lucide-react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
@@ -81,6 +81,8 @@ export default function UserHome() {
             query(
               collection(db, 'outputs'),
               where('companyId', '==', companyId),
+              orderBy('createdAt', 'desc'),
+              limit(30),
             )
           ),
           canViewUsage

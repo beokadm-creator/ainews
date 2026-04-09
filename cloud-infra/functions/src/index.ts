@@ -1139,11 +1139,12 @@ async function executeManagedReport({
   const reportTitle = output.title || (output.serviceMode === 'external' ? '이음M&A NEWS' : '내부 분석 리포트');
 
   // Compute sequential Vol. number for this company
-  const existingOutputsSnap = await db.collection('outputs')
+  const existingOutputsCount = await db.collection('outputs')
     .where('companyId', '==', companyId)
     .where('status', '==', 'completed')
+    .count()
     .get();
-  const volNumber = existingOutputsSnap.size + 1;
+  const volNumber = existingOutputsCount.data().count + 1;
 
   const result = await generateCustomReport({
     companyId,
@@ -2701,10 +2702,12 @@ export const getAiUsageSummary = onCall(
 
     try {
       const db = admin.firestore();
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const snap = await db.collection('aiCostTracking')
         .where('companyId', '==', companyId)
+        .where('createdAt', '>=', thirtyDaysAgo)
         .orderBy('createdAt', 'desc')
-        .limit(500)
+        .limit(200)
         .get();
 
       const now = Date.now();

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { BarChart3, BookOpen, Clock3, FileText, Loader2, Newspaper } from 'lucide-react';
 import { format } from 'date-fns';
@@ -34,7 +34,7 @@ export default function History() {
       try {
         const searchArticles = httpsCallable(functions, 'searchArticles');
         const [reportSnap, articleResult] = await Promise.all([
-          getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId))),
+          getDocs(query(collection(db, 'outputs'), where('companyId', '==', companyId), orderBy('createdAt', 'desc'), limit(100))),
           searchArticles({
             companyId,
             statuses: ['analyzed', 'published'],
