@@ -368,7 +368,7 @@ function getPreferredSelectors(url?: string): string[] {
   }
 
   if (hostname.includes('fnnews.com')) {
-    return ['#articleBody', '.article_body', '.news_body'];
+    return ['#article_content', '#articleBody', '.article_body', '.news_body', '.cont_view'];
   }
 
   return [];

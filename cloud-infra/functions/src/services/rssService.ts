@@ -124,6 +124,16 @@ export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
     if (!item.title || !item.link) continue;
     const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
 
+    // mt.co.kr: 연예·사회·정치·스포츠·생활 섹션 URL 제외 (경제/금융 무관 기사 차단)
+    try {
+      const parsed = new URL(item.link);
+      if (parsed.hostname === 'www.mt.co.kr' || parsed.hostname === 'mt.co.kr') {
+        const section = parsed.pathname.split('/')[1] || '';
+        const EXCLUDED_MT_SECTIONS = ['entertainment', 'society', 'politics', 'sports', 'living', 'culture', 'people'];
+        if (EXCLUDED_MT_SECTIONS.includes(section)) continue;
+      }
+    } catch { /* URL 파싱 실패 시 통과 */ }
+
     let title = item.title ? item.title.trim() : '';
     if (title.match(/[\uFFFD\u0080-\u009F]{3,}/)) {
       console.warn(`Skipping article with corrupted title: "${title.substring(0, 50)}"`);
