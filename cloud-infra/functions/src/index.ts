@@ -266,6 +266,9 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
     return { totalFiltered: 0, totalAnalyzed: 0 };
   }
 
+  // Recover stale articles once per cycle (not every round)
+  await recoverStaleAiStageArticles();
+
   let totalFiltered = 0;
   let totalAnalyzed = 0;
   const maxRounds = 20;

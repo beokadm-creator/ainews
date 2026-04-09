@@ -261,7 +261,7 @@ const MAX_ERROR_RATE = 0.3;
 // 10분에서 단축: 스케줄 5분 주기 내에 재시도 가능하도록
 const WORKER_LEASE_MS = 4 * 60 * 1000;
 const MAX_RETRY_BACKOFF_MS = 60 * 60 * 1000;
-const STALE_STAGE_RECOVERY_LIMIT = 200;
+const STALE_STAGE_RECOVERY_LIMIT = 10;
 
 function getDynamicBatchSize(baseSize: number): number {
   const now = Date.now();
@@ -403,51 +403,104 @@ async function claimArticlesForStage(
   const db = admin.firestore();
   const now = Date.now();
   const leaseUntil = admin.firestore.Timestamp.fromMillis(now + WORKER_LEASE_MS);
-  const claimed: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  const allowedStatuses = stage === 'filtering'
+    ? ['pending', 'ai_error']
+    : ['filtered', 'analysis_error'];
 
-  for (const doc of docs) {
-    try {
-      const wasClaimed = await db.runTransaction(async (tx) => {
-        const snap = await tx.get(doc.ref);
-        if (!snap.exists) return false;
+  // Pre-filter using existing snapshot data to avoid unnecessary batch writes
+  const claimableArticles = docs.filter((doc) => {
+    const data = doc.data() as any;
+    const currentStatus = data?.status;
 
-        const data = snap.data() as any;
-        const currentStatus = data?.status;
-        const allowedStatuses = stage === 'filtering'
-          ? ['pending', 'ai_error']
-          : ['filtered', 'analysis_error'];
+    // Check status and retry readiness using existing snapshot data
+    if (!allowedStatuses.includes(currentStatus)) return false;
+    if (!isReadyForRetry(data, new Date(now))) return false;
 
-        if (!allowedStatuses.includes(currentStatus)) return false;
-        if (!isReadyForRetry(data, new Date(now))) return false;
+    // Check existing lease using snapshot data
+    const existingLease = data?.workerLeaseUntil?.toDate
+      ? data.workerLeaseUntil.toDate()
+      : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
 
-        const existingLease = data?.workerLeaseUntil?.toDate
-          ? data.workerLeaseUntil.toDate()
-          : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
-
-        if (existingLease && !Number.isNaN(existingLease.getTime()) && existingLease.getTime() > now) {
-          return false;
-        }
-
-        tx.update(doc.ref, {
-          status: stage,
-          workerStage: stage,
-          workerLeaseUntil: leaseUntil,
-          workerStartedAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        return true;
-      });
-
-      if (wasClaimed) {
-        claimed.push(doc);
-      }
-    } catch (error) {
-      console.warn(`[AI-${stage}] Failed to claim article ${doc.id}:`, error);
+    if (existingLease && !Number.isNaN(existingLease.getTime()) && existingLease.getTime() > now) {
+      return false;
     }
+
+    return true;
+  });
+
+  if (claimableArticles.length === 0) {
+    return [];
   }
 
-  return claimed;
+  // Use batch operation for claiming (optimized for single-function pipeline)
+  // Race condition risk is low due to:
+  // 1. Single Cloud Function instance architecture
+  // 2. Small batch sizes (10-60 articles)
+  // 3. Pre-filtering reduces conflicts
+  try {
+    const batch = db.batch();
+
+    claimableArticles.forEach((doc) => {
+      batch.update(doc.ref, {
+        status: stage,
+        workerStage: stage,
+        workerLeaseUntil: leaseUntil,
+        workerStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+
+    await batch.commit();
+
+    console.log(`[AI-${stage}] Successfully claimed ${claimableArticles.length} articles using batch operation`);
+    return claimableArticles;
+  } catch (error) {
+    console.warn(`[AI-${stage}] Batch claim failed, falling back to individual transactions:`, error);
+
+    // Fallback to individual transactions on batch failure
+    const claimed: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+    for (const doc of claimableArticles.slice(0, 5)) { // Limit fallback to prevent excessive reads
+      try {
+        const wasClaimed = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(doc.ref);
+          if (!snap.exists) return false;
+
+          const data = snap.data() as any;
+          const currentStatus = data?.status;
+
+          if (!allowedStatuses.includes(currentStatus)) return false;
+          if (!isReadyForRetry(data, new Date(now))) return false;
+
+          const existingLease = data?.workerLeaseUntil?.toDate
+            ? data.workerLeaseUntil.toDate()
+            : (data?.workerLeaseUntil ? new Date(data.workerLeaseUntil) : null);
+
+          if (existingLease && !Number.isNaN(existingLease.getTime()) && existingLease.getTime() > now) {
+            return false;
+          }
+
+          tx.update(doc.ref, {
+            status: stage,
+            workerStage: stage,
+            workerLeaseUntil: leaseUntil,
+            workerStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          return true;
+        });
+
+        if (wasClaimed) {
+          claimed.push(doc);
+        }
+      } catch (txError) {
+        console.warn(`[AI-${stage}] Failed to claim article ${doc.id} in fallback:`, txError);
+      }
+    }
+
+    return claimed;
+  }
 }
 
 async function recoverStaleArticlesForStage(stage: 'filtering' | 'analyzing') {
@@ -1277,7 +1330,8 @@ export async function processRelevanceFiltering(options?: {
   const db = admin.firestore();
   const baseBatchSize = Math.max(20, options?.aiConfig.maxPendingBatch || 60);
 
-  await recoverStaleArticlesForStage('filtering');
+  // Note: Stale article recovery is now handled at drainAiAnalysisQueue level
+  // to avoid duplicate reads. See recoverStaleAiStageArticles() call in index.ts
 
   let queryRef: FirebaseFirestore.Query = db.collection('articles')
     .where('status', 'in', ['pending', 'ai_error']);
@@ -1536,7 +1590,8 @@ export async function processDeepAnalysis(options?: {
   // 속도보다 정확성 우선: 한 번에 10건씩만 클레임 (타임아웃 시 복구 빠름)
   const baseBatchSize = Math.min(10, options?.aiConfig.maxAnalysisBatch || 10);
 
-  await recoverStaleArticlesForStage('analyzing');
+  // Note: Stale article recovery is now handled at drainAiAnalysisQueue level
+  // to avoid duplicate reads. See recoverStaleAiStageArticles() call in index.ts
 
   let queryRef: FirebaseFirestore.Query = db.collection('articles')
     .where('status', 'in', ['filtered', 'analysis_error']);

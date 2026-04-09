@@ -89,9 +89,26 @@ export default function Dashboard() {
   const [recentOutputs, setRecentOutputs] = useState<any[]>([]);
   const [recentArticles, setRecentArticles] = useState<any[]>([]);
 
-  // Simple cache for trend data to reduce Firestore reads
-  const [trendCache, setTrendCache] = useState<{ data: any[]; timestamp: number } | null>(null);
-  const TREND_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+  // Persistent cache for trend data to reduce Firestore reads
+  const TREND_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  const TREND_CACHE_KEY = 'dashboard_trend_cache';
+
+  const getTrendCache = (): { data: any[]; timestamp: number } | null => {
+    try {
+      const cached = localStorage.getItem(TREND_CACHE_KEY);
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const setTrendCache = (cache: { data: any[]; timestamp: number }) => {
+    try {
+      localStorage.setItem(TREND_CACHE_KEY, JSON.stringify(cache));
+    } catch {
+      // Ignore localStorage errors (incognito mode, storage full, etc.)
+    }
+  };
 
   useEffect(() => {
     if (user) {
@@ -140,13 +157,17 @@ export default function Dashboard() {
       const passed = passedSnap.data().count;
       setStats({ todayCollected: total, todayPassed: passed, successRate: total > 0 ? Math.round((passed / total) * 100) : 0 });
 
-      // 7-day trend with cache
+      // 7-day trend with persistent cache
       const now = Date.now();
-      if (trendCache && (now - trendCache.timestamp) < TREND_CACHE_TTL) {
+      const cachedTrend = getTrendCache();
+
+      if (cachedTrend && (now - cachedTrend.timestamp) < TREND_CACHE_TTL) {
         // Use cached trend data
-        setTrendData(trendCache.data);
+        console.log('[Dashboard] Using cached trend data');
+        setTrendData(cachedTrend.data);
       } else {
         // Fetch new trend data
+        console.log('[Dashboard] Fetching fresh trend data - cache miss or expired');
         const trend = [];
         for (let i = 6; i >= 0; i--) {
           const d = subDays(today, i);
@@ -158,6 +179,7 @@ export default function Dashboard() {
         }
         setTrendData(trend);
         setTrendCache({ data: trend, timestamp: now });
+        console.log(`[Dashboard] Cached new trend data for ${TREND_CACHE_TTL / 1000 / 60} minutes`);
       }
 
       // Recent outputs
