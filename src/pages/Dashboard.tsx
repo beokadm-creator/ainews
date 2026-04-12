@@ -142,6 +142,8 @@ export default function Dashboard() {
       const articlesRef = collection(db, 'articles');
       // 회사 관리자: 자신의 회사 기사 + 글로벌 기사(companyId: null) 포함
       // 슈퍼어드민: 모든 기사
+      // 단, Firestore Rules 이슈로 `in [companyId, null]`을 사용하면 인증된 사용자의 데이터만 허용하는 규칙과 충돌할 수 있음
+      // 현재 articles 컬렉션 규칙을 `allow read: if signedIn();`로 열었으므로 문제 없음
       const base = companyId && !isSuperadmin
         ? [where('companyId', 'in', [companyId, null])]  // 회사 기사 + 글로벌 기사
         : [];

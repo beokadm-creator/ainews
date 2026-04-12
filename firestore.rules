@@ -88,11 +88,7 @@ service cloud.firestore {
     }
 
     match /articles/{articleId} {
-      // 전역 기사(companyId==null)는 모든 로그인 사용자가 읽기 가능
-      allow read: if signedIn() && (
-        resource.data.companyId == null ||
-        belongsToCompany(resource.data.companyId)
-      );
+      allow read: if signedIn();
       allow create: if signedIn() && (
         request.resource.data.companyId == null ||
         canOperateCompany(request.resource.data.companyId)
