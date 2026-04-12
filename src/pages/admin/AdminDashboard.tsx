@@ -157,50 +157,10 @@ export default function AdminDashboard() {
   const [runningAction, setRunningAction] = useState<'collection' | 'premiumCollection' | 'analysis' | null>(null);
   const [keywordConfig, setKeywordConfig] = useState<{ titleKeywords: string[]; bypassSourcePatterns: string[] } | null>(null);
 
-  // Cache for count queries to reduce Firestore reads
-  const [countsCache, setCountsCache] = useState<{ data: any; timestamp: number } | null>(null);
-  const COUNTS_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-
   const loadDashboard = async () => {
     setLoading(true);
     try {
       const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      // Check cache first for count queries
-      const now = Date.now();
-      let collectedCount: number, excludedCount: number, analyzedCount: number, errorsCount: number;
-
-      if (countsCache && (now - countsCache.timestamp) < COUNTS_CACHE_TTL) {
-        // Use cached counts
-        collectedCount = countsCache.data.collected;
-        excludedCount = countsCache.data.excluded;
-        analyzedCount = countsCache.data.analyzed;
-        errorsCount = countsCache.data.errors;
-      } else {
-        // Fetch fresh counts
-        const [collectedSnap, excludedSnap, analyzedSnap, errorsSnap] = await Promise.all([
-          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', COLLECTED_STATUSES))),
-          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', EXCLUDED_STATUSES))),
-          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ANALYZED_STATUSES))),
-          getCountFromServer(query(collection(db, 'articles'), where('status', 'in', ['ai_error', 'analysis_error']))),
-        ]);
-
-        collectedCount = collectedSnap.data().count;
-        excludedCount = excludedSnap.data().count;
-        analyzedCount = analyzedSnap.data().count;
-        errorsCount = errorsSnap.data().count;
-
-        // Cache the counts
-        setCountsCache({
-          data: {
-            collected: collectedCount,
-            excluded: excludedCount,
-            analyzed: analyzedCount,
-            errors: errorsCount,
-          },
-          timestamp: now
-        });
-      }
-
       // Fetch non-count queries
       const [globalSourcesSnap, recentArticlesSnap] = await Promise.all([
         getDocs(query(collection(db, 'globalSources'), orderBy('relevanceScore', 'desc'))),
@@ -243,13 +203,10 @@ export default function AdminDashboard() {
 
       setSources(dedupedSources);
       setSourceHealth(healthRows);
-      setCounts({
-        collected: collectedCount,
-        excluded: excludedCount,
-        analyzed: analyzedCount,
-        errors: errorsCount,
+      setCounts((prev) => ({
+        ...prev,
         activeSources: dedupedSources.filter((source) => source.status === 'active').length,
-      });
+      }));
     } finally {
       setLoading(false);
     }
@@ -287,7 +244,6 @@ export default function AdminDashboard() {
           : 'triggerContinuousAnalysisNow',
       );
       await fn({ resetLease: true });
-      setCountsCache(null); // Clear cache after processing
       await loadDashboard();
     } finally {
       setRunningAction(null);
@@ -318,6 +274,13 @@ export default function AdminDashboard() {
   const topSourceRows = sourceHealth.slice(0, 8);
   const warningSources = sourceHealth.filter((source) => source.lastStatus === 'error' || source.errorMessage).slice(0, 6);
   const runtimeCounts = continuousRuntime.articleCounts || {};
+  const derivedCounts = {
+    collected: (runtimeCounts.pending || 0) + (runtimeCounts.filtering || 0) + (runtimeCounts.filtered || 0) + (runtimeCounts.analyzing || 0) + (runtimeCounts.aiError || 0) + (runtimeCounts.analysisError || 0),
+    excluded: runtimeCounts.rejected || 0,
+    analyzed: (runtimeCounts.analyzed || 0) + (runtimeCounts.published || 0),
+    errors: (runtimeCounts.aiError || 0) + (runtimeCounts.analysisError || 0),
+    activeSources: counts.activeSources
+  };
 
   return (
     <div className="space-y-6 pb-10">
@@ -329,7 +292,6 @@ export default function AdminDashboard() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => {
-              setCountsCache(null); // Clear cache on manual refresh
               loadDashboard().catch(console.error);
             }}
             className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10"
@@ -403,11 +365,11 @@ export default function AdminDashboard() {
           )}
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Collected Queue" value={counts.collected} hint="수집 후 처리 대기 기사" icon={Newspaper} tone="text-cyan-300" />
-            <StatCard title="Excluded" value={counts.excluded} hint="제외 처리된 기사" icon={SearchX} tone="text-rose-300" />
-            <StatCard title="Analyzed" value={counts.analyzed} hint="분석 완료 기사" icon={Sparkles} tone="text-emerald-300" />
-            <StatCard title="AI Errors" value={counts.errors} hint="AI 재시도 대기 오류 기사" icon={AlertTriangle} tone="text-amber-300" />
-            <StatCard title="Active Sources" value={counts.activeSources} hint="현재 활성 매체 수" icon={Globe} tone="text-violet-300" />
+            <StatCard title="Collected Queue" value={derivedCounts.collected} hint="수집 후 처리 대기 기사" icon={Newspaper} tone="text-cyan-300" />
+            <StatCard title="Excluded" value={derivedCounts.excluded} hint="제외 처리된 기사" icon={SearchX} tone="text-rose-300" />
+            <StatCard title="Analyzed" value={derivedCounts.analyzed} hint="분석 완료 기사" icon={Sparkles} tone="text-emerald-300" />
+            <StatCard title="AI Errors" value={derivedCounts.errors} hint="AI 재시도 대기 오류 기사" icon={AlertTriangle} tone="text-amber-300" />
+            <StatCard title="Active Sources" value={derivedCounts.activeSources} hint="현재 활성 매체 수" icon={Globe} tone="text-violet-300" />
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">

@@ -1,4 +1,4 @@
-﻿import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
@@ -266,9 +266,6 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
     return { totalFiltered: 0, totalAnalyzed: 0 };
   }
 
-  // Recover stale articles once per cycle (not every round)
-  await recoverStaleAiStageArticles();
-
   let totalFiltered = 0;
   let totalAnalyzed = 0;
   const maxRounds = 20;
@@ -353,7 +350,7 @@ const SYS_AI_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Instance-level cache for article pipeline counts (avoids 9 count() queries per scheduled invocation)
 let _pipelineCountsCache: { data: Record<string, number>; expiresAt: number } | null = null;
-const PIPELINE_COUNTS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes for near real-time updates
+const PIPELINE_COUNTS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes to significantly reduce full-collection count() query costs
 
 async function withWorkerLease<T>(
   workerId: string,
@@ -516,6 +513,23 @@ async function getArticlePipelineCounts() {
   }
 
   const db = admin.firestore();
+  
+  // 글로벌 캐시 조회 (서로 다른 Cloud Function 인스턴스간 중복 카운트 방지)
+  const pipelineDoc = await db.collection('systemRuntime').doc('continuousPipeline').get();
+  if (pipelineDoc.exists) {
+    const data = pipelineDoc.data() as any;
+    if (data.articleCounts && data.articleCountsUpdatedAt) {
+      const updatedAtMs = data.articleCountsUpdatedAt.toDate 
+        ? data.articleCountsUpdatedAt.toDate().getTime() 
+        : new Date(data.articleCountsUpdatedAt).getTime();
+      
+      if (now - updatedAtMs < PIPELINE_COUNTS_CACHE_TTL_MS) {
+        _pipelineCountsCache = { data: data.articleCounts, expiresAt: now + PIPELINE_COUNTS_CACHE_TTL_MS };
+        return data.articleCounts;
+      }
+    }
+  }
+
   const [pending, filtering, filtered, analyzing, analyzed, published, rejected, aiError, analysisError] = await Promise.all([
     db.collection('articles').where('status', '==', 'pending').count().get(),
     db.collection('articles').where('status', '==', 'filtering').count().get(),
@@ -541,6 +555,13 @@ async function getArticlePipelineCounts() {
   };
 
   _pipelineCountsCache = { data: counts, expiresAt: now + PIPELINE_COUNTS_CACHE_TTL_MS };
+  
+  // 새롭게 계산된 경우 글로벌 캐시 시간도 갱신
+  await db.collection('systemRuntime').doc('continuousPipeline').set({
+    articleCounts: counts,
+    articleCountsUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+  }, { merge: true });
+
   return counts;
 }
 
@@ -548,7 +569,6 @@ async function updateContinuousPipelineRuntime(payload: Record<string, any>) {
   const counts = await getArticlePipelineCounts();
   await admin.firestore().collection('systemRuntime').doc('continuousPipeline').set({
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    articleCounts: counts,
     ...payload,
   }, { merge: true });
   return counts;
@@ -3855,8 +3875,8 @@ export const cleanupRejectedArticles = onSchedule(
       return;
     }
 
-    const synced = await syncArticlesToDedup(snapshot.docs, 'rejected');
-    logger.info(`cleanupRejectedArticles synced ${synced} rejected articles without deleting them`);
+    const deleted = await purgeRejectedArticlesPreservingDedupe(snapshot.docs);
+    logger.info(`cleanupRejectedArticles synced and deleted ${deleted} rejected articles`);
   }
 );
 
