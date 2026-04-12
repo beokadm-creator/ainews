@@ -2843,7 +2843,8 @@ export const scheduledAiAnalysis = onSchedule({ schedule: '*/5 * * * *', region:
   }
 });
 
-export const scheduledContinuousCollection = onSchedule({ schedule: '*/5 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
+// Reads 절감을 위해 수집 주기를 매 정각(1시간 간격)으로 조정
+export const scheduledContinuousCollection = onSchedule({ schedule: '0 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
   try {
     const { aiConfig, companyId } = await getSystemAiConfig();
     const result = await runContinuousCollectionWorker(aiConfig, companyId);
@@ -2862,7 +2863,8 @@ export const scheduledContinuousCollection = onSchedule({ schedule: '*/5 * * * *
   }
 });
 
-export const scheduledPremiumCollection = onSchedule({ schedule: '*/10 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
+// Premium 수집도 동일하게 1시간 간격(정각)으로 조정
+export const scheduledPremiumCollection = onSchedule({ schedule: '0 * * * *', region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' }, async () => {
   try {
     const { aiConfig, companyId } = await getSystemAiConfig();
     const result = await runContinuousPremiumCollectionWorker(aiConfig, companyId);
@@ -4042,4 +4044,3 @@ export const resetAllArticlesHttp = onRequest(
     }
   }
 );
-
