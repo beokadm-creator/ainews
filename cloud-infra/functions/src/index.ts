@@ -965,8 +965,17 @@ async function loadAccessibleArticlesForManagedReport(
     return rightTime - leftTime;
   });
 
+  // 리포트 시점 중복 제거: 제목 토큰 유사도 0.75 초과 기사 필터링
+  const dedupedArticles: any[] = [];
+  for (const article of matchedArticles) {
+    const isDup = dedupedArticles.some(
+      (kept) => calculateTokenSimilarity(article.title || '', kept.title || '') > 0.75,
+    );
+    if (!isDup) dedupedArticles.push(article);
+  }
+
   return {
-    articles: matchedArticles.slice(0, targetLimit),
+    articles: dedupedArticles.slice(0, targetLimit),
     matchedSourceNames: requestedSourceDefinitions
       .filter((source) => (sourceCoverage.get(source.id) || 0) > 0)
       .map((source) => source.name),

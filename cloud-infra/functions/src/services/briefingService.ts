@@ -3,6 +3,7 @@ import { load as cheerioLoad } from 'cheerio';
 import { callAiProvider, logPromptExecution, resolveAiCallOptions, trackAiCost } from './aiService';
 import { PROVIDER_DEFAULTS, RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
+import { calculateTokenSimilarity } from './duplicateService';
 
 interface OutputGenerationOptions {
   companyId: string;
@@ -130,6 +131,14 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     }
   }
 
+  // 제목 정규화 → article ID 룩업맵 (AI가 ref-table 번호를 재매기는 경우 대응)
+  const titleToId = new Map<string, string>();
+  for (const a of orderedArticles) {
+    if (a.title && a.id) {
+      titleToId.set((a.title as string).replace(/\s+/g, '').toLowerCase(), a.id);
+    }
+  }
+
   function resolveIdByUrl(href: string): string | null {
     if (!href) return null;
     try {
@@ -138,6 +147,19 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     } catch {
       return urlToId.get(href) || null;
     }
+  }
+
+  function resolveIdByHeadline(text: string): string | null {
+    if (!text) return null;
+    const normalized = text.replace(/\s+/g, '').toLowerCase();
+    if (titleToId.has(normalized)) return titleToId.get(normalized)!;
+    // 부분 일치: 정규화된 헤드라인이 저장된 제목의 일부이거나 그 반대인 경우
+    for (const [storedTitle, id] of titleToId) {
+      if (normalized.length >= 8 && (storedTitle.includes(normalized) || normalized.includes(storedTitle))) {
+        return id;
+      }
+    }
+    return null;
   }
 
   // 1. article-block 원문 보기 버튼에 data-article-id 삽입
@@ -150,6 +172,7 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
   });
 
   // 2. ref-table 헤드라인 셀에 data-article-id 삽입
+  // 제목 텍스트 매칭을 1차로, 번호 기반 인덱싱을 2차 폴백으로 사용
   let refRowSeq = 0;
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
@@ -162,7 +185,8 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
-    const articleId = orderedArticles[articleIdx]?.id || null;
+    const headlineText = (headlineCell.text() || '').trim();
+    const articleId = resolveIdByHeadline(headlineText) || orderedArticles[articleIdx]?.id || null;
     if (!articleId) return;
 
     const existingBtn = headlineCell.find('[data-article-ref], button, .ref-headline-btn');
@@ -180,17 +204,25 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
 
 // digest에 실제로 사용된 기사 순서(정렬 후)를 반환 — 각주 번호가 이 순서와 일치해야 함
 function prioritizeArticlesForDigest(articles: any[]): any[] {
-  return [...articles]
-    .sort((a, b) => {
-      const scoreGap = Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0);
-      if (scoreGap !== 0) return scoreGap;
-      const analyzedGap = Number(Boolean(b.summary?.length || b.category || b.tags?.length)) - Number(Boolean(a.summary?.length || a.category || a.tags?.length));
-      if (analyzedGap !== 0) return analyzedGap;
-      const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : new Date(a.publishedAt || 0).getTime();
-      const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : new Date(b.publishedAt || 0).getTime();
-      return timeB - timeA;
-    })
-    .slice(0, 100);
+  const sorted = [...articles].sort((a, b) => {
+    const scoreGap = Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0);
+    if (scoreGap !== 0) return scoreGap;
+    const analyzedGap = Number(Boolean(b.summary?.length || b.category || b.tags?.length)) - Number(Boolean(a.summary?.length || a.category || a.tags?.length));
+    if (analyzedGap !== 0) return analyzedGap;
+    const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : new Date(a.publishedAt || 0).getTime();
+    const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : new Date(b.publishedAt || 0).getTime();
+    return timeB - timeA;
+  });
+
+  // digest 시점 중복 제거: 제목 토큰 유사도 0.75 초과 기사 필터링
+  const deduped: any[] = [];
+  for (const article of sorted) {
+    const isDup = deduped.some(
+      (kept) => calculateTokenSimilarity(article.title || '', kept.title || '') > 0.75,
+    );
+    if (!isDup) deduped.push(article);
+  }
+  return deduped.slice(0, 100);
 }
 
 function buildCustomReportArticleDigest(articles: any[]): { digest: string; orderedArticles: any[] } {

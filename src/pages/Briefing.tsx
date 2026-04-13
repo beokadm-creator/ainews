@@ -41,6 +41,23 @@ function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
   }
 }
 
+// 헤드라인 텍스트로 articles 배열에서 article ID를 찾는 헬퍼 (AI 재번호 매기기 대응)
+function resolveArticleIdByHeadline(text: string, articles: any[]): string | null {
+  if (!text || !articles.length) return null;
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+  const exact = articles.find((a) => {
+    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
+    return t === normalized;
+  });
+  if (exact) return exact.id || null;
+  if (normalized.length < 8) return null;
+  const partial = articles.find((a) => {
+    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
+    return t.includes(normalized) || normalized.includes(t);
+  });
+  return partial?.id || null;
+}
+
 function sanitizeReportHtml(raw: string, articles: any[] = []) {
   const trimmed = (raw || '').trim();
   let cleaned = trimmed;
@@ -170,8 +187,8 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
   });
 
   // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
-  // 번호 컬럼(1-based)으로 articles[N-1].id를 찾아 data-article-id를 심는다.
-  // 배열 순서 의존성 없이 ID로 직접 조회하기 위함.
+  // 제목 텍스트 매칭을 1차로, 번호 기반 인덱싱을 2차 폴백으로 사용.
+  // AI가 ref-table 번호를 재매기는 경우에도 올바른 기사가 열리도록 함.
   let refRowSeq = 0;
   tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td'));
@@ -185,20 +202,24 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
-    // 서버에서 삽입된 data-article-id 우선 유지, 없으면 위치 기반으로 보완
+    // 서버에서 삽입된 data-article-id 우선 유지, 없으면 헤드라인 텍스트 매칭·위치 폴백으로 보완
     const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
+    const serverArticleId = existingBtn?.getAttribute('data-article-id') || null;
+
+    const headlineText = (headlineCell.textContent || '').trim();
+    const resolvedId = serverArticleId
+      || resolveArticleIdByHeadline(headlineText, articles)
+      || articles[articleIdx]?.id
+      || null;
+
     if (existingBtn) {
       existingBtn.setAttribute('data-article-ref', String(articleIdx));
-      if (!existingBtn.getAttribute('data-article-id')) {
-        const articleId = articles[articleIdx]?.id || null;
-        if (articleId) existingBtn.setAttribute('data-article-id', articleId);
-      }
+      if (resolvedId) existingBtn.setAttribute('data-article-id', resolvedId);
       existingBtn.className = 'ref-headline-btn';
     } else if (!headlineCell.querySelector('a, button')) {
-      const articleId = articles[articleIdx]?.id || null;
       const btn = tmpDoc.createElement('button');
       btn.setAttribute('data-article-ref', String(articleIdx));
-      if (articleId) btn.setAttribute('data-article-id', articleId);
+      if (resolvedId) btn.setAttribute('data-article-id', resolvedId);
       btn.className = 'ref-headline-btn';
       btn.innerHTML = headlineCell.innerHTML;
       headlineCell.innerHTML = '';
