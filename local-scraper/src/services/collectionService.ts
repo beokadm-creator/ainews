@@ -1,6 +1,6 @@
 import { MarketInsightService } from './marketInsightService';
 import { ThebellService } from './thebellService';
-import { saveArticleGlobal, isFirestoreReady, getCollectedUrlHashes, hashUrl, reportScraperStatus } from './firestoreService';
+import { saveArticleGlobal, isFirestoreReady, getCollectedUrlHashes, batchCheckCollectedUrlHashes, hashUrl, reportScraperStatus } from './firestoreService';
 import { sendScraperErrorAlert } from './emailAlertService';
 
 // ─── 관련도 키워드 ───────────────────────────────────────────────
@@ -155,8 +155,9 @@ async function collectMarketInsight(
     stats.found = listResult.data.length;
     console.log(`[Collection] MarketInsight: ${stats.found} total articles found (fetched 5 pages max)`);
 
-    const existingHashes = await getCollectedUrlHashes('marketinsight');
-    console.log(`[Collection] MarketInsight: ${existingHashes.size} already collected URLs loaded`);
+    const rawHashes = listResult.data.map((a: any) => hashUrl(a.link));
+    const existingHashes = await batchCheckCollectedUrlHashes(rawHashes);
+    console.log(`[Collection] MarketInsight: ${existingHashes.size} already collected URLs loaded via batch check`);
 
     const scored = listResult.data
       .filter((a: any) => {
@@ -235,9 +236,6 @@ async function collectTheBell(
   try {
     await reportScraperStatus({ source: 'thebell', status: 'running', found: 0, collected: 0, skipped: 0, startedAt });
 
-    const existingHashes = await getCollectedUrlHashes('thebell');
-    console.log(`[Collection] TheBell: ${existingHashes.size} already collected URLs loaded`);
-
     let allArticles: any[] = [];
 
     // 1️⃣ 키워드 뉴스 (MyKeywordNews)
@@ -267,6 +265,10 @@ async function collectTheBell(
       await reportScraperStatus({ source: 'thebell', status: 'success', found: 0, collected: 0, skipped: 0, startedAt, finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime() });
       return;
     }
+
+    const rawHashes = allArticles.map((a: any) => hashUrl(a.link));
+    const existingHashes = await batchCheckCollectedUrlHashes(rawHashes);
+    console.log(`[Collection] TheBell: ${existingHashes.size} already collected URLs loaded via batch check`);
 
     const scored = allArticles
       .map((a: any) => ({

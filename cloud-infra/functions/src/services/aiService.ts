@@ -1,4 +1,4 @@
-﻿import axios from 'axios';
+import axios from 'axios';
 import * as admin from 'firebase-admin';
 import { randomBytes } from 'crypto';
 import { GLM_API_URL, OPENAI_API_URL, ANTHROPIC_API_URL } from '../config/constants';
@@ -555,12 +555,32 @@ function clearWorkerFields() {
   };
 }
 
+const MAX_AI_RETRIES = 5;
+
 function buildRetryUpdate(
   status: 'ai_error' | 'analysis_error',
   stage: 'relevance' | 'analysis',
   attemptCount: number,
   errorMessage: string,
 ) {
+  if (attemptCount >= MAX_AI_RETRIES) {
+    // Permanently reject the article to prevent infinite read loops in the pipeline
+    return {
+      status: 'rejected',
+      relevanceBasis: `permanent_${status}`,
+      relevanceReason: `Exceeded max retries (${MAX_AI_RETRIES}). Last error: ${errorMessage}`,
+      lastAiErrorStage: stage,
+      lastAiError: errorMessage,
+      lastAiErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+      workerStage: admin.firestore.FieldValue.delete(),
+      workerLeaseUntil: admin.firestore.FieldValue.delete(),
+      nextAiAttemptAt: admin.firestore.FieldValue.delete(),
+      ...(stage === 'relevance'
+        ? { relevanceAttemptCount: attemptCount }
+        : { analysisAttemptCount: attemptCount }),
+    };
+  }
+
   return {
     status,
     ...(stage === 'relevance'

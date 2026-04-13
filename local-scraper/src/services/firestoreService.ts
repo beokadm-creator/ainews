@@ -75,9 +75,10 @@ async function recordArticleDedupEntry(article: {
 
 /**
  * 이미 수집된 URL 해시 집합을 반환 (detail fetch 전 사전 필터링용).
- * sourceId 기준으로 최근 N개 urlHash를 로드.
+ * 비용 최적화를 위해 limit을 대폭 낮추고 최근 수집분만 가져옵니다.
  */
-export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Promise<Set<string>> {
+export async function getCollectedUrlHashes(sourceId: string, limit = 200): Promise<Set<string>> {
+  // Deprecated: use batchCheckCollectedUrlHashes for lower cost
   if (!initialized) return new Set();
   const db = admin.firestore();
   try {
@@ -87,13 +88,12 @@ export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Pro
       .limit(limit)
       .get();
     const hashes = new Set<string>();
-    snap.docs.forEach(d => {
+    snap.docs.forEach((d: any) => {
       const h = d.data().urlHash;
       if (h) hashes.add(h);
     });
     return hashes;
   } catch (err: any) {
-    // Firestore 복합 인덱스가 없거나 articleDedup 컬렉션이 비어있는 경우 빈 Set 반환
     console.warn(`[getCollectedUrlHashes] articleDedup 조회 실패 (${sourceId}): ${err?.message}. articles 컬렉션으로 폴백합니다.`);
     try {
       const snap = await db.collection('articles')
@@ -102,7 +102,7 @@ export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Pro
         .limit(limit)
         .get();
       const hashes = new Set<string>();
-      snap.docs.forEach(d => {
+      snap.docs.forEach((d: any) => {
         const h = d.data().urlHash;
         if (h) hashes.add(h);
       });
@@ -111,6 +111,40 @@ export async function getCollectedUrlHashes(sourceId: string, limit = 2000): Pro
       return new Set();
     }
   }
+}
+
+/**
+ * 비용 최적화: 스크랩한 기사의 URL 해시 배열만 전달하여, 
+ * 존재하는 해시만 조회 (in 쿼리 활용, 30개씩 분할).
+ */
+export async function batchCheckCollectedUrlHashes(urlHashes: string[]): Promise<Set<string>> {
+  if (!initialized || urlHashes.length === 0) return new Set();
+  const db = admin.firestore();
+  const result = new Set<string>();
+  const unique = [...new Set(urlHashes)];
+
+  for (let i = 0; i < unique.length; i += 30) {
+    const chunk = unique.slice(i, i + 30);
+    try {
+      const snap = await db.collection('articleDedup')
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .get();
+      snap.docs.forEach((d: any) => result.add(d.id));
+    } catch (err) {
+      console.warn(`[batchCheckCollectedUrlHashes] articleDedup in 쿼리 실패, articles로 폴백: ${err}`);
+      try {
+        const snap = await db.collection('articles')
+          .where('urlHash', 'in', chunk)
+          .get();
+        snap.docs.forEach((d: any) => {
+          if (d.data().urlHash) result.add(d.data().urlHash);
+        });
+      } catch {
+        // 무시
+      }
+    }
+  }
+  return result;
 }
 
 export interface ArticleData {
