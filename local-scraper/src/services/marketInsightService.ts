@@ -43,7 +43,14 @@ export class MarketInsightService {
       this.browser = await puppeteer.launch({
         headless: true,
         protocolTimeout: 180000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--js-flags=--max-old-space-size=512',
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+        ],
       });
       this.isConnectedToChrome = false;
     }
