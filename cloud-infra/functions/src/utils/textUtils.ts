@@ -360,7 +360,7 @@ function getPreferredSelectors(url?: string): string[] {
   }
 
   if (hostname.includes('sedaily.com')) {
-    return ['.article_view', '.article-body', '.news_cnt_detail_wrap'];
+    return ['#article_copy', '.article_view', '.article-body', '.news_cnt_detail_wrap'];
   }
 
   if (hostname.includes('asiae.co.kr')) {
