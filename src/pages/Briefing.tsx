@@ -205,9 +205,12 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
     // 서버에서 삽입된 data-article-id 우선 유지, 없으면 헤드라인 텍스트 매칭·위치 폴백으로 보완
     const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
     const serverArticleId = existingBtn?.getAttribute('data-article-id') || null;
+    // AI가 <tr data-article-id>에 심은 ID를 최우선으로 사용
+    const rowArticleId = (row as HTMLElement).getAttribute('data-article-id') || null;
 
     const headlineText = (headlineCell.textContent || '').trim();
-    const resolvedId = serverArticleId
+    const resolvedId = rowArticleId
+      || serverArticleId
       || resolveArticleIdByHeadline(headlineText, articles)
       || articles[articleIdx]?.id
       || null;

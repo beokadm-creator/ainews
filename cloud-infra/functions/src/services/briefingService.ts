@@ -163,16 +163,24 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
   }
 
   // 1. article-block 원문 보기 버튼에 data-article-id 삽입
+  // AI가 <div class="article-block" data-article-id="...">로 생성했으면 그걸 우선 사용
   let blockSeq = 0;
-  $('details.article-block .article-source-btn, div.article-block .article-source-btn').each(function () {
-    const href = ($(this).attr('href') || '').trim();
-    const articleId = resolveIdByUrl(href) || orderedArticles[blockSeq]?.id || null;
-    if (articleId) $(this).attr('data-article-id', articleId);
+  $('details.article-block, div.article-block').each(function () {
+    const blockId = ($(this).attr('data-article-id') || '').trim() || null;
+    const btn = $(this).find('.article-source-btn');
+    if (btn.length) {
+      const href = (btn.attr('href') || '').trim();
+      const articleId = blockId || resolveIdByUrl(href) || orderedArticles[blockSeq]?.id || null;
+      if (articleId) {
+        btn.attr('data-article-id', articleId);
+        if (!$(this).attr('data-article-id') && articleId) $(this).attr('data-article-id', articleId);
+      }
+    }
     blockSeq++;
   });
 
   // 2. ref-table 헤드라인 셀에 data-article-id 삽입
-  // 제목 텍스트 매칭을 1차로, 번호 기반 인덱싱을 2차 폴백으로 사용
+  // 우선순위: (1) AI가 <tr data-article-id>에 심은 ID → (2) 제목 텍스트 매칭 → (3) 번호 기반 폴백
   let refRowSeq = 0;
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
@@ -185,8 +193,9 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
+    const rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
     const headlineText = (headlineCell.text() || '').trim();
-    const articleId = resolveIdByHeadline(headlineText) || orderedArticles[articleIdx]?.id || null;
+    const articleId = rowArticleId || resolveIdByHeadline(headlineText) || orderedArticles[articleIdx]?.id || null;
     if (!articleId) return;
 
     const existingBtn = headlineCell.find('[data-article-ref], button, .ref-headline-btn');
@@ -238,6 +247,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
     const safeSummary = Array.isArray(article.summary) ? article.summary.slice(0, 3).join(' / ') : '';
     return [
       `[ARTICLE ${index + 1}]`,
+      `ID: ${article.id}`,
       `TITLE: ${safeTitle}`,
       `URL: ${article.url || ''}`,
       `SOURCE: ${safeSource}`,
@@ -588,21 +598,24 @@ Universal Requirements (always apply):
 3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
 4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
 5. Part/section numbers must be strictly sequential starting from 1.
-6. REQUIRED HTML structure for each article analysis block — use EXACTLY these class names:
-   <div class="article-block">
+6. REQUIRED HTML structure for each article analysis block — use EXACTLY these class names and attributes:
+   <div class="article-block" data-article-id="[ID field from ARTICLE N]">
      <div class="article-sector">[sector tag]</div>
      <div class="article-title"><a href="[URL field from ARTICLE N]">[title]</a></div>
      [analysis content paragraphs]
    </div>
+   The data-article-id value is an internal opaque identifier — copy it exactly as given from the ID field of that ARTICLE. Do NOT modify, shorten, or omit it.
 7. REQUIRED HTML structure for the reference table at the end:
    <table class="ref-table">
      <thead><tr><th>번호</th><th>날짜</th><th>헤드라인</th><th>매체</th></tr></thead>
      <tbody>
-       <tr><td>1</td><td>[date]</td><td>[headline]</td><td>[source]</td></tr>
+       <tr data-article-id="[ID field from ARTICLE N]"><td>N</td><td>[date]</td><td>[headline]</td><td>[source]</td></tr>
      </tbody>
    </table>
+   Each <tr> must include data-article-id copied exactly from the ID field of the corresponding ARTICLE. Do NOT modify or omit it.
    Use the exact integer (1, 2, 3 …) from the ARTICLE number in the 번호 column.
    For the href in each article-block title link, use the URL field provided in the ARTICLE digest.
+8. Section numbers within each section (article analysis blocks) MUST restart from 1 for each new section/topic group. Do NOT use a global sequential counter across all sections.
 
 [ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
 Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope. Override any default behavior above if there is conflict.
