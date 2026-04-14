@@ -160,6 +160,23 @@ function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
   }
 }
 
+// 헤드라인 텍스트로 articles 배열에서 article ID를 찾는 헬퍼 (AI 재번호 매기기 대응)
+function resolveArticleIdByHeadline(text: string, articles: any[]): string | null {
+  if (!text || !articles.length) return null;
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+  const exact = articles.find((a: any) => {
+    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
+    return t === normalized;
+  });
+  if (exact) return exact.id || null;
+  if (normalized.length < 8) return null;
+  const partial = articles.find((a: any) => {
+    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
+    return t.includes(normalized) || normalized.includes(t);
+  });
+  return partial?.id || null;
+}
+
 function buildArticleModalPayload(article: any, index: number) {
   return {
     index: index + 1,
@@ -1234,9 +1251,10 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       }
     });
 
-    // Add 원문 보기 button — data-article-id로 ID 직접 조회 (URL 매칭 우선, 위치 폴백)
+    // Add 원문 보기 button — AI가 block에 심은 data-article-id 우선, URL 매칭 폴백
     if (href && !href.startsWith('javascript')) {
-      const articleId = resolveArticleIdByUrl(href, articles);
+      const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
+      const articleId = blockArticleId || resolveArticleIdByUrl(href, articles);
       const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
       bodyParts.push(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
     }
@@ -1269,8 +1287,7 @@ export async function buildSharedReportPage(output: any): Promise<string> {
   });
 
   // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
-  // 번호 컬럼(1-based)으로 articles[N-1].id를 찾아 data-article-id를 심는다.
-  // 배열 순서 의존성 없이 ID로 직접 조회하기 위함.
+  // 우선순위: (1) AI가 <tr data-article-id>에 심은 ID → (2) 제목 텍스트 매칭 → (3) 번호 기반 폴백
   let refRowSeq = 0;
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
@@ -1283,9 +1300,14 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
     refRowSeq++;
 
-    const articleId = articles[articleIdx]?.id || '';
+    const rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
+    const headlineText = (headlineCell.text() || '').trim();
+    const articleId = rowArticleId
+      || resolveArticleIdByHeadline(headlineText, articles)
+      || articles[articleIdx]?.id
+      || '';
 
-    const existingBtn = headlineCell.find('[data-article-ref]');
+    const existingBtn = headlineCell.find('[data-article-ref], .ref-headline-btn, .article-ref-trigger');
     if (existingBtn.length) {
       existingBtn.attr('data-article-ref', String(articleIdx));
       if (articleId) existingBtn.attr('data-article-id', articleId);
