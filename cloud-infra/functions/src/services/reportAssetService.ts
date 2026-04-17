@@ -1516,6 +1516,30 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     });
   }
 
+  // 4-eum. eum_daily: .article-title a 에 data-article-id 직접 주입 (아웃링크 방지)
+  if (isEumDaily) {
+    $('div.article-block').each(function () {
+      const block = $(this);
+      const blockId = (block.attr('data-article-id') || '').trim() || null;
+      const isBlockIdUuid = blockId && blockId.length > 5 && isNaN(Number(blockId));
+
+      const titleLink = block.find('.article-title a').first();
+      if (!titleLink.length) return;
+
+      const href = (titleLink.attr('href') || '').trim();
+      const titleText = titleLink.text().trim();
+
+      const urlResolvedId = resolveArticleIdByUrl(href, articles);
+      const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
+      const articleId = (isBlockIdUuid ? blockId : null) || urlResolvedId || textResolvedId || null;
+
+      if (articleId) {
+        titleLink.attr('data-article-id', articleId);
+        block.attr('data-article-id', articleId); // 블록에도 보정
+      }
+    });
+  }
+
   // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
   // 우선순위: (1) AI가 <tr data-article-id>에 심은 ID → (2) 제목 텍스트 매칭 → (3) 번호 기반 폴백
   let refRowSeq = 0;
