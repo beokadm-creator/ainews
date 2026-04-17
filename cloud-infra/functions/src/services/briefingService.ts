@@ -645,7 +645,6 @@ export async function generateCustomReport(options: CustomReportOptions) {
   }
 
   // digest와 함께 GLM에 전달된 실제 기사 순서를 받아옴
-  // → 각주 [1],[2],...가 이 순서의 기사를 가리킴
   const { digest: articleDigest, orderedArticles } = buildCustomReportArticleDigest(articles);
   const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
   const companyDisplayName = await resolveCompanyDisplayName(options.companyId);
@@ -653,7 +652,23 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const reportTitle = options.reportTitle || `${companyDisplayName} Market Intelligence Report`;
   const volNumber = options.volNumber || 1;
 
-const systemPrompt = `You are a senior private equity analyst.
+  // 서버에서 완벽한 HTML 뼈대(Skeleton)를 사전 생성하여 AI에게 전달 (Fill-in-the-blank 방식)
+  const articleBlocksSkeleton = orderedArticles.map((a: any, index: number) => `
+    <div class="article-block" data-article-id="${a.id}">
+      <div class="article-sector">[AI_FILL: 섹터/카테고리 태그 (예: M&A, IPO 등)]</div>
+      <div class="article-title"><a href="${a.url || '#'}">${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></div>
+      <div class="article-analysis">
+        [AI_FILL: 기사 ${index + 1}에 대한 심층 분석 내용 작성 (단락별로 <p> 태그 사용)]
+      </div>
+    </div>
+  `).join('\n');
+
+  const refTableSkeleton = orderedArticles.map((a: any, index: number) => {
+    const dateStr = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
+    return `      <tr data-article-id="${a.id}"><td>${index + 1}</td><td>${dateStr}</td><td>${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</td><td>${fixEncodingIssues(cleanHtmlContent(a.source || ''))}</td></tr>`;
+  }).join('\n');
+
+  const systemPrompt = `You are a senior private equity analyst.
 Output a complete HTML report in Korean for investment professionals.
 
 Universal Requirements (always apply):
@@ -661,29 +676,16 @@ Universal Requirements (always apply):
 2. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white or light-colored text. Do NOT include dark mode CSS or @media (prefers-color-scheme: dark).
 3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
 4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
-5. Part/section numbers must be strictly sequential starting from 1.
-6. REQUIRED HTML structure for each article analysis block — use EXACTLY these class names and attributes:
-   <div class="article-block" data-article-id="[ID field from ARTICLE N]">
-     <div class="article-sector">[sector tag]</div>
-     <div class="article-title"><a href="[URL field from ARTICLE N]">[title]</a></div>
-     [analysis content paragraphs]
-   </div>
-   The data-article-id value is an internal opaque identifier — copy it exactly as given from the ID field of that ARTICLE. Do NOT modify, shorten, or omit it.
-7. REQUIRED HTML structure for the reference table at the end:
-   <table class="ref-table">
-     <thead><tr><th>번호</th><th>날짜</th><th>헤드라인</th><th>매체</th></tr></thead>
-     <tbody>
-       <tr data-article-id="[ID field from ARTICLE N]"><td>N</td><td>[date]</td><td>[headline]</td><td>[source]</td></tr>
-     </tbody>
-   </table>
-   Each <tr> must include data-article-id copied exactly from the ID field of the corresponding ARTICLE. Do NOT modify or omit it.
-   Use the exact integer (1, 2, 3 …) from the ARTICLE number in the 번호 column.
-   For the href in each article-block title link, use the URL field provided in the ARTICLE digest.
-8. Section numbers within each section (article analysis blocks) MUST restart from 1 for each new section/topic group. Do NOT use a global sequential counter across all sections.
+5. Section numbers must be strictly sequential.
+
+[CRITICAL INSTRUCTION: FILL IN THE BLANKS]
+You MUST use the exact HTML skeleton provided in the user prompt below.
+Your ONLY job is to replace the "[AI_FILL: ...]" placeholders with your actual expert analysis.
+DO NOT alter any existing HTML tags, class names, href attributes, or data-article-id attributes.
+DO NOT remove or modify the reference table at the bottom.
 
 [ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
-Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope. Override any default behavior above if there is conflict.
-
+Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope.
 ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implications, and PE relevance.'}${options.structureGuide ? `\n\n${options.structureGuide}` : ''}`;
 
   const userPrompt = `Report title: ${reportTitle}
@@ -693,7 +695,50 @@ Selected article count: ${articles.length}
 Use at most the strongest 100 articles already curated below.
 
 Article digest:
-${articleDigest}`;
+${articleDigest}
+
+Below is the HTML skeleton you MUST use and fill in.
+Replace all "[AI_FILL: ...]" placeholders with your analysis based on the instructions.
+Do not change the structure or IDs.
+
+<HTML_SKELETON>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${reportTitle}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; background: #ffffff; line-height: 1.6; padding: 20px; max-width: 1000px; margin: 0 auto; }
+    h1 { font-size: 24px; font-weight: bold; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+    .article-block { margin-bottom: 40px; padding-bottom: 20px; border-bottom: 1px solid #f3f4f6; }
+    .article-sector { display: inline-block; padding: 4px 10px; background: #f3f4f6; border-radius: 4px; font-size: 12px; font-weight: bold; color: #4b5563; margin-bottom: 10px; }
+    .article-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; }
+    .article-title a { color: #2563eb; text-decoration: none; }
+    .article-title a:hover { text-decoration: underline; }
+    .article-analysis { font-size: 15px; color: #374151; }
+    .article-analysis p { margin-bottom: 12px; }
+    .ref-table { width: 100%; border-collapse: collapse; margin-top: 50px; font-size: 13px; }
+    .ref-table th, .ref-table td { border: 1px solid #e5e7eb; padding: 12px 10px; text-align: left; }
+    .ref-table th { background: #f9fafb; font-weight: bold; color: #4b5563; }
+  </style>
+</head>
+<body>
+  <h1>${reportTitle}</h1>
+  
+  <div class="report-content">
+${articleBlocksSkeleton}
+  </div>
+
+  <table class="ref-table">
+    <thead><tr><th>번호</th><th>날짜</th><th>헤드라인</th><th>매체</th></tr></thead>
+    <tbody>
+${refTableSkeleton}
+    </tbody>
+  </table>
+</body>
+</html>
+</HTML_SKELETON>
+`;
 
   const response = await callAiProvider(
     `${systemPrompt}\n\n${userPrompt}`,
@@ -703,8 +748,7 @@ ${articleDigest}`;
   );
   await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
 
-  // AI 생성 HTML에 data-article-id를 영구 삽입 후 저장
-  // → 클라이언트(admin/공유 링크)가 배열 순서가 아닌 ID로 직접 기사를 조회할 수 있게 함
+  // AI 생성 HTML 검증 (ID가 이미 템플릿으로 주어졌으므로 embedArticleIdsInHtml의 의존도가 낮아짐)
   const rawHtmlContent = ensureHtmlDocument(response.content, reportTitle);
   const htmlContent = embedArticleIdsInHtml(rawHtmlContent, orderedArticles);
 
