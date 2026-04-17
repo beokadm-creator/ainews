@@ -208,8 +208,8 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
       }
     }
     
-    // Lower threshold to 0.6 to catch heavily shortened AI titles but avoid wrong matches
-    if (bestMatchId && maxOverlap >= 0.6) return bestMatchId;
+    // Increase threshold to 0.85 to strictly avoid wrong matches
+    if (bestMatchId && maxOverlap >= 0.85) return bestMatchId;
     return null;
   }
 
@@ -253,8 +253,8 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     if (rowArticleId && !orderedArticles.some(a => a.id === rowArticleId)) rowArticleId = null;
 
     let isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
-    const articleId = (isRowIdUuid ? rowArticleId : null) || textMatchedId
-      || (articleIdx >= 0 && articleIdx < orderedArticles.length ? orderedArticles[articleIdx].id : null) || null;
+    // Remove the fragile array index fallback that causes wrong article mapping when AI reorders list
+    const articleId = (isRowIdUuid ? rowArticleId : null) || textMatchedId || null;
     
     // 이메일이나 외부 공유 시 가장 무난하게 보이고 박스가 생기지 않는 스타일을 적용
     const linkStyles = 'cursor:pointer; text-decoration:underline; color:#1e3a5f; background:transparent; border:none; padding:0; outline:none; display:inline; font-weight:500;';
