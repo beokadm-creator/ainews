@@ -797,6 +797,202 @@ ${refTableSkeleton}
   };
 }
 
+export async function generateEumDailyReport(options: CustomReportOptions) {
+  const db = admin.firestore();
+
+  const articleDocs = await Promise.all(
+    options.articleIds.map((id) => db.collection('articles').doc(id).get())
+  );
+  const articles = articleDocs
+    .filter((doc) => doc.exists)
+    .map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
+
+  if (articles.length === 0) throw new Error('No selected articles were found.');
+
+  const { digest: articleDigest, orderedArticles } = buildCustomReportArticleDigest(articles);
+  const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
+  const reportTitle = options.reportTitle || '이음M&A뉴스';
+  const volNumber = options.volNumber || 1;
+
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+
+  const articleBlocksSkeleton = orderedArticles.map((a: any, index: number) => `
+<!-- [기사 ${index + 1}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
+<div class="article-block" data-article-id="${a.id}">
+  <span class="article-title"><a href="${a.url || '#'}">(${index + 1}) ${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></span>
+  <span class="article-sector">[AI_FILL: 업종/섹터 (예: 반도체, 바이오, IT 등)]</span>
+  
+  <div class="article-meta-block">
+    <span class="label">분류:</span> <span class="meta-category">[AI_FILL: M&A / PE / 기타 중 택1]</span><br>
+    <span class="label">당사자:</span> [AI_FILL: 인수자 / 피인수자 / 관련 기업]<br>
+    <span class="label">딜 규모:</span> [AI_FILL: 금액 (기사에 언급된 경우만, 없으면 빈칸)]<br>
+    <span class="label">딜 구조:</span> [AI_FILL: 인수 / 합병 / 지분투자 / 매각 등 (기사에 언급된 경우만, 없으면 빈칸)]
+  </div>
+  
+  <ul style="font-size:10pt; color:#333; margin-top:10px; line-height:1.8; padding-left:20px;">
+    <li>[AI_FILL: 핵심 사실 1 (bullet 형태, 한 문장으로 요약)]</li>
+    <li>[AI_FILL: 핵심 사실 2 (bullet 형태, 한 문장으로 요약)]</li>
+    <li>[AI_FILL: 핵심 사실 3 (bullet 형태, 한 문장으로 요약)]</li>
+  </ul>
+</div>
+`).join('\n\n');
+
+  const refTableSkeleton = orderedArticles.map((a: any, index: number) => {
+    const pubDate = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
+    return `    <tr data-article-id="${a.id}">
+      <td>${index + 1}</td><td>[AI_FILL: M&A/PE/기타]</td><td>${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</td><td>${fixEncodingIssues(cleanHtmlContent(a.source || ''))}</td><td>${pubDate}</td><td></td>
+    </tr>`;
+  }).join('\n');
+
+  const systemPrompt = `당신은 PE(Private Equity) 하우스의 시니어 애널리스트입니다.
+아래 기사들을 분석하여 '이음M&A뉴스' 리포트를 작성해 주세요.
+
+[역할 및 원칙]
+1. 원문 전달 원칙: 기사 원문의 내용을 충실히 전달합니다.
+2. PE 관점: 각 건에 대해 PE 투자자가 주목해야 할 포인트를 기사 내용 범위 안에서 정리합니다.
+3. 팩트 기반: 기사에 명시되지 않은 수치, 배경, 맥락을 추측하거나 보충하지 않습니다.
+4. 중복·유사 기사 통합 규칙: 동일 딜/이벤트/유사 주제 기사는 통합하여 1건으로 작성하고 다른 기사의 정보는 요약에 병합합니다.
+
+[리포트 출력 형식]
+아래 제공된 <HTML_SKELETON>을 한 글자도 빠짐없이 복사한 후, [AI_FILL: ...] 부분만 당신의 분석으로 채우세요.
+절대로 임의의 HTML 태그를 추가/삭제하거나 data-article-id 속성을 건드리지 마세요.
+글씨크기는 제목은 12pt, 내용은 10pt입니다. (CSS에 이미 적용됨)
+
+<HTML_SKELETON>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${reportTitle}</title>
+  <style>
+    body { font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #333; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; }
+    .report-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2a4a; padding-bottom: 12px; margin-bottom: 30px; }
+    .report-title { font-size: 28px; font-weight: 800; color: #1a2a4a; }
+    .report-subtitle { font-size: 13px; color: #666; margin-top: 2px; }
+    .report-date-block { text-align: right; font-size: 13px; color: #2b3a5c; background: #fff; padding: 10px 16px; border-radius: 2px; }
+    .report-date-block .date { font-size: 15px; font-weight: 700; color: #5bb5e0; }
+    .part-title { border-left: 4px solid #c75a3b; padding: 8px 14px; font-size: 12pt; font-weight: 700; color: #1a2a4a; background: #f5f7fa; margin: 36px 0 20px 0; }
+    .article-block { margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #e8e8e8; }
+    .article-title { font-size: 12pt; font-weight: 700; color: #111; }
+    .article-title a { color: #111; text-decoration: none; }
+    .article-title a:hover { text-decoration: underline; }
+    .article-sector { float: right; background: #e8f0f8; color: #1a6fa8; font-size: 9pt; font-weight: 600; padding: 2px 10px; border-radius: 3px; }
+    .article-meta-block { font-size: 9pt; color: #555; background: #F8FAFC; padding: 8px 12px; margin: 8px 0; line-height: 1.8; }
+    .article-meta-block .label { font-weight: 700; color: #333; }
+    .ref-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 12px; }
+    .ref-table th { background: #1a2a4a; color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; }
+    .ref-table td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; color: #333; }
+    .ref-table tr:nth-child(even) td { background: #f9f9f9; }
+    .ref-summary { font-size: 9pt; color: #888; margin-top: 8px; text-align: right; }
+  </style>
+</head>
+<body>
+  <!-- ■ 헤더 -->
+  <div class="report-header">
+    <div>
+      <div class="report-title">이음M&A뉴스</div>
+      <div class="report-subtitle">EUM Daily Report</div>
+    </div>
+    <div class="report-date-block">
+      <div class="date">${dateStr}</div>
+      <div>이음프라이빗에쿼티</div>
+      <div>Vol. ${volNumber}</div>
+    </div>
+  </div>
+
+  <div id="ai-raw-blocks">
+    ${articleBlocksSkeleton}
+  </div>
+
+  <!-- ■ 참고 기사 목록 -->
+  <div class="part-title">참고 기사 목록</div>
+  <table class="ref-table">
+    <tr>
+      <th>#</th><th>카테고리</th><th>헤드라인</th><th>출처</th><th>날짜</th><th>비고</th>
+    </tr>
+${refTableSkeleton}
+  </table>
+  <div class="ref-summary">총 입력 기사: ${orderedArticles.length}건</div>
+</body>
+</html>
+</HTML_SKELETON>
+`;
+
+  const userPrompt = `기사 목록:
+${articleDigest}
+
+위 <HTML_SKELETON>의 [AI_FILL: ...] 영역을 채워서 완성된 HTML을 반환하세요.`;
+
+  const response = await callAiProvider(
+    `${systemPrompt}\n\n${userPrompt}`,
+    reportAiConfig,
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 32000, temperature: 0.4 }),
+    options.companyId
+  );
+  await trackAiCost('eum-daily-output', response.usage, response.model, response.provider, options.companyId);
+
+  // --- Cheerio Post-processing (Part 1, 2, 3 분류 재배치) ---
+  const rawHtml = ensureHtmlDocument(response.content, reportTitle);
+  const $ = cheerioLoad(rawHtml);
+
+  // 파트 컨테이너 생성
+  const part1 = $('<div class="report-part" id="part-1-ma"><div class="part-title">PART 1. M&A</div><div class="part-body"></div></div>');
+  const part2 = $('<div class="report-part" id="part-2-pe"><div class="part-title">PART 2. PE 동향</div><div class="part-body"></div></div>');
+  const part3 = $('<div class="report-part" id="part-3-others"><div class="part-title">PART 3. 기타 시장 동향</div><div class="part-body"></div></div>');
+
+  // AI가 작성한 기사 블록들을 카테고리에 맞게 이동
+  $('#ai-raw-blocks .article-block').each(function () {
+    const categoryText = $(this).find('.meta-category').text().toUpperCase();
+    
+    // 카테고리 행 숨기기 (리포트에는 표시하지 않음)
+    $(this).find('.meta-category').parent().hide();
+
+    if (categoryText.includes('M&A') || categoryText.includes('인수합병')) {
+      part1.find('.part-body').append(this);
+    } else if (categoryText.includes('PE') || categoryText.includes('VC') || categoryText.includes('사모펀드')) {
+      part2.find('.part-body').append(this);
+    } else {
+      part3.find('.part-body').append(this);
+    }
+  });
+
+  // 기존 ai-raw-blocks 자리에 파트들 삽입
+  $('#ai-raw-blocks').replaceWith(part1.prop('outerHTML') + part2.prop('outerHTML') + part3.prop('outerHTML'));
+
+  const finalHtmlContent = embedArticleIdsInHtml($.html(), orderedArticles);
+
+  const outputRef = options.outputId ? db.collection('outputs').doc(options.outputId) : db.collection('outputs').doc();
+  await outputRef.set({
+    id: outputRef.id,
+    companyId: options.companyId,
+    type: 'eum_daily_report',
+    title: reportTitle,
+    volNumber,
+    keywords: options.keywords,
+    analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
+    articleIds: options.articleIds,
+    orderedArticleIds: orderedArticles.map((a: any) => a.id),
+    articleCount: articles.length,
+    digestArticleCount: orderedArticles.length,
+    htmlContent: finalHtmlContent,
+    rawOutput: finalHtmlContent,
+    structuredOutput: null,
+    requestedBy: options.requestedBy,
+    status: 'completed',
+    completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...(options.outputMetadata || {}),
+    ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+  }, { merge: true });
+
+  return {
+    success: true,
+    outputId: outputRef.id,
+    articleCount: articles.length,
+  };
+}
+
 export async function saveBriefingVersion(
   outputId: string,
   updatedData: Record<string, any>,

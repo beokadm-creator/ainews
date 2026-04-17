@@ -1219,28 +1219,55 @@ async function executeManagedReport({
     .get();
   const volNumber = existingOutputsCount.data().count + 1;
 
-  const result = await generateCustomReport({
-    companyId,
-    articleIds: reportArticles.map((article) => article.id),
-    keywords: keywordList,
-    analysisPrompt: prompt,
-    savedPrompt: basePrompt,
-    reportTitle,
-    volNumber,
-    requestedBy: requestedBy || output.requestedBy || '__system__',
-    aiConfig: runtime.ai,
-    outputId,
-    outputMetadata: {
-      type: 'managed_report',
-      serviceMode: output.serviceMode || 'internal',
-      distributionGroupId: output.distributionGroupId || null,
-      distributionGroupName: output.distributionGroupName || null,
-      scheduledAt: output.scheduledAt || null,
-      selectedSourceNames: sourceNames,
-      matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
-      sourceCoverage,
-    },
-  });
+  let result;
+  if (output.serviceMode === 'eum_daily') {
+    const { generateEumDailyReport } = require('./services/briefingService');
+    result = await generateEumDailyReport({
+      companyId,
+      articleIds: reportArticles.map((article) => article.id),
+      keywords: keywordList,
+      analysisPrompt: prompt,
+      savedPrompt: basePrompt,
+      reportTitle,
+      volNumber,
+      requestedBy: requestedBy || output.requestedBy || '__system__',
+      aiConfig: runtime.ai,
+      outputId,
+      outputMetadata: {
+        type: 'managed_report',
+        serviceMode: 'eum_daily',
+        distributionGroupId: output.distributionGroupId || null,
+        distributionGroupName: output.distributionGroupName || null,
+        scheduledAt: output.scheduledAt || null,
+        selectedSourceNames: sourceNames,
+        matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+        sourceCoverage,
+      },
+    });
+  } else {
+    result = await generateCustomReport({
+      companyId,
+      articleIds: reportArticles.map((article) => article.id),
+      keywords: keywordList,
+      analysisPrompt: prompt,
+      savedPrompt: basePrompt,
+      reportTitle,
+      volNumber,
+      requestedBy: requestedBy || output.requestedBy || '__system__',
+      aiConfig: runtime.ai,
+      outputId,
+      outputMetadata: {
+        type: 'managed_report',
+        serviceMode: output.serviceMode || 'internal',
+        distributionGroupId: output.distributionGroupId || null,
+        distributionGroupName: output.distributionGroupName || null,
+        scheduledAt: output.scheduledAt || null,
+        selectedSourceNames: sourceNames,
+        matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+        sourceCoverage,
+      },
+    });
+  }
 
   await outputRef.set({
     status: 'completed',
