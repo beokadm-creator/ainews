@@ -1396,10 +1396,14 @@ export async function buildEmailHtml(
   const emailCss = `
     .hero,.hero-header,.hero-section,.report-hero,[class*="hero"]{background:transparent!important;background-image:none!important;background-color:transparent!important;box-shadow:none!important;border:none!important}
     .hero *,.hero-header *,.hero-section *,[class*="hero"] *{color:#111827!important}
-    .article-source-btn{display:inline-block;margin-top:12px;padding:5px 14px;background:#1e3a5f;color:#fff!important;font-size:11px;font-weight:600;border-radius:6px;text-decoration:none!important}
+    .article-source-btn{display:inline-block;margin-top:12px;padding:6px 16px;background:#1e3a5f;color:#fff!important;font-size:11px;font-weight:600;border-radius:6px;text-decoration:none!important;transition: background 0.2s;}
+    .article-source-btn:hover{background:#24456f;}
+    .article-meta-block{font-size:9pt;color:#555;background:#F8FAFC;padding:10px 14px;margin:10px 0;line-height:1.8;border-radius:6px;border:1px solid #e2e8f0;}
+    .article-sector{float:right;background:#e8f0f8;color:#1a6fa8;font-size:9pt;font-weight:600;padding:4px 10px;border-radius:4px;}
+    .part-title{border-left:4px solid #c75a3b;padding:8px 14px;font-size:12pt;font-weight:700;color:#1a2a4a;background:#f5f7fa;margin:36px 0 20px 0;border-radius:0 4px 4px 0;}
     details.article-block,div.article-block{margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #e8e8e8}
     details.article-block>summary.article-summary-row{display:block;padding:6px 0;list-style:none}
-    @media(max-width:640px){body{padding:12px!important}.report-title{font-size:20px!important}.article-title{font-size:10pt!important}table.ref-table{font-size:8pt!important;display:block;overflow-x:auto}}
+    @media(max-width:640px){body{padding:12px!important}.report-title{font-size:20px!important}.article-title{font-size:10pt!important}table.ref-table{font-size:8pt!important;display:block;overflow-x:auto}.part-title{font-size:11pt!important}}
   `;
 
   // Build top banner if shareUrl provided
@@ -1690,33 +1694,49 @@ export async function buildSharedReportPage(output: any): Promise<string> {
           // 2. <a> 링크: 원문 보기 버튼 및 기사 제목 링크 (모달 링크는 제외됨)
           var anchor=t.closest('a');
           if(anchor){
-            // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
-            var aid2=anchor.getAttribute('data-article-id');
-            if(aid2){e.preventDefault();openModal(aid2);return;}
-            // 2-b. 폴백: URL pathname 매칭
-            var href=anchor.href||'';
-            var matchedId=null;
-            payload.forEach(function(a){
-              if(a.url&&href&&!matchedId){
-                try{if(new URL(a.url).pathname===new URL(href).pathname||a.url===href)matchedId=a.id;}
-                catch(ex){if(a.url===href)matchedId=a.id;}
-              }
-            });
-            if(matchedId){e.preventDefault();openModal(matchedId);return;}
-            
-            // 2-c. 폴백: 텍스트 매칭
-            var text = (anchor.textContent || '').trim().replace(/[\\s\\p{P}]/gu, '').toLowerCase();
-            if(text.length > 1){
-              var maxOverlap = 0;
+            var isModalTrigger = anchor.classList.contains('article-source-btn') || anchor.classList.contains('ref-headline-btn');
+            var eumArticleBlock = anchor.closest('.article-block');
+            var hasParentId = eumArticleBlock && eumArticleBlock.getAttribute('data-article-id');
+
+            if(isModalTrigger || hasParentId){
+              e.preventDefault();
+              
+              // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
+              var aid2=anchor.getAttribute('data-article-id') || (hasParentId ? eumArticleBlock.getAttribute('data-article-id') : null);
+              if(aid2){openModal(aid2);return;}
+              
+              // 2-b. 폴백: URL pathname 매칭
+              var href=anchor.href||'';
+              var matchedId=null;
               payload.forEach(function(a){
-                var t = (a.title || '').replace(/[\\s\\p{P}]/gu, '').toLowerCase();
-                if(t.includes(text) || text.includes(t)) {
-                  var ratio = Math.min(t.length, text.length) / Math.max(t.length, text.length);
-                  if(ratio > maxOverlap){ maxOverlap = ratio; matchedId = a.id; }
+                if(a.url&&href&&!matchedId){
+                  try{if(new URL(a.url).pathname===new URL(href).pathname||a.url===href)matchedId=a.id;}
+                  catch(ex){if(a.url===href)matchedId=a.id;}
                 }
               });
-              if(matchedId && maxOverlap >= 0.85){e.preventDefault();openModal(matchedId);return;}
+              if(matchedId){openModal(matchedId);return;}
+              
+              // 2-c. 폴백: 텍스트 매칭
+              var text = (anchor.textContent || '').trim().replace(/[\\s\\p{P}]/gu, '').toLowerCase();
+              if(text.length > 1){
+                var maxOverlap = 0;
+                payload.forEach(function(a){
+                  var t = (a.title || '').replace(/[\\s\\p{P}]/gu, '').toLowerCase();
+                  if(t.includes(text) || text.includes(t)) {
+                    var ratio = Math.min(t.length, text.length) / Math.max(t.length, text.length);
+                    if(ratio > maxOverlap){ maxOverlap = ratio; matchedId = a.id; }
+                  }
+                });
+                if(matchedId && maxOverlap >= 0.85){openModal(matchedId);return;}
+              }
             }
+            
+            // 일반 링크 새창 열기
+            var href=anchor.href||'';
+            if(href && !href.startsWith('javascript')) {
+              window.open(href, '_blank');
+            }
+            return;
           }
         });
         if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}
