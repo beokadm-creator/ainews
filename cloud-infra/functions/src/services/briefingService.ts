@@ -947,7 +947,7 @@ ${articleDigest}
     const categoryText = $(this).find('.meta-category').text().toUpperCase();
     
     // 카테고리 행 숨기기 (리포트에는 표시하지 않음)
-    $(this).find('.meta-category').parent().hide();
+    $(this).find('.meta-category').parent().attr('style', 'display:none');
 
     if (categoryText.includes('M&A') || categoryText.includes('인수합병')) {
       part1.find('.part-body').append(this);
@@ -959,7 +959,7 @@ ${articleDigest}
   });
 
   // 기존 ai-raw-blocks 자리에 파트들 삽입
-  $('#ai-raw-blocks').replaceWith(part1.prop('outerHTML') + part2.prop('outerHTML') + part3.prop('outerHTML'));
+  $('#ai-raw-blocks').replaceWith((part1.prop('outerHTML') || '') + (part2.prop('outerHTML') || '') + (part3.prop('outerHTML') || ''));
 
   const finalHtmlContent = embedArticleIdsInHtml($.html(), orderedArticles);
 
