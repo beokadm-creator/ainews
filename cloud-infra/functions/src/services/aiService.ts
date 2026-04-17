@@ -76,14 +76,7 @@ interface NormalizedAnalysisResult {
   tags: string[];
 }
 
-const PRIORITY_SOURCE_NAME_PATTERNS = [
-  '더벨',
-  'thebell',
-  'the bell',
-  '마켓인사이트',
-  'marketinsight',
-  'market insight',
-];
+const PRIORITY_SOURCE_NAME_PATTERNS: string[] = [];
 
 const sourceMetaCache = new Map<string, Record<string, any> | null>();
 
@@ -1484,18 +1477,10 @@ export async function processRelevanceFiltering(options?: {
 
         if (!aiRelevanceResult && !result.isRelevant && result.confidence === 0) {
           relevanceBasis = 'keyword_reject';
-        } else if (priorityDecision?.isPriority && aiRelevanceResult) {
-          relevanceBasis = 'priority_source_override';
-        } else if (priorityDecision?.isPriority && !aiRelevanceResult) {
-          relevanceBasis = 'priority_source_fallback';
         }
 
-        const finalConfidence = relevanceBasis === 'priority_source_fallback'
-          ? null
-          : clampConfidence(aiRelevanceResult?.confidence ?? result.confidence);
-        const finalScore = relevanceBasis === 'priority_source_fallback'
-          ? null
-          : toRelevancePoints(aiRelevanceResult?.confidence ?? result.confidence);
+        const finalConfidence = clampConfidence(aiRelevanceResult?.confidence ?? result.confidence);
+        const finalScore = toRelevancePoints(aiRelevanceResult?.confidence ?? result.confidence);
 
         const collectedData = doc.data() as any;
 
@@ -1553,8 +1538,6 @@ export async function processRelevanceFiltering(options?: {
                 const aiConf = clampConfidence(aiRelevanceResult?.confidence ?? null);
                 let basis: RelevanceBasis = 'ai';
                 if (!aiRelevanceResult && !r.isRelevant && r.confidence === 0) basis = 'keyword_reject';
-                else if (priorityDecision?.isPriority && aiRelevanceResult) basis = 'priority_source_override';
-                else if (priorityDecision?.isPriority && !aiRelevanceResult) basis = 'priority_source_fallback';
                 await d.ref.update({
                   status: r.isRelevant ? 'filtered' : 'rejected',
                   filteredAt: admin.firestore.FieldValue.serverTimestamp(),

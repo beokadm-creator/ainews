@@ -8,8 +8,8 @@ let cachedTrackedCompanies: string[] | null = null;
 let cacheExpiresAt = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5분
 
-// 수집 키워드 필터를 통과하는 우선 매체 (더벨, 마켓인사이트)
-const DEFAULT_BYPASS_PATTERNS = ['더벨', 'thebell', '마켓인사이트', 'marketinsight'];
+// 수집 키워드 필터를 통과하는 우선 매체 (현재는 없음)
+const DEFAULT_BYPASS_PATTERNS: string[] = [];
 
 // ─── 초기 시드 키워드 (딜 키워드 + PE하우스 정식명칭 + 약칭) ─────────────────
 export const SEED_TITLE_KEYWORDS: string[] = [
@@ -267,11 +267,7 @@ export async function checkKeywordFilter(
     return { passes: false, isBypassSource: false, matchedKeyword: null };
   }
 
-  const bypassPatterns = (cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS)
-    .filter((pattern) => {
-      const normalizedPattern = `${pattern || ''}`.trim().toLowerCase();
-      return normalizedPattern !== 'thebell' && normalizedPattern !== '더벨';
-    });
+  const bypassPatterns = cachedBypassPatterns || DEFAULT_BYPASS_PATTERNS;
   const sourceNameLower = `${sourceName || ''}`.toLowerCase();
   const sourceIdLower = `${sourceId || ''}`.toLowerCase();
 

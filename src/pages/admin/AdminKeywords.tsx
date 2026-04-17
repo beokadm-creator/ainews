@@ -161,7 +161,7 @@ export default function AdminKeywords() {
             글로벌 키워드 관리
           </h1>
           <p className="text-sm text-white/40 mt-1">
-            기사 제목에 하나라도 포함되면(OR) 수집합니다. 더벨·마켓인사이트는 키워드 무관 전체 수집.
+            기사 제목에 하나라도 포함되면(OR) 수집합니다. 우선 매체로 등록된 소스는 키워드 무관 전체 수집.
           </p>
         </div>
         <button
@@ -316,7 +316,7 @@ export default function AdminKeywords() {
         {showBypass && (
           <div className="px-5 pb-5 border-t border-white/5">
             <p className="text-xs text-white/40 mt-3 mb-3">
-              아래 패턴이 소스명 또는 소스ID에 포함되면 키워드 필터를 건너뜁니다 (더벨·마켓인사이트 등).
+              아래 패턴이 소스명 또는 소스ID에 포함되면 키워드 필터를 건너뜁니다.
             </p>
             <div className="flex gap-2 mb-3">
               <input

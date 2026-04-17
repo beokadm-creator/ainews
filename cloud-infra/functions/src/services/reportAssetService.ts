@@ -1715,7 +1715,7 @@ export async function buildSharedReportPage(output: any): Promise<string> {
                   if(ratio > maxOverlap){ maxOverlap = ratio; matchedId = a.id; }
                 }
               });
-              if(matchedId && maxOverlap >= 0.2){e.preventDefault();openModal(matchedId);return;}
+              if(matchedId && maxOverlap >= 0.6){e.preventDefault();openModal(matchedId);return;}
             }
           }
         });

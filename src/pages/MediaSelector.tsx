@@ -196,7 +196,7 @@ export default function MediaSelector() {
       </div>
 
       <div className="rounded-lg border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-4 py-3 text-xs text-[#1e3a5f] dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
-        회사 구독 목록은 슈퍼어드민 매체 관리와 동일한 globalSources를 사용합니다. 더벨, 마켓인사이트 같은 외부 스크래핑 매체도 여기서 같은 기준으로 연결됩니다.
+        회사 구독 목록은 슈퍼어드민 매체 관리와 동일한 globalSources를 사용합니다. 외부 스크래핑 매체도 여기서 같은 기준으로 연결됩니다.
       </div>
 
       {/* Filters */}

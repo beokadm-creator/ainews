@@ -208,8 +208,8 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
       }
     }
     
-    // Lower threshold to 0.2 to catch heavily shortened AI titles
-    if (bestMatchId && maxOverlap >= 0.2) return bestMatchId;
+    // Lower threshold to 0.6 to catch heavily shortened AI titles but avoid wrong matches
+    if (bestMatchId && maxOverlap >= 0.6) return bestMatchId;
     return null;
   }
 
