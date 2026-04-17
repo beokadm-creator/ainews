@@ -15,6 +15,8 @@ import {
   Save,
   Send,
   Sparkles,
+  UserCheck,
+  UserX,
 } from 'lucide-react';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -109,6 +111,9 @@ export default function DeliveryCenter() {
   const [previewRequestId, setPreviewRequestId] = useState<string | null>(null);
   const [previewOutput, setPreviewOutput] = useState<any | null>(null);
   const [previewArticles, setPreviewArticles] = useState<any[]>([]);
+  // email → unsubscribedAt timestamp string
+  const [unsubscribes, setUnsubscribes] = useState<Record<string, string>>({});
+  const [subManageLoading, setSubManageLoading] = useState(false);
   const parsedKeywords = useMemo(() => parseLines(keywordsText), [keywordsText]);
   const selectedSourceNames = useMemo(
     () => sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name),
@@ -124,6 +129,23 @@ export default function DeliveryCenter() {
     () => sanitizeReportHtml(previewOutput?.generatedOutput?.htmlContent || previewOutput?.htmlContent || previewOutput?.rawOutput || ''),
     [previewOutput],
   );
+
+  const loadUnsubscribes = async () => {
+    if (!companyId) return;
+    try {
+      const snap = await getDocs(collection(db, 'emailUnsubscribes', companyId, 'entries'));
+      const map: Record<string, string> = {};
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        const email = (data.email || '').toLowerCase();
+        if (email) map[email] = data.unsubscribedAt?.toDate ? data.unsubscribedAt.toDate().toLocaleString('ko-KR') : '구독 취소됨';
+      });
+      setUnsubscribes(map);
+    } catch {
+      // Collection may not exist yet
+      setUnsubscribes({});
+    }
+  };
 
   const loadAll = async () => {
     if (!companyId) return;
@@ -184,6 +206,7 @@ export default function DeliveryCenter() {
     } finally {
       setLoading(false);
     }
+    await loadUnsubscribes();
   };
 
   useEffect(() => {
@@ -379,6 +402,19 @@ export default function DeliveryCenter() {
     await loadAll();
   };
 
+  const toggleSubscription = async (email: string, action: 'subscribe' | 'unsubscribe') => {
+    setSubManageLoading(true);
+    try {
+      const fn = httpsCallable(functions, 'manageEmailSubscription');
+      await fn({ email, companyId, action });
+      await loadUnsubscribes();
+    } catch (err: any) {
+      setMessage(`구독 변경 실패: ${err?.message || '알 수 없는 오류'}`);
+    } finally {
+      setSubManageLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-[360px] items-center justify-center">
@@ -548,30 +584,39 @@ export default function DeliveryCenter() {
                 </div>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-                <div>
-                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">예약 발송 시각 (KST)</label>
-                  <input type="datetime-local" value={reservedAt} onChange={(e) => setReservedAt(e.target.value)} className={FIELD} />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={saveGroup} disabled={saving} className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50">
-                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}저장
-                  </button>
-                  <button onClick={generatePreview} disabled={previewing || sending} className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f] bg-white px-4 py-2.5 text-sm font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/5 disabled:opacity-50 dark:border-blue-400 dark:bg-transparent dark:text-blue-300">
-                    {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}미리보기
-                  </button>
-                  <button onClick={() => requestReport(null)} disabled={sending} className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c49e2c] disabled:opacity-50">
-                    {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}즉시발송
-                  </button>
-                  <button onClick={() => requestReport(reservedAt || null)} disabled={sending || !reservedAt} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700/60 dark:bg-transparent dark:text-gray-200">
-                    <CalendarClock className="h-4 w-4" />예약 발송
-                  </button>
-                </div>
+              {/* ── STEP 1: 그룹 저장 ── */}
+              <div className="rounded-xl border-2 border-[#1e3a5f]/20 bg-[#1e3a5f]/3 p-4 dark:border-blue-500/20 dark:bg-blue-500/5">
+                <p className="mb-3 text-xs font-semibold text-[#1e3a5f] dark:text-blue-300">① 그룹 저장 — 이름·수신 이메일·조건을 입력한 뒤 저장하세요</p>
+                <button onClick={saveGroup} disabled={saving} className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {selectedId === 'new' ? '새 그룹 저장' : '그룹 정보 저장'}
+                </button>
               </div>
 
-              <p className="text-[11px] text-gray-400 dark:text-gray-500">
-                즉시발송은 현재 키워드와 매체 조건으로 외부 리포트를 생성한 뒤 바로 메일까지 발송합니다. 먼저 미리보기 생성으로 내용을 확인한 뒤 발송하는 흐름을 권장합니다. · 현재 조건: 매체 {selectedSourceNames.length > 0 ? selectedSourceNames.join(', ') : '전체 구독 매체'} / 키워드 {parsedKeywords.length > 0 ? parsedKeywords.join(', ') : '없음'}
-              </p>
+              {/* ── STEP 2: 리포트 생성 & 발송 ── */}
+              {selectedId !== 'new' && (
+                <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-4 dark:border-gray-700/40 dark:bg-white/5">
+                  <p className="mb-3 text-xs font-semibold text-gray-500 dark:text-gray-400">② 리포트 생성 & 발송 — 저장된 그룹 조건으로 리포트를 생성하고 발송합니다</p>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">예약 발송 시각 (KST)</label>
+                      <input type="datetime-local" value={reservedAt} onChange={(e) => setReservedAt(e.target.value)} className={FIELD} />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={generatePreview} disabled={previewing || sending} className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f] bg-white px-4 py-2.5 text-sm font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/5 disabled:opacity-50 dark:border-blue-400 dark:bg-transparent dark:text-blue-300">
+                        {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}미리보기
+                      </button>
+                      <button onClick={() => requestReport(null)} disabled={sending} className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c49e2c] disabled:opacity-50">
+                        {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}즉시 발송
+                      </button>
+                      <button onClick={() => requestReport(reservedAt || null)} disabled={sending || !reservedAt} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700/60 dark:bg-transparent dark:text-gray-200">
+                        <CalendarClock className="h-4 w-4" />예약 발송
+                      </button>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[11px] text-gray-400">현재 조건: 매체 {selectedSourceNames.length > 0 ? selectedSourceNames.join(', ') : '전체 구독 매체'} / 키워드 {parsedKeywords.length > 0 ? parsedKeywords.join(', ') : '없음'}</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -591,6 +636,58 @@ export default function DeliveryCenter() {
               </div>
             ))}
           </div>
+
+          {/* Subscription management — 회사 전체 구독 현황 */}
+          {(() => {
+            const allEmails = Array.from(new Set(
+              groups.flatMap((g) => g.emails || []).map((e) => e.toLowerCase())
+            ));
+            if (allEmails.length === 0) return (
+              <div className="rounded-xl border border-dashed border-gray-200 p-5 text-center dark:border-gray-700/60">
+                <Mail className="mx-auto mb-2 h-5 w-5 text-gray-300 dark:text-gray-600" />
+                <p className="text-xs text-gray-400">그룹을 저장하면 수신자 구독 관리 목록이 여기에 표시됩니다.</p>
+              </div>
+            );
+            return (
+              <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+                <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+                  <div className="flex items-center gap-2">
+                    <Mail className="h-3.5 w-3.5 text-[#1e3a5f] dark:text-blue-400" />
+                    <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">구독 관리</span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    수신자가 이메일 하단의 <strong>구독 취소</strong> 링크를 클릭하면 자동으로 목록에서 제외됩니다. 관리자도 아래에서 직접 토글할 수 있습니다.
+                  </p>
+                </div>
+                <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
+                  {allEmails.map((email) => {
+                    const unsubInfo = unsubscribes[email];
+                    const isUnsubscribed = Boolean(unsubInfo);
+                    return (
+                      <li key={email} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                        <div className="min-w-0">
+                          <p className={`truncate text-sm font-medium ${isUnsubscribed ? 'text-gray-400 line-through dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>{email}</p>
+                          {isUnsubscribed && <p className="mt-0.5 text-[11px] text-red-400">{unsubInfo}</p>}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={subManageLoading}
+                          onClick={() => toggleSubscription(email, isUnsubscribed ? 'subscribe' : 'unsubscribe')}
+                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition disabled:opacity-50 ${
+                            isUnsubscribed
+                              ? 'border-green-200 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-500/30 dark:bg-green-500/10 dark:text-green-400'
+                              : 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400'
+                          }`}
+                        >
+                          {isUnsubscribed ? <><UserCheck className="h-3 w-3" />재구독</> : <><UserX className="h-3 w-3" />구독 취소</>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })()}
 
           {/* Recent runs */}
           <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">

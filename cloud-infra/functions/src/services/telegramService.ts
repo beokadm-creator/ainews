@@ -135,6 +135,55 @@ export async function sendErrorNotificationToAdmin(errorType: string, errorMessa
   }
 }
 
+async function loadTelegramArticles(output: any): Promise<any[]> {
+  const db = admin.firestore();
+  // Use orderedArticleIds (correct AI prompt order) if available, fallback to articleIds, then publishedInOutputId query
+  const effectiveIds: string[] | undefined =
+    (Array.isArray(output.orderedArticleIds) && output.orderedArticleIds.length > 0)
+      ? output.orderedArticleIds
+      : (Array.isArray(output.articleIds) && output.articleIds.length > 0)
+        ? output.articleIds
+        : undefined;
+
+  if (effectiveIds) {
+    const docs = await Promise.all(effectiveIds.map((id: string) => db.collection('articles').doc(id).get()));
+    return docs.filter((d) => d.exists).map((d) => ({ id: d.id, ...(d.data() as any) }));
+  }
+
+  const snap = await db.collection('articles').where('publishedInOutputId', '==', output.id || '').get();
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+}
+
+export function formatCustomReportForTelegram(output: any, articles: any[]): string {
+  const dateStr = resolveOutputDate(output);
+  const shareUrl = output.shareUrl as string | undefined;
+
+  let message = `📣 <b>[EUM PE] 커스텀 리포트</b> (${dateStr})\n`;
+  message += `📋 ${escapeHtml(output.title || 'Custom Report')} · 기사 ${articles.length}건\n\n`;
+
+  if (shareUrl) {
+    message += `🔗 <a href="${shareUrl}">웹에서 보기</a>\n\n`;
+  }
+
+  if (articles.length > 0) {
+    message += `📰 <b>포함 기사</b>\n`;
+    articles.slice(0, 10).forEach((a: any, idx: number) => {
+      const title = escapeHtml(a.title || '제목 없음');
+      const source = a.source ? ` (${escapeHtml(a.source)})` : '';
+      if (a.url) {
+        message += `${idx + 1}. <a href="${a.url}">${title}</a>${source}\n`;
+      } else {
+        message += `${idx + 1}. ${title}${source}\n`;
+      }
+    });
+    if (articles.length > 10) {
+      message += `  … 외 ${articles.length - 10}건\n`;
+    }
+  }
+
+  return message;
+}
+
 export async function sendBriefingToTelegram(outputId: string) {
   const db = admin.firestore();
 
@@ -144,14 +193,13 @@ export async function sendBriefingToTelegram(outputId: string) {
     if (!outputDoc.exists) {
       throw new Error(`Output ${outputId} not found`);
     }
-    const output = outputDoc.data()!;
+    const output: any = { id: outputDoc.id, ...outputDoc.data()! };
 
-    const articlesSnapshot = await db.collection('articles')
-      .where('publishedInOutputId', '==', outputId)
-      .get();
-    const articles = articlesSnapshot.docs.map(doc => doc.data());
+    const articles = await loadTelegramArticles(output);
 
-    const message = formatOutputForTelegram(output, articles);
+    const message = output.type === 'custom_report'
+      ? formatCustomReportForTelegram(output, articles)
+      : formatOutputForTelegram(output, articles);
 
     // Telegram has 4096 char limit per message
     const chunks: string[] = [];

@@ -1,3 +1,4 @@
+// v2026-04-16
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -18,7 +19,7 @@ import { randomBytes } from 'crypto';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
-import { sendBriefingEmails, sendOutputEmails } from './services/emailService';
+import { sendBriefingEmails, sendOutputEmails, verifyUnsubscribeToken, generateUnsubscribeToken } from './services/emailService';
 import { buildOutputAssetBundle, buildOutputHtmlAsset, buildSharedReportPage } from './services/reportAssetService';
 import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
@@ -2478,7 +2479,11 @@ export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invo
   await assertCompanyAccess(request.auth.uid, companyId);
   const outputId = request.data?.id;
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
-  return sendBriefingEmails(outputId);
+  // Optional: explicit recipients from selected distribution groups
+  const explicitRecipients: string[] | undefined = Array.isArray(request.data?.recipients) && request.data.recipients.length > 0
+    ? request.data.recipients
+    : undefined;
+  return sendOutputEmails(outputId, explicitRecipients);
 });
 export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
@@ -2488,6 +2493,82 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
   return sendBriefingToTelegram(outputId);
 });
+/** Public HTTP endpoint: validates HMAC token and records unsubscribe in Firestore */
+export const handleUnsubscribe = onRequest(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request, response) => {
+    const email = `${request.query.email || ''}`.trim().toLowerCase();
+    const companyId = `${request.query.companyId || ''}`.trim();
+    const token = `${request.query.token || ''}`.trim();
+
+    if (!email || !companyId || !token) {
+      response.status(400).send('<html><body><p>잘못된 요청입니다. 필수 파라미터가 누락되었습니다.</p></body></html>');
+      return;
+    }
+
+    if (!verifyUnsubscribeToken(email, companyId, token)) {
+      response.status(403).send('<html><body><p>유효하지 않은 구독 취소 링크입니다.</p></body></html>');
+      return;
+    }
+
+    try {
+      const db = admin.firestore();
+      // Use email hash as doc ID to ensure one record per email
+      const emailHash = Buffer.from(email).toString('base64url').slice(0, 40);
+      await db.collection('emailUnsubscribes').doc(companyId).collection('entries').doc(emailHash).set({
+        email,
+        companyId,
+        unsubscribedAt: admin.firestore.FieldValue.serverTimestamp(),
+        token,
+      }, { merge: true });
+
+      response.status(200).send(`<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"/><title>구독 취소 완료</title></head><body style="font-family:sans-serif;max-width:500px;margin:60px auto;text-align:center;"><h2>구독이 취소되었습니다</h2><p style="color:#6b7280;">${escapeHtmlSimple(email)} 주소로의 뉴스레터 발송이 중단됩니다.</p></body></html>`);
+    } catch (err) {
+      logger.error('handleUnsubscribe error', err);
+      response.status(500).send('<html><body><p>오류가 발생했습니다. 잠시 후 다시 시도해 주세요.</p></body></html>');
+    }
+  },
+);
+
+function escapeHtmlSimple(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Admin callable: toggle subscribe/unsubscribe status for an email */
+export const manageEmailSubscription = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const { email, companyId: reqCompanyId, action } = request.data || {};
+    if (!email || !['subscribe', 'unsubscribe'].includes(action)) {
+      throw new HttpsError('invalid-argument', 'email and action (subscribe|unsubscribe) are required');
+    }
+
+    const companyId = reqCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const db = admin.firestore();
+    const emailNorm = `${email}`.trim().toLowerCase();
+    const emailHash = Buffer.from(emailNorm).toString('base64url').slice(0, 40);
+    const entryRef = db.collection('emailUnsubscribes').doc(companyId).collection('entries').doc(emailHash);
+
+    if (action === 'unsubscribe') {
+      await entryRef.set({
+        email: emailNorm,
+        companyId,
+        unsubscribedAt: admin.firestore.FieldValue.serverTimestamp(),
+        token: generateUnsubscribeToken(emailNorm, companyId),
+      }, { merge: true });
+    } else {
+      // Resubscribe: delete the unsubscribe record
+      await entryRef.delete();
+    }
+
+    return { success: true, email: emailNorm, action };
+  },
+);
+
 export const notifyTrackedCompanyArticleCreated = onDocumentCreated(
   { region: 'us-central1', document: 'articles/{articleId}' },
   async (event) => {

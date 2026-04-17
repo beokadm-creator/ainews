@@ -1442,14 +1442,6 @@ export async function processRelevanceFiltering(options?: {
               filters
             );
             result = aiRelevanceResult;
-
-            if (priorityDecision.isPriority && !result.isRelevant) {
-              result = {
-                isRelevant: true,
-                confidence: Math.max(0.8, result.confidence || 0),
-                reason: `Priority analysis override (${priorityDecision.reason || 'priority source'}). AI relevance note: ${result.reason}`,
-              };
-            }
           } catch (aiError: any) {
             registerAiRateLimit(aiError);
             console.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {

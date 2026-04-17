@@ -1,4 +1,4 @@
-﻿import * as admin from 'firebase-admin';
+import * as admin from 'firebase-admin';
 import { load } from 'cheerio';
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
@@ -148,10 +148,19 @@ function formatArticleContentParagraphs(value: string) {
 function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
   if (!href || !articles.length) return null;
   try {
-    const targetPath = new URL(href).pathname;
+    const targetUrl = new URL(href);
+    const targetPath = targetUrl.pathname;
+    if (targetPath === '/' && href.length < 15) return null;
+    
     const match = articles.find((a: any) => {
       if (!a.url) return false;
-      try { return new URL(a.url).pathname === targetPath; }
+      if (a.url === href) return true;
+      try { 
+        const aUrl = new URL(a.url);
+        if (targetPath !== '/' && aUrl.pathname === targetPath) return true;
+        if (aUrl.hostname === targetUrl.hostname && aUrl.pathname === targetPath && aUrl.search === targetUrl.search) return true;
+        return false;
+      }
       catch { return a.url === href; }
     });
     return match?.id || null;
@@ -163,18 +172,56 @@ function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
 // 헤드라인 텍스트로 articles 배열에서 article ID를 찾는 헬퍼 (AI 재번호 매기기 대응)
 function resolveArticleIdByHeadline(text: string, articles: any[]): string | null {
   if (!text || !articles.length) return null;
-  const normalized = text.replace(/\s+/g, '').toLowerCase();
-  const exact = articles.find((a: any) => {
-    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
-    return t === normalized;
-  });
+  // Remove all whitespace and punctuation for robust matching
+  const normalize = (s: string) => s.replace(/[\s\p{P}]/gu, '').toLowerCase();
+  
+  const normalized = normalize(text);
+  if (!normalized) return null;
+
+  const exact = articles.find((a: any) => normalize(a.title || '') === normalized);
   if (exact) return exact.id || null;
-  if (normalized.length < 8) return null;
-  const partial = articles.find((a: any) => {
-    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
-    return t.includes(normalized) || normalized.includes(t);
-  });
-  return partial?.id || null;
+  
+  if (normalized.length < 2) return null;
+  
+  let bestMatch = null;
+  let maxOverlap = 0;
+  for (const a of articles) {
+    const t = normalize(a.title || '');
+    if (!t) continue;
+    
+    if (t.includes(normalized) || normalized.includes(t)) {
+      const ratio = Math.min(t.length, normalized.length) / Math.max(t.length, normalized.length);
+      if (ratio > maxOverlap) {
+        maxOverlap = ratio;
+        bestMatch = a;
+      }
+    } else {
+      // Check for partial overlap using bigrams (Dice coefficient)
+      const getBigrams = (str: string) => {
+        const bigrams = new Set<string>();
+        for (let i = 0; i < str.length - 1; i++) bigrams.add(str.slice(i, i + 2));
+        return bigrams;
+      };
+      
+      const bigrams1 = getBigrams(normalized);
+      const bigrams2 = getBigrams(t);
+      if (bigrams1.size === 0 || bigrams2.size === 0) continue;
+      
+      let intersection = 0;
+      for (const b of bigrams1) {
+        if (bigrams2.has(b)) intersection++;
+      }
+      
+      const diceCoefficient = (2.0 * intersection) / (bigrams1.size + bigrams2.size);
+      if (diceCoefficient > maxOverlap) {
+        maxOverlap = diceCoefficient;
+        bestMatch = a;
+      }
+    }
+  }
+  // Lower threshold to 0.2 to catch heavily shortened AI titles
+  if (bestMatch && maxOverlap >= 0.2) return bestMatch.id || null;
+  return null;
 }
 
 function buildArticleModalPayload(article: any, index: number) {
@@ -1159,13 +1206,13 @@ function buildInteractiveBrandedShell({
           if (!target || !target.closest) return;
           // 모달 내부 클릭은 인터셉트하지 않음 (원문 링크 열기 등)
           if (target.closest('#article-modal')) return;
-          // data-article-ref 버튼: data-article-id 우선, 폴백 인덱스
-          var trigger = target.closest('[data-article-ref]');
-          if (trigger) {
-            event.preventDefault();
-            var aid = trigger.getAttribute('data-article-id');
-            openModal(aid || Number(trigger.getAttribute('data-article-ref')));
-          }
+          // data-article-ref 버튼: data-article-id 우선
+        var trigger = target.closest('[data-article-ref]');
+        if (trigger) {
+          event.preventDefault();
+          var aid = trigger.getAttribute('data-article-id');
+          if (aid) openModal(aid);
+        }
         });
         if (modal) {
           modal.addEventListener('click', function (event) {
@@ -1214,6 +1261,171 @@ export async function generateEmailHtml(output: any, articles?: any[]) {
 }
 
 /**
+ * Builds a static HTML email body matching the shared-link design.
+ * - Same post-processing as buildSharedReportPage (Vol removal, div→section, 원문 보기, ref-table)
+ * - No <details>/<summary> (unsupported by email clients) — uses visible <div> blocks
+ * - No JS modal injection — article links open directly to original URLs
+ * - Adds "웹에서 보기" link at top if shareUrl is provided
+ * - Adds unsubscribe footer if unsubscribeUrl is provided
+ */
+export async function buildEmailHtml(
+  output: any,
+  articles: any[],
+  opts: { shareUrl?: string; unsubscribeUrl?: string } = {},
+): Promise<string> {
+  const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
+  const fallbackHtml = buildFallbackReportHtml(output, articles);
+  const sourceHtml = rawHtml || fallbackHtml;
+
+  const $ = load(sourceHtml);
+
+  // 1. Remove "Vol. X" line from the date header block
+  $('.report-date-block').children().each(function () {
+    if (/^Vol\b/i.test($(this).text().trim())) $(this).remove();
+  });
+
+  // 2. Convert div.article-block → email-friendly visible div (no <details>)
+  $('div.article-block').each(function () {
+    const block = $(this);
+    const titleEl = block.find('.article-title').first();
+    const href = (titleEl.find('a').first().attr('href') || '').trim();
+
+    // Remove any existing 원문 보기 button (may have stale/fake data-article-id from generation)
+    block.find('.article-source-btn').remove();
+
+    // Add 원문 보기 link if there's a valid URL
+    if (href && !href.startsWith('javascript')) {
+      const isBlockIdUuid = (id: string | null) => !!id && id.length > 5 && isNaN(Number(id));
+      const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
+      const articleId = (isBlockIdUuid(blockArticleId) ? blockArticleId : null) || resolveArticleIdByUrl(href, articles);
+      const foundArticle = articleId ? articles.find((a) => a.id === articleId) : null;
+      const finalUrl = foundArticle?.url || href;
+      block.append(`<a href="${finalUrl}" class="article-source-btn" target="_blank" rel="noopener noreferrer">원문 보기 →</a>`);
+    }
+    // Keep as div — email clients render div fine
+  });
+
+  // 3. For <details class="article-block"> generated by AI — convert to div + add 원문 보기
+  $('details.article-block').each(function () {
+    const details = $(this);
+    const summary = details.find('summary').first();
+    const href = (summary.find('a').first().attr('href') || '').trim();
+    const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
+
+    // Collect body content
+    const bodyParts: string[] = [];
+    details.children().each(function () {
+      if ($(this).is('summary')) return;
+      bodyParts.push($(this).prop('outerHTML') || '');
+    });
+
+    // Add 원문 보기 link if not already present and URL is valid
+    const hasSourceBtn = details.find('.article-source-btn').length > 0;
+    if (!hasSourceBtn && href && !href.startsWith('javascript')) {
+      const titleText = summary.text().trim();
+      
+      const urlResolvedId = resolveArticleIdByUrl(href, articles);
+      const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
+      
+      let isDetailsArticleIdUuid = detailsArticleId && detailsArticleId.length > 5 && isNaN(Number(detailsArticleId));
+      const articleId = (isDetailsArticleIdUuid ? detailsArticleId : null) || textResolvedId || urlResolvedId || detailsArticleId || null;
+      
+      let foundArticle = null;
+      if (articleId) {
+        const numId = parseInt(articleId, 10);
+        if (!isNaN(numId) && String(numId) === articleId && numId >= 1 && numId <= articles.length) {
+          foundArticle = articles[numId - 1];
+        } else {
+          foundArticle = articles.find((a) => a.id === articleId) || null;
+        }
+      }
+      const finalUrl = foundArticle?.url || href;
+      bodyParts.push(`<a href="${finalUrl}" class="article-source-btn" target="_blank" rel="noopener noreferrer">원문 보기 →</a>`);
+    }
+
+    details.replaceWith(
+      `<div class="article-block" style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #e8e8e8;">${summary.prop('outerHTML') || ''}<div class="article-body" style="padding-top:12px;">${bodyParts.join('')}</div></div>`,
+    );
+  });
+
+  // 4. Make ref-table headline cells plain text links instead of interactive buttons
+  $('.ref-table tr').each(function () {
+    const cells = $(this).find('td');
+    if (!cells.length) return;
+    const headlineCell = cells.eq(2);
+    if (!headlineCell.length) return;
+
+    const headlineText = (headlineCell.text() || '').trim();
+    
+    let rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
+    if (rowArticleId && !articles.some(a => a.id === rowArticleId)) rowArticleId = null;
+
+    const textMatchedId = resolveArticleIdByHeadline(headlineText, articles);
+    let isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
+    const articleId = (isRowIdUuid ? rowArticleId : null) || textMatchedId || rowArticleId || '';
+    
+    let foundArticle = null;
+    if (articleId) {
+      const numId = parseInt(articleId, 10);
+      if (!isNaN(numId) && String(numId) === articleId && numId >= 1 && numId <= articles.length) {
+        foundArticle = articles[numId - 1];
+      } else {
+        foundArticle = articles.find((a) => a.id === articleId) || null;
+      }
+    }
+    const articleUrl = foundArticle?.url || '';
+
+    // Replace interactive button with plain link or just text
+    const existingBtn = headlineCell.find('[data-article-ref], .ref-headline-btn, .article-ref-trigger');
+    if (existingBtn.length) {
+      if (articleUrl) {
+        existingBtn.replaceWith(`<a href="${articleUrl}" target="_blank" rel="noopener noreferrer" style="color:#1a6fa8;text-decoration:none;">${escapeHtml(headlineText)}</a>`);
+      } else {
+        existingBtn.replaceWith(escapeHtml(headlineText));
+      }
+    } else if (!headlineCell.find('a').length && articleUrl) {
+      headlineCell.html(`<a href="${articleUrl}" target="_blank" rel="noopener noreferrer" style="color:#1a6fa8;text-decoration:none;">${headlineCell.html() || ''}</a>`);
+    }
+  });
+
+  const bodyEl = $('body');
+  const bodyHtml = bodyEl.length > 0 ? bodyEl.html() || '' : sourceHtml;
+  const bodyWithRefs = injectReferenceLinks(bodyHtml, articles.length);
+
+  // Build email CSS (no modal, no accordion JS)
+  const emailCss = `
+    .hero,.hero-header,.hero-section,.report-hero,[class*="hero"]{background:transparent!important;background-image:none!important;background-color:transparent!important;box-shadow:none!important;border:none!important}
+    .hero *,.hero-header *,.hero-section *,[class*="hero"] *{color:#111827!important}
+    .article-source-btn{display:inline-block;margin-top:12px;padding:5px 14px;background:#1e3a5f;color:#fff!important;font-size:11px;font-weight:600;border-radius:6px;text-decoration:none!important}
+    details.article-block,div.article-block{margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #e8e8e8}
+    details.article-block>summary.article-summary-row{display:block;padding:6px 0;list-style:none}
+    @media(max-width:640px){body{padding:12px!important}.report-title{font-size:20px!important}.article-title{font-size:10pt!important}table.ref-table{font-size:8pt!important;display:block;overflow-x:auto}}
+  `;
+
+  // Build top banner if shareUrl provided
+  const topBanner = opts.shareUrl
+    ? `<div style="text-align:center;padding:10px 0 18px;"><a href="${opts.shareUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:6px 18px;background:#1e3a5f;color:#fff;font-size:12px;font-weight:600;border-radius:6px;text-decoration:none;">웹에서 보기 →</a></div>`
+    : '';
+
+  // Build unsubscribe footer
+  const footer = opts.unsubscribeUrl
+    ? `<div style="margin-top:32px;padding:16px 0;border-top:1px solid #e5e7eb;text-align:center;font-size:11px;color:#9ca3af;">이 메일은 EUM PE 뉴스레터 구독자에게 발송됩니다. &nbsp;<a href="${opts.unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">구독 취소</a></div>`
+    : '';
+
+  const headEl = $('head');
+  if (headEl.length > 0) {
+    headEl.append(`<style>${emailCss}</style>`);
+  }
+  if (bodyEl.length > 0) {
+    bodyEl.html(topBanner + bodyWithRefs + footer);
+    return $.html();
+  }
+
+  const headStyles = $('style').toArray().map((el) => $.html(el)).join('\n');
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${escapeHtml(output.title || '리포트')}</title>${headStyles}<style>${emailCss}</style></head><body style="font-family:sans-serif;max-width:800px;margin:0 auto;padding:24px;">${topBanner}${bodyWithRefs}${footer}</body></html>`;
+}
+
+/**
  * Builds the shared-link page: serves the AI-generated HTML as-is (no branded shell,
  * no toolbar) with only the footnote modal CSS/HTML/JS injected so article refs work.
  */
@@ -1246,15 +1458,23 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     const bodyParts: string[] = [];
     block.children().each(function () {
       const cls = $(this).attr('class') || '';
-      if (!cls.includes('article-title') && !cls.includes('article-sector')) {
+      // Skip article-title, article-sector, and any existing 원문 보기 button (will be re-added below with correct ID)
+      if (!cls.includes('article-title') && !cls.includes('article-sector') && !cls.includes('article-source-btn')) {
         bodyParts.push($(this).prop('outerHTML') || '');
       }
     });
 
-    // Add 원문 보기 button — AI가 block에 심은 data-article-id 우선, URL 매칭 폴백
+    // Add 원문 보기 button — AI가 block에 심은 data-article-id 보다 URL/Headline 매칭 우선
     if (href && !href.startsWith('javascript')) {
       const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
-      const articleId = blockArticleId || resolveArticleIdByUrl(href, articles);
+      const titleText = titleEl.text().trim();
+      
+      const urlResolvedId = resolveArticleIdByUrl(href, articles);
+      const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
+      
+      let isBlockArticleIdUuid = blockArticleId && blockArticleId.length > 5 && isNaN(Number(blockArticleId));
+      const articleId = (isBlockArticleIdUuid ? blockArticleId : null) || textResolvedId || urlResolvedId || null;
+      
       const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
       bodyParts.push(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
     }
@@ -1281,7 +1501,10 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       details.append(`<div class="article-body">${nonSummary.join('')}</div>`);
       bodyDiv = details.find('.article-body').first();
     }
-    const articleId = resolveArticleIdByUrl(href, articles);
+    // 서버가 details.article-block에 심은 data-article-id 우선 (UUID만 신뢰), URL 매칭 폴백
+    const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
+    const isDetailsIdUuid = detailsArticleId && detailsArticleId.length > 5 && isNaN(Number(detailsArticleId));
+    const articleId = (isDetailsIdUuid ? detailsArticleId : null) || resolveArticleIdByUrl(href, articles);
     const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
     bodyDiv.append(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
   });
@@ -1301,8 +1524,9 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     refRowSeq++;
 
     const rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
+    const isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
     const headlineText = (headlineCell.text() || '').trim();
-    const articleId = rowArticleId
+    const articleId = (isRowIdUuid ? rowArticleId : null)
       || resolveArticleIdByHeadline(headlineText, articles)
       || articles[articleIdx]?.id
       || '';
@@ -1424,8 +1648,20 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         function closeModal(){if(!modal)return;modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true');}
         // ID 기반 조회 — 배열 순서 무관, 항상 올바른 기사를 표시
         function openModal(articleId){
+          // 1. UUID 매칭
           var a=payload.find(function(p){return p.id===articleId;})||null;
-          if(!a&&typeof articleId==='number'){a=payload[articleId]||null;}// 폴백: 구형 숫자 인덱스
+          
+          // 2. AI가 "1", "2" 처럼 숫자 문자열을 반환한 경우 (1-based index)
+          if(!a && typeof articleId==='string' && /^\\d+$/.test(articleId)){
+            var numId = parseInt(articleId, 10);
+            if(numId >= 1 && numId <= payload.length){
+              a = payload[numId - 1] || null;
+            }
+          }
+          
+          // 3. 구형 숫자 인덱스 폴백 (0-based)
+          if(!a&&typeof articleId==='number'){a=payload[articleId]||null;}
+          
           if(!a||!modal)return;
           if(metaEl)metaEl.innerHTML='<span>'+(a.source||'')+'</span>'+(a.publishedAt?'<span>'+a.publishedAt+'</span>':'');
           if(titleEl)titleEl.textContent=a.title||'제목 없음';
@@ -1443,22 +1679,20 @@ export async function buildSharedReportPage(output: any): Promise<string> {
           var t=e.target;if(!t||!t.closest)return;
           // 모달 내부 클릭은 인터셉트하지 않음 (원문 링크 열기 등)
           if(t.closest('#article-modal')){return;}
-          // 1. data-article-ref 버튼(ref-table, 참고기사 섹션): data-article-id 우선, 폴백 인덱스
+          // 1. data-article-ref 버튼(ref-table, 참고기사 섹션): data-article-id 우선
           var refEl=t.closest('[data-article-ref]');
           if(refEl){
             e.preventDefault();
             var aid=refEl.getAttribute('data-article-id');
             if(aid){openModal(aid);return;}
-            openModal(Number(refEl.getAttribute('data-article-ref')));
             return;
           }
           // 2. <a> 링크: 원문 보기 버튼 및 기사 제목 링크 (모달 링크는 제외됨)
           var anchor=t.closest('a');
           if(anchor){
-            e.preventDefault();
             // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
             var aid2=anchor.getAttribute('data-article-id');
-            if(aid2){openModal(aid2);return;}
+            if(aid2){e.preventDefault();openModal(aid2);return;}
             // 2-b. 폴백: URL pathname 매칭
             var href=anchor.href||'';
             var matchedId=null;
@@ -1468,7 +1702,21 @@ export async function buildSharedReportPage(output: any): Promise<string> {
                 catch(ex){if(a.url===href)matchedId=a.id;}
               }
             });
-            if(matchedId){openModal(matchedId);}
+            if(matchedId){e.preventDefault();openModal(matchedId);return;}
+            
+            // 2-c. 폴백: 텍스트 매칭
+            var text = (anchor.textContent || '').trim().replace(/[\\s\\p{P}]/gu, '').toLowerCase();
+            if(text.length > 1){
+              var maxOverlap = 0;
+              payload.forEach(function(a){
+                var t = (a.title || '').replace(/[\\s\\p{P}]/gu, '').toLowerCase();
+                if(t.includes(text) || text.includes(t)) {
+                  var ratio = Math.min(t.length, text.length) / Math.max(t.length, text.length);
+                  if(ratio > maxOverlap){ maxOverlap = ratio; matchedId = a.id; }
+                }
+              });
+              if(matchedId && maxOverlap >= 0.2){e.preventDefault();openModal(matchedId);return;}
+            }
           }
         });
         if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}

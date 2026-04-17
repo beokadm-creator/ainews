@@ -29,10 +29,22 @@ import { formatArticleContentParagraphs } from '@/lib/articleContent';
 function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
   if (!href || !articles.length) return null;
   try {
-    const targetPath = new URL(href).pathname;
+    const targetUrl = new URL(href);
+    const targetPath = targetUrl.pathname;
+    // Don't match blindly on just '/' unless the domain and everything perfectly matches
+    if (targetPath === '/' && href.length < 15) return null;
+    
     const match = articles.find((a) => {
       if (!a.url) return false;
-      try { return new URL(a.url).pathname === targetPath; }
+      // Exact match is always safest
+      if (a.url === href) return true;
+      try { 
+        const aUrl = new URL(a.url);
+        // If they have meaningful paths, compare them. If not, require domain match too.
+        if (targetPath !== '/' && aUrl.pathname === targetPath) return true;
+        if (aUrl.hostname === targetUrl.hostname && aUrl.pathname === targetPath && aUrl.search === targetUrl.search) return true;
+        return false;
+      }
       catch { return a.url === href; }
     });
     return match?.id || null;
@@ -44,18 +56,56 @@ function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
 // 헤드라인 텍스트로 articles 배열에서 article ID를 찾는 헬퍼 (AI 재번호 매기기 대응)
 function resolveArticleIdByHeadline(text: string, articles: any[]): string | null {
   if (!text || !articles.length) return null;
-  const normalized = text.replace(/\s+/g, '').toLowerCase();
-  const exact = articles.find((a) => {
-    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
-    return t === normalized;
-  });
+  // Remove all whitespace and punctuation for robust matching
+  const normalize = (s: string) => s.replace(/[\s\p{P}]/gu, '').toLowerCase();
+  
+  const normalized = normalize(text);
+  if (!normalized) return null;
+
+  const exact = articles.find((a) => normalize(a.title || '') === normalized);
   if (exact) return exact.id || null;
-  if (normalized.length < 8) return null;
-  const partial = articles.find((a) => {
-    const t = (a.title || '').replace(/\s+/g, '').toLowerCase();
-    return t.includes(normalized) || normalized.includes(t);
-  });
-  return partial?.id || null;
+  
+  if (normalized.length < 2) return null;
+  
+  let bestMatch = null;
+  let maxOverlap = 0;
+  for (const a of articles) {
+    const t = normalize(a.title || '');
+    if (!t) continue;
+    
+    if (t.includes(normalized) || normalized.includes(t)) {
+      const ratio = Math.min(t.length, normalized.length) / Math.max(t.length, normalized.length);
+      if (ratio > maxOverlap) {
+        maxOverlap = ratio;
+        bestMatch = a;
+      }
+    } else {
+      let matchCount = 0;
+      const getBigrams = (str: string) => {
+        const bigrams = new Set<string>();
+        for (let i = 0; i < str.length - 1; i++) bigrams.add(str.slice(i, i + 2));
+        return bigrams;
+      };
+      
+      const bigrams1 = getBigrams(normalized);
+      const bigrams2 = getBigrams(t);
+      if (bigrams1.size === 0 || bigrams2.size === 0) continue;
+      
+      let intersection = 0;
+      for (const b of bigrams1) {
+        if (bigrams2.has(b)) intersection++;
+      }
+      
+      const diceCoefficient = (2.0 * intersection) / (bigrams1.size + bigrams2.size);
+      if (diceCoefficient > maxOverlap) {
+        maxOverlap = diceCoefficient;
+        bestMatch = a;
+      }
+    }
+  }
+  // Lower threshold to 0.2 to catch heavily shortened AI titles
+  if (bestMatch && maxOverlap >= 0.2) return bestMatch.id || null;
+  return null;
 }
 
 function sanitizeReportHtml(raw: string, articles: any[] = []) {
@@ -139,6 +189,9 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
       btn.setAttribute('href', href);
       btn.className = 'article-source-btn';
       btn.textContent = '원문 보기 →';
+      // 서버가 div.article-block에 심은 data-article-id를 새 버튼으로 복사
+      const blockArticleId = (block as HTMLElement).getAttribute('data-article-id');
+      if (blockArticleId) btn.setAttribute('data-article-id', blockArticleId);
       bodyDiv.appendChild(btn);
     }
 
@@ -169,64 +222,85 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
     btn.setAttribute('href', href);
     btn.className = 'article-source-btn';
     btn.textContent = '원문 보기 →';
+    // 서버가 details.article-block에 심은 data-article-id를 새 버튼으로 복사
+    const detailsArticleId = (details as HTMLElement).getAttribute('data-article-id');
+    if (detailsArticleId) btn.setAttribute('data-article-id', detailsArticleId);
     bodyDiv.appendChild(btn);
   });
 
   // Steps 2+3 complete: assign data-article-id to every 원문 보기 button.
-  // 서버에서 이미 data-article-id가 삽입된 경우 유지, 없으면 URL 매칭·위치 폴백으로 보완.
+  // URL 매칭·제목 텍스트 매칭을 최우선으로 사용하여 서버(AI)가 심은 잘못된 ID를 덮어씁니다.
   let articleBlockIdx = 0;
   tmpDoc.querySelectorAll('details.article-block .article-source-btn').forEach((btn) => {
-    const existing = (btn as HTMLElement).getAttribute('data-article-id');
-    if (!existing) {
-      const href = (btn as HTMLElement).getAttribute('href') || '';
-      const articleId = resolveArticleIdByUrl(href, articles) || articles[articleBlockIdx]?.id || null;
-      if (articleId) btn.setAttribute('data-article-id', articleId);
+    const href = (btn as HTMLElement).getAttribute('href') || '';
+    const block = btn.closest('.article-block');
+    const titleText = block ? (block.querySelector('.article-title')?.textContent || '').trim() : '';
+    
+    const urlResolvedId = resolveArticleIdByUrl(href, articles);
+    const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
+    const existingId = (btn as HTMLElement).getAttribute('data-article-id');
+    
+    // AI가 심은 existingId가 고유 UUID 형태라면 가장 정확하므로 최우선 사용합니다.
+    // 하지만 AI가 "1", "2" 등 단순 번호(인덱스)를 심은 경우 환각(오류)일 확률이 매우 높으므로 텍스트 매칭을 우선합니다.
+    let isExistingIdUuid = existingId && existingId.length > 5 && isNaN(Number(existingId));
+    const articleId = (isExistingIdUuid ? existingId : null) || textResolvedId || urlResolvedId || existingId || null;
+    
+    if (articleId) {
+      btn.setAttribute('data-article-id', articleId);
     }
     btn.setAttribute('data-article-idx', String(articleBlockIdx));
     articleBlockIdx++;
   });
 
   // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
-  // 제목 텍스트 매칭을 1차로, 번호 기반 인덱싱을 2차 폴백으로 사용.
-  // AI가 ref-table 번호를 재매기는 경우에도 올바른 기사가 열리도록 함.
-  let refRowSeq = 0;
+  // 제목 텍스트 매칭을 최우선으로 사용.
   tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td'));
     if (cells.length < 3) return; // skip header row (has <th> only)
     const headlineCell = cells[2];
     if (!headlineCell) return;
 
-    // Determine article index from first column, fall back to sequential counter
+    // Determine article index from first column
     const rawNum = (cells[0]?.textContent || '').replace(/[^\d]/g, '').trim();
-    const articleNum = rawNum ? parseInt(rawNum, 10) : NaN;
-    const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
-    refRowSeq++;
-
-    // 서버에서 삽입된 data-article-id 우선 유지, 없으면 헤드라인 텍스트 매칭·위치 폴백으로 보완
-    const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
-    const serverArticleId = existingBtn?.getAttribute('data-article-id') || null;
-    // AI가 <tr data-article-id>에 심은 ID를 최우선으로 사용
-    const rowArticleId = (row as HTMLElement).getAttribute('data-article-id') || null;
+    const articleIdx = rawNum ? parseInt(rawNum, 10) - 1 : -1;
 
     const headlineText = (headlineCell.textContent || '').trim();
-    const resolvedId = rowArticleId
-      || serverArticleId
-      || resolveArticleIdByHeadline(headlineText, articles)
-      || articles[articleIdx]?.id
-      || null;
+    const textMatchedId = resolveArticleIdByHeadline(headlineText, articles);
+
+    const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
+    
+    let serverArticleId = existingBtn?.getAttribute('data-article-id') || null;
+    if (serverArticleId && !articles.some(a => a.id === serverArticleId)) serverArticleId = null;
+
+    let rowArticleId = (row as HTMLElement).getAttribute('data-article-id') || null;
+    if (rowArticleId && !articles.some(a => a.id === rowArticleId)) rowArticleId = null;
+
+    let isServerIdUuid = serverArticleId && serverArticleId.length > 5 && isNaN(Number(serverArticleId));
+    let isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
+    
+    const resolvedId = (isRowIdUuid ? rowArticleId : null) || (isServerIdUuid ? serverArticleId : null) || textMatchedId || rowArticleId || serverArticleId || null;
+
+    const linkStyles = 'cursor:pointer; text-decoration:underline; color:#1e3a5f; background:transparent; border:none; padding:0; outline:none; display:inline; font-weight:500;';
 
     if (existingBtn) {
-      existingBtn.setAttribute('data-article-ref', String(articleIdx));
-      if (resolvedId) existingBtn.setAttribute('data-article-id', resolvedId);
-      existingBtn.className = 'ref-headline-btn';
-    } else if (!headlineCell.querySelector('a, button')) {
-      const btn = tmpDoc.createElement('button');
-      btn.setAttribute('data-article-ref', String(articleIdx));
-      if (resolvedId) btn.setAttribute('data-article-id', resolvedId);
-      btn.className = 'ref-headline-btn';
-      btn.innerHTML = headlineCell.innerHTML;
+      const a = tmpDoc.createElement('a');
+      a.href = '#';
+      a.className = 'ref-headline-btn';
+      a.setAttribute('data-article-ref', String(articleIdx));
+      if (resolvedId) a.setAttribute('data-article-id', resolvedId);
+      a.style.cssText = linkStyles;
+      a.innerHTML = existingBtn.innerHTML;
+      existingBtn.replaceWith(a);
+    } else if (!headlineCell.querySelector('a')) {
+      const a = tmpDoc.createElement('a');
+      a.href = '#';
+      a.setAttribute('data-article-ref', String(articleIdx));
+      if (resolvedId) a.setAttribute('data-article-id', resolvedId);
+      a.className = 'ref-headline-btn';
+      a.style.cssText = linkStyles;
+      a.innerHTML = headlineCell.innerHTML;
       headlineCell.innerHTML = '';
-      headlineCell.appendChild(btn);
+      headlineCell.appendChild(a);
     }
   });
 
@@ -274,6 +348,13 @@ export default function Briefing() {
   const editRef = useRef<HTMLDivElement>(null);
   const [currentTemplates, setCurrentTemplates] = useState<{ internal?: string; external?: string }>({});
   const [settingTemplate, setSettingTemplate] = useState(false);
+
+  // 이메일 발송 모달
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [distGroups, setDistGroups] = useState<any[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [unsubscribes, setUnsubscribes] = useState<Set<string>>(new Set());
+  const [emailSendStatus, setEmailSendStatus] = useState<string>('');
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -400,12 +481,18 @@ export default function Briefing() {
     // Read edited content BEFORE any setState (React re-render would overwrite contenteditable)
     const editedBody = editRef.current.innerHTML;
     const currentHtml = selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '';
+    
     let newHtml: string;
-    if (currentHtml.includes('<body')) {
-      newHtml = currentHtml.replace(/<body[^>]*>[\s\S]*?<\/body>/i, `<body>${editedBody}</body>`);
+    const bodyStartMatch = currentHtml.match(/<body[^>]*>/i);
+    const bodyEndMatch = currentHtml.match(/<\/body>/i);
+    
+    if (bodyStartMatch) {
+      const endIdx = bodyEndMatch ? bodyEndMatch.index! : currentHtml.length;
+      newHtml = currentHtml.substring(0, bodyStartMatch.index!) + `<body>\n${editedBody}\n</body>` + (bodyEndMatch ? currentHtml.substring(endIdx + 7) : '');
     } else {
       newHtml = editedBody;
     }
+
     setSavingEdit(true);
     setActionMessage(null);
     try {
@@ -443,12 +530,48 @@ export default function Briefing() {
     }
   };
 
+  const openEmailModal = async () => {
+    if (!companyId) return;
+    setEmailSendStatus('');
+    setSelectedGroupIds([]);
+    // 배포 그룹 로드
+    try {
+      const snap = await getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId)));
+      setDistGroups(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
+    } catch { setDistGroups([]); }
+    // 구독 취소 목록 로드
+    try {
+      const snap = await getDocs(collection(db, 'emailUnsubscribes', companyId, 'entries'));
+      setUnsubscribes(new Set(snap.docs.map((d) => ((d.data().email as string) || '').toLowerCase())));
+    } catch { setUnsubscribes(new Set()); }
+    setEmailModalOpen(true);
+  };
+
   const sendEmail = async () => {
     if (!selectedOutput) return;
     setSending(true);
+    setEmailSendStatus('발송 중...');
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
-      await httpsCallable(functions, 'triggerEmailSend')({ id: targetId, companyId });
+      // 선택된 그룹의 이메일 수집 (구독 취소 제외)
+      const allEmails: string[] = [];
+      if (selectedGroupIds.length > 0) {
+        distGroups
+          .filter((g) => selectedGroupIds.includes(g.id))
+          .forEach((g) => (g.emails || []).forEach((e: string) => {
+            const norm = e.toLowerCase();
+            if (!unsubscribes.has(norm) && !allEmails.includes(norm)) allEmails.push(norm);
+          }));
+      }
+      await httpsCallable(functions, 'triggerEmailSend')({
+        id: targetId,
+        companyId,
+        recipients: allEmails.length > 0 ? allEmails : undefined,
+      });
+      setEmailSendStatus(`발송 완료 (${allEmails.length > 0 ? allEmails.length + '명' : '기본 수신자'})`);
+      setTimeout(() => setEmailModalOpen(false), 1500);
+    } catch (err: any) {
+      setEmailSendStatus(`발송 실패: ${err?.message || '오류 발생'}`);
     } finally {
       setSending(false);
     }
@@ -741,7 +864,7 @@ export default function Briefing() {
                   {isAdmin && (
                     <>
                       <button
-                        onClick={sendEmail}
+                        onClick={openEmailModal}
                         disabled={sending}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-medium text-white transition hover:bg-[#24456f] disabled:opacity-50"
                       >
@@ -1032,18 +1155,32 @@ export default function Briefing() {
                           const findByDataId = (el: HTMLElement): any | null => {
                             const id = el.getAttribute('data-article-id');
                             if (!id) return null;
+                            // 만약 AI가 UUID 대신 "1", "2" 와 같이 번호만 넣은 경우를 완벽하게 처리합니다.
+                            const numId = parseInt(id, 10);
+                            if (!isNaN(numId) && String(numId) === id) {
+                              // AI가 준 번호는 1-based index (e.g. 1, 2, 3...)
+                              if (numId >= 1 && numId <= articles.length) {
+                                return articles[numId - 1];
+                              }
+                            }
                             return articles.find((a) => a.id === id) || null;
                           };
 
-                          // 1. ref-table 헤드라인 버튼: data-article-id 우선, 폴백 data-article-ref 인덱스
+                          // 1. ref-table 헤드라인 버튼: data-article-id 우선
                           const refEl = target.closest('[data-article-ref]') as HTMLElement | null;
                           if (refEl) {
                             e.preventDefault();
                             const byId = findByDataId(refEl);
                             if (byId) { setPreviewArticle(byId); return; }
-                            const idx = Number(refEl.getAttribute('data-article-ref'));
-                            if (!isNaN(idx) && idx >= 0 && idx < articles.length) {
-                              setPreviewArticle(articles[idx]);
+                            
+                            // 폴백: 텍스트 매칭
+                            const linkText = (refEl.textContent || '').trim();
+                            if (linkText.length > 1) {
+                              const resolvedId = resolveArticleIdByHeadline(linkText, articles);
+                              if (resolvedId) {
+                                const byTitle = articles.find(a => a.id === resolvedId);
+                                if (byTitle) { setPreviewArticle(byTitle); return; }
+                              }
                             }
                             return;
                           }
@@ -1055,35 +1192,28 @@ export default function Briefing() {
                             // 2-a. data-article-id (가장 신뢰할 수 있는 방법)
                             const byId = findByDataId(anchor as HTMLElement);
                             if (byId) { setPreviewArticle(byId); return; }
-                            // 2-b. 폴백: data-article-idx (위치 기반)
-                            const articleIdxStr = (anchor as HTMLElement).getAttribute('data-article-idx');
-                            if (articleIdxStr !== null) {
-                              const articleIdx = Number(articleIdxStr);
-                              if (!isNaN(articleIdx) && articleIdx >= 0 && articleIdx < articles.length) {
-                                setPreviewArticle(articles[articleIdx]);
-                                return;
-                              }
-                            }
+                            
                             // 2-c. 폴백: URL 매칭
                             const href = anchor.href || '';
-                            const byUrl = articles.find((a) => {
-                              if (!a.url || !href) return false;
-                              try {
-                                const aUrl = new URL(a.url).pathname;
-                                const hUrl = new URL(href).pathname;
-                                return aUrl === hUrl || a.url === href;
-                              } catch { return a.url === href; }
-                            });
-                            if (byUrl) { setPreviewArticle(byUrl); return; }
+                            const urlResolvedId = resolveArticleIdByUrl(href, articles);
+                            if (urlResolvedId) {
+                              const byUrl = articles.find((a) => a.id === urlResolvedId);
+                              if (byUrl) { setPreviewArticle(byUrl); return; }
+                            }
+                            
                             // 2-d. 폴백: 제목 텍스트 매칭
-                            const linkText = (anchor.textContent || '').trim().toLowerCase();
-                            if (linkText.length > 5) {
-                              const byTitle = articles.find((a) => {
-                                const title = (a.title || '').toLowerCase();
-                                const slug = linkText.slice(0, 30);
-                                return title.includes(slug) || slug.includes(title.slice(0, 30));
-                              });
-                              if (byTitle) setPreviewArticle(byTitle);
+                            const linkText = (anchor.textContent || '').trim();
+                            if (linkText.length > 1) {
+                              const resolvedId = resolveArticleIdByHeadline(linkText, articles);
+                              if (resolvedId) {
+                                const byTitle = articles.find(a => a.id === resolvedId);
+                                if (byTitle) { setPreviewArticle(byTitle); return; }
+                              }
+                            }
+                            
+                            // 최후의 수단: 일반 링크라면 새 창에서 엽니다.
+                            if (href && !href.startsWith('javascript')) {
+                              window.open(href, '_blank');
                             }
                             return;
                           }
@@ -1214,6 +1344,72 @@ export default function Briefing() {
                 </a>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 이메일 발송 모달 */}
+      {emailModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onClick={() => !sending && setEmailModalOpen(false)}>
+          <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-gray-700/40">
+              <div>
+                <h3 className="text-base font-bold text-gray-900 dark:text-white">이메일 발송</h3>
+                <p className="mt-0.5 text-xs text-gray-400">발송할 배포 그룹을 선택하세요</p>
+              </div>
+              <button onClick={() => !sending && setEmailModalOpen(false)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              {distGroups.length === 0 ? (
+                <p className="py-4 text-center text-sm text-gray-400">등록된 배포 그룹이 없습니다.<br/>외부 메일링 센터에서 그룹을 먼저 만들어 주세요.</p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 px-3 py-2.5 hover:bg-gray-50 dark:border-gray-700/40 dark:hover:bg-white/5">
+                    <input type="checkbox" checked={selectedGroupIds.length === distGroups.length} onChange={(e) => setSelectedGroupIds(e.target.checked ? distGroups.map((g) => g.id) : [])} className="rounded accent-[#1e3a5f]" />
+                    <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">전체 그룹 선택</p>
+                  </label>
+                  <div className="border-t border-gray-100 pt-2 dark:border-gray-700/40" />
+                  {distGroups.map((group) => {
+                    const groupEmails: string[] = group.emails || [];
+                    const activeCount = groupEmails.filter((e) => !unsubscribes.has(e.toLowerCase())).length;
+                    const unsubCount = groupEmails.length - activeCount;
+                    return (
+                      <label key={group.id} className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 px-3 py-2.5 hover:bg-gray-50 dark:border-gray-700/40 dark:hover:bg-white/5">
+                        <input type="checkbox" checked={selectedGroupIds.includes(group.id)} onChange={(e) => setSelectedGroupIds((prev) => e.target.checked ? [...prev, group.id] : prev.filter((id) => id !== group.id))} className="rounded accent-[#1e3a5f]" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{group.name}</p>
+                          <p className="text-[11px] text-gray-400">
+                            수신 {activeCount}명
+                            {unsubCount > 0 && <span className="ml-1 text-red-400">· 구독취소 {unsubCount}명 제외</span>}
+                          </p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedGroupIds.length > 0 && (() => {
+                const allEmails = new Set<string>();
+                distGroups.filter((g) => selectedGroupIds.includes(g.id)).forEach((g) => (g.emails || []).forEach((e: string) => { const n = e.toLowerCase(); if (!unsubscribes.has(n)) allEmails.add(n); }));
+                return <div className="mt-3 rounded-lg bg-[#1e3a5f]/5 px-3 py-2 text-xs text-[#1e3a5f] dark:bg-blue-500/10 dark:text-blue-300">총 {allEmails.size}명에게 발송됩니다</div>;
+              })()}
+              {emailSendStatus && (
+                <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${emailSendStatus.startsWith('발송 실패') ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400' : 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'}`}>
+                  {emailSendStatus}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700/40">
+              <button onClick={() => !sending && setEmailModalOpen(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400">취소</button>
+              <button onClick={sendEmail} disabled={sending || distGroups.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50">
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                {selectedGroupIds.length > 0 ? '선택 그룹 발송' : '기본 수신자 발송'}
+              </button>
+            </div>
           </div>
         </div>
       )}

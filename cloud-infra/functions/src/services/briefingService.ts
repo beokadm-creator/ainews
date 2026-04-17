@@ -142,46 +142,101 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
   function resolveIdByUrl(href: string): string | null {
     if (!href) return null;
     try {
-      const path = new URL(href).pathname;
-      return urlToId.get(path) || null;
-    } catch {
-      return urlToId.get(href) || null;
-    }
-  }
-
-  function resolveIdByHeadline(text: string): string | null {
-    if (!text) return null;
-    const normalized = text.replace(/\s+/g, '').toLowerCase();
-    if (titleToId.has(normalized)) return titleToId.get(normalized)!;
-    // 부분 일치: 정규화된 헤드라인이 저장된 제목의 일부이거나 그 반대인 경우
-    for (const [storedTitle, id] of titleToId) {
-      if (normalized.length >= 8 && (storedTitle.includes(normalized) || normalized.includes(storedTitle))) {
-        return id;
+      const targetUrl = new URL(href);
+      const targetPath = targetUrl.pathname;
+      if (targetPath === '/' && href.length < 15) return null;
+      
+      for (const [url, id] of urlToId) {
+        if (url === href) return id;
+        try {
+          const aUrl = new URL(url);
+          if (targetPath !== '/' && aUrl.pathname === targetPath) return id;
+          if (aUrl.hostname === targetUrl.hostname && aUrl.pathname === targetPath && aUrl.search === targetUrl.search) return id;
+        } catch { /* ignore invalid url */ }
       }
+    } catch {
+      if (urlToId.has(href)) return urlToId.get(href)!;
     }
     return null;
   }
 
+  function resolveIdByHeadline(text: string): string | null {
+    if (!text) return null;
+    // Remove all whitespace and punctuation for robust matching
+    const normalize = (s: string) => s.replace(/[\s\p{P}]/gu, '').toLowerCase();
+    
+    const normalized = normalize(text);
+    if (!normalized) return null;
+
+    if (titleToId.has(normalized)) return titleToId.get(normalized)!;
+    if (normalized.length < 2) return null;
+
+    let bestMatchId: string | null = null;
+    let maxOverlap = 0;
+    
+    for (const [storedTitle, id] of titleToId) {
+      const t = normalize(storedTitle);
+      if (!t) continue;
+      
+      if (t.includes(normalized) || normalized.includes(t)) {
+        const ratio = Math.min(t.length, normalized.length) / Math.max(t.length, normalized.length);
+        if (ratio > maxOverlap) {
+          maxOverlap = ratio;
+          bestMatchId = id;
+        }
+      } else {
+        const getBigrams = (str: string) => {
+          const bigrams = new Set<string>();
+          for (let i = 0; i < str.length - 1; i++) bigrams.add(str.slice(i, i + 2));
+          return bigrams;
+        };
+        
+        const bigrams1 = getBigrams(normalized);
+        const bigrams2 = getBigrams(t);
+        if (bigrams1.size === 0 || bigrams2.size === 0) continue;
+        
+        let intersection = 0;
+        for (const b of bigrams1) {
+          if (bigrams2.has(b)) intersection++;
+        }
+        
+        const diceCoefficient = (2.0 * intersection) / (bigrams1.size + bigrams2.size);
+        if (diceCoefficient > maxOverlap) {
+          maxOverlap = diceCoefficient;
+          bestMatchId = id;
+        }
+      }
+    }
+    
+    // Lower threshold to 0.2 to catch heavily shortened AI titles
+    if (bestMatchId && maxOverlap >= 0.2) return bestMatchId;
+    return null;
+  }
+
   // 1. article-block 원문 보기 버튼에 data-article-id 삽입
-  // AI가 <div class="article-block" data-article-id="...">로 생성했으면 그걸 우선 사용
-  let blockSeq = 0;
   $('details.article-block, div.article-block').each(function () {
     const blockId = ($(this).attr('data-article-id') || '').trim() || null;
     const btn = $(this).find('.article-source-btn');
     if (btn.length) {
       const href = (btn.attr('href') || '').trim();
-      const articleId = blockId || resolveIdByUrl(href) || orderedArticles[blockSeq]?.id || null;
+      const titleText = $(this).find('.article-title').text().trim();
+      
+      const urlResolvedId = resolveIdByUrl(href);
+      const textResolvedId = resolveIdByHeadline(titleText);
+      
+      // AI가 넣은 blockId가 고유 UUID라면 가장 정확. 단순 번호면 텍스트 매칭 우선.
+      let isBlockIdUuid = blockId && blockId.length > 5 && isNaN(Number(blockId));
+      const articleId = (isBlockIdUuid ? blockId : null) || textResolvedId || urlResolvedId || null;
+      
       if (articleId) {
         btn.attr('data-article-id', articleId);
-        if (!$(this).attr('data-article-id') && articleId) $(this).attr('data-article-id', articleId);
+        $(this).attr('data-article-id', articleId);
       }
     }
-    blockSeq++;
   });
 
   // 2. ref-table 헤드라인 셀에 data-article-id 삽입
-  // 우선순위: (1) AI가 <tr data-article-id>에 심은 ID → (2) 제목 텍스트 매칭 → (3) 번호 기반 폴백
-  let refRowSeq = 0;
+  // 우선순위: (1) 제목 텍스트 매칭 → (2) AI가 심은 ID
   $('.ref-table tr').each(function () {
     const cells = $(this).find('td');
     if (!cells.length) return;
@@ -189,22 +244,30 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     if (!headlineCell.length) return;
 
     const rawNum = (cells.eq(0).text() || '').replace(/[^\d]/g, '').trim();
-    const articleNum = rawNum ? parseInt(rawNum, 10) : NaN;
-    const articleIdx = !isNaN(articleNum) && articleNum >= 1 ? articleNum - 1 : refRowSeq;
-    refRowSeq++;
+    const articleIdx = rawNum ? parseInt(rawNum, 10) - 1 : -1;
 
-    const rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
     const headlineText = (headlineCell.text() || '').trim();
-    const articleId = rowArticleId || resolveIdByHeadline(headlineText) || orderedArticles[articleIdx]?.id || null;
-    if (!articleId) return;
+    const textMatchedId = resolveIdByHeadline(headlineText);
 
-    const existingBtn = headlineCell.find('[data-article-ref], button, .ref-headline-btn');
+    let rowArticleId = ($(this).attr('data-article-id') || '').trim() || null;
+    if (rowArticleId && !orderedArticles.some(a => a.id === rowArticleId)) rowArticleId = null;
+
+    let isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
+    const articleId = (isRowIdUuid ? rowArticleId : null) || textMatchedId
+      || (articleIdx >= 0 && articleIdx < orderedArticles.length ? orderedArticles[articleIdx].id : null) || null;
+    
+    // 이메일이나 외부 공유 시 가장 무난하게 보이고 박스가 생기지 않는 스타일을 적용
+    const linkStyles = 'cursor:pointer; text-decoration:underline; color:#1e3a5f; background:transparent; border:none; padding:0; outline:none; display:inline; font-weight:500;';
+
+    const existingBtn = headlineCell.find('[data-article-ref], button, span.ref-headline-btn, a.ref-headline-btn');
     if (existingBtn.length) {
-      existingBtn.attr('data-article-id', articleId);
+      const inner = existingBtn.html() || '';
+      const newEl = $(`<a href="#" class="ref-headline-btn" style="${linkStyles}" data-article-ref="${articleIdx}" data-article-id="${articleId || ''}">${inner}</a>`);
+      existingBtn.replaceWith(newEl);
     } else {
-      // 헤드라인 텍스트를 버튼으로 감싸고 data-article-id 삽입
+      // 헤드라인 텍스트를 감싸고 data-article-id 삽입 (button 대신 a 태그 사용)
       const inner = headlineCell.html() || '';
-      headlineCell.html(`<button class="ref-headline-btn" data-article-ref="${articleIdx}" data-article-id="${articleId}">${inner}</button>`);
+      headlineCell.html(`<a href="#" class="ref-headline-btn" style="${linkStyles}" data-article-ref="${articleIdx}" data-article-id="${articleId || ''}">${inner}</a>`);
     }
   });
 
@@ -271,6 +334,7 @@ function buildArticleDigest(articles: any[], includeArticleBody: boolean): strin
     const safeContent = fixEncodingIssues(cleanHtmlContent(article.content || ''));
     const parts = [
       `[${index + 1}] ${safeTitle}`,
+      `ID: ${article.id}`,
       `Source: ${safeSource}`,
       `PublishedAt: ${article.publishedAt?.toDate ? article.publishedAt.toDate().toISOString() : article.publishedAt || ''}`,
       `Category: ${article.category || 'other'}`,

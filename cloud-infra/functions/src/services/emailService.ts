@@ -1,7 +1,26 @@
 import * as nodemailer from 'nodemailer';
 import * as admin from 'firebase-admin';
+import { createHmac } from 'crypto';
 import { retryWithBackoff } from '../utils/errorHandling';
-import { buildOutputAssetBundle, generateEmailHtml, resolveOutputDate } from './reportAssetService';
+import { buildOutputAssetBundle, buildEmailHtml, resolveOutputDate } from './reportAssetService';
+
+/** Generate a per-email HMAC token for unsubscribe link verification */
+export function generateUnsubscribeToken(email: string, companyId: string): string {
+  const secret = process.env.EMAIL_HMAC_SECRET || process.env.SMTP_PASS || 'eum-unsub-secret';
+  return createHmac('sha256', secret).update(`${email}:${companyId}`).digest('hex');
+}
+
+/** Verify an unsubscribe token */
+export function verifyUnsubscribeToken(email: string, companyId: string, token: string): boolean {
+  return generateUnsubscribeToken(email, companyId) === token;
+}
+
+const FUNCTIONS_BASE_URL = 'https://us-central1-eumnews-9a99c.cloudfunctions.net';
+
+function buildUnsubscribeUrl(email: string, companyId: string): string {
+  const token = generateUnsubscribeToken(email, companyId);
+  return `${FUNCTIONS_BASE_URL}/handleUnsubscribe?email=${encodeURIComponent(email)}&companyId=${encodeURIComponent(companyId)}&token=${token}`;
+}
 
 async function getEmailConfig(companyId?: string | null) {
   let companySmtp: any = null;
@@ -70,7 +89,6 @@ export async function sendOutputEmails(
       auth: { user, pass },
     });
     const assetBundle = await buildOutputAssetBundle(outputId);
-    const html = await generateEmailHtml(assetBundle.output, assetBundle.articles);
 
     let subscriberEmails: string[] = [];
 
@@ -94,29 +112,63 @@ export async function sendOutputEmails(
       return { success: true, sentCount: 0, message: 'No subscribers configured' };
     }
 
-    const info = await retryWithBackoff(() => transporter.sendMail({
-      from,
-      bcc: subscriberEmails,
-      subject: `${options?.subjectPrefix || '[EUM PE]'} ${output.title || 'AI News Report'} (${resolveOutputDate(output)})`,
-      html,
-      attachments: [
-        {
-          filename: assetBundle.pdfFilename,
-          content: assetBundle.pdfBuffer,
-          contentType: 'application/pdf',
-        },
-      ],
-    }));
+    // Filter out unsubscribed emails
+    if (companyId) {
+      try {
+        const unsubSnap = await db.collection('emailUnsubscribes').doc(companyId).collection('entries').get();
+        const unsubEmails = new Set(unsubSnap.docs.map((d) => (d.data().email || '').toLowerCase()));
+        subscriberEmails = subscriberEmails.filter((e) => !unsubEmails.has(e.toLowerCase()));
+      } catch {
+        // If collection doesn't exist yet, continue with all subscribers
+      }
+    }
+
+    if (subscriberEmails.length === 0) {
+      console.log('All subscribers have unsubscribed.');
+      return { success: true, sentCount: 0, message: 'All subscribers unsubscribed' };
+    }
+
+    const shareUrl = assetBundle.output.shareUrl as string | undefined;
+    const subject = `${options?.subjectPrefix || '[EUM PE]'} ${output.title || 'AI News Report'} (${resolveOutputDate(output)})`;
+
+    // Send individually to embed per-recipient unsubscribe links
+    let sentCount = 0;
+    let lastMessageId: string | undefined;
+    for (const recipientEmail of subscriberEmails) {
+      const unsubscribeUrl = companyId ? buildUnsubscribeUrl(recipientEmail, companyId) : undefined;
+      const html = await buildEmailHtml(assetBundle.output, assetBundle.articles, { shareUrl, unsubscribeUrl });
+      try {
+        const info = await retryWithBackoff(() => transporter.sendMail({
+          from,
+          to: recipientEmail,
+          subject,
+          html,
+          attachments: [
+            {
+              filename: assetBundle.pdfFilename,
+              content: assetBundle.pdfBuffer,
+              contentType: 'application/pdf',
+            },
+          ],
+        }));
+        lastMessageId = info.messageId;
+        sentCount++;
+      } catch (err) {
+        console.error(`Failed to send email to ${recipientEmail}:`, err);
+      }
+    }
+
+    const info = { messageId: lastMessageId };
 
     const markField = options?.markAsField || 'emailSentAt';
     await outputDoc.ref.set({
       emailSent: true,
-      emailSuccessCount: subscriberEmails.length,
+      emailSuccessCount: sentCount,
       [markField]: admin.firestore.FieldValue.serverTimestamp(),
       ...(options?.metadata || {}),
     }, { merge: true });
 
-    return { success: true, sentCount: subscriberEmails.length, messageId: info.messageId };
+    return { success: true, sentCount, messageId: info.messageId };
   } catch (error) {
     console.error('Error sending briefing emails:', error);
     throw error;
