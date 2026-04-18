@@ -105,8 +105,8 @@ function resolveArticleIdByHeadline(text: string, articles: any[]): string | nul
       }
     }
   }
-  // Lower threshold to 0.2 to catch heavily shortened AI titles
-  if (bestMatch && maxOverlap >= 0.2) return bestMatch.id || null;
+  // Threshold 0.6: balance between catching shortened AI titles and avoiding false matches
+  if (bestMatch && maxOverlap >= 0.6) return bestMatch.id || null;
   return null;
 }
 
@@ -201,8 +201,8 @@ export default function Briefing() {
       || output.generatedOutput?.articleIds || output.articleIds || [];
     if (effectiveArticleIds.length > 0) {
       const chunks: string[][] = [];
-      for (let i = 0; i < effectiveArticleIds.length; i += 30) {
-        chunks.push(effectiveArticleIds.slice(i, i + 30));
+      for (let i = 0; i < effectiveArticleIds.length; i += 10) {
+        chunks.push(effectiveArticleIds.slice(i, i + 10));
       }
       const snaps = await Promise.all(
         chunks.map((chunk) => getDocs(query(collection(db, 'articles'), where(documentId(), 'in', chunk))))
@@ -991,9 +991,11 @@ export default function Briefing() {
                             return;
                           }
 
-                          // 2. <a> 링크 (원문 보기 버튼 포함)
+                           // 2. <a> 링크 (원문 보기 버튼 포함)
                           const anchor = (target.tagName === 'A' ? target : target.closest('a')) as HTMLAnchorElement | null;
                           if (anchor) {
+                            e.preventDefault();
+                            
                             const isModalTrigger = anchor.classList.contains('article-source-btn') || anchor.classList.contains('ref-headline-btn');
                             
                             // 이음 M&A 뉴스 양식에서는 링크가 .article-title 내부에 있고 부모 .article-block에 ID가 있음
@@ -1001,7 +1003,6 @@ export default function Briefing() {
                             const hasParentId = eumArticleBlock && eumArticleBlock.getAttribute('data-article-id');
 
                             if (isModalTrigger || hasParentId) {
-                              e.preventDefault();
                               
                               // 2-a. data-article-id (자신 또는 부모에서 탐색)
                               const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);

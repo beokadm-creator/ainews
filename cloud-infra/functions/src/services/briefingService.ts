@@ -241,7 +241,10 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
     const textResolvedId = resolveIdByHeadline(titleText);
 
     const isBlockIdUuid = Boolean(blockId && blockId.length > 5 && isNaN(Number(blockId)) && validArticleIds.has(blockId));
-    const articleId = (isBlockIdUuid ? blockId : null) || textResolvedId || urlResolvedId || null;
+    // Final fallback: numeric index (1-based) from blockId — AI sometimes uses "1", "2", etc.
+    const numericFallback = (!isBlockIdUuid && blockId) ? (parseInt(blockId, 10) - 1) : -1;
+    const indexFallback = (numericFallback >= 0 && numericFallback < orderedArticles.length) ? orderedArticles[numericFallback].id : null;
+    const articleId = (isBlockIdUuid ? blockId : null) || textResolvedId || urlResolvedId || indexFallback || null;
 
     if (articleId) {
       $(this).attr('data-article-id', articleId);
