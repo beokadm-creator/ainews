@@ -178,13 +178,9 @@ async function collectFromNaverNews(
   ];
   if (keywords.length === 0) keywords.push('M&A', '인수합병', '사모펀드 투자');
 
-  // Naver API는 날짜 범위 파라미터가 없으므로, 수집 후 freshness 필터로 신규 기사만 처리
-  // 매 시간 실행 기준: 4시간 이내 기사만 대상 (1시간 간격 실행 대비 충분한 버퍼)
-  const NAVER_FRESHNESS_MS = 4 * 60 * 60 * 1000;
-  const naverStartDate = new Date(Date.now() - NAVER_FRESHNESS_MS);
-  const effectiveStartDate = startDate
-    ? new Date(Math.max(startDate.getTime(), naverStartDate.getTime()))
-    : naverStartDate;
+  // Naver API는 날짜 범위 파라미터가 없으므로, 응답받은 기사 중 startDate / endDate 기준 필터링 수행
+  // (중복 검사는 이후 batchFetchDedupEntries가 훨씬 확실하게 처리하므로, 여기서는 기본 범위만 제한)
+  const effectiveStartDate = startDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 기본 7일
 
   const seenUrls = new Set<string>();
   const candidates: Array<{ title: string; url: string; content: string; publishedAt: Date }> = [];
@@ -221,7 +217,7 @@ async function collectFromNaverNews(
   }
 
   if (candidates.length === 0) {
-    console.log(`Naver News: 0 fresh candidates in last ${NAVER_FRESHNESS_MS / 3600000}h`);
+    console.log(`Naver News: 0 fresh candidates (startDate: ${effectiveStartDate.toISOString()})`);
     return 0;
   }
 
