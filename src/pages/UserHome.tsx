@@ -24,7 +24,7 @@ interface RecentArticle {
   source: string;
   category?: string;
   relevanceScore?: number;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
+  relevanceBasis?: 'keyword_reject' | 'ai';
   publishedAt?: any;
 }
 

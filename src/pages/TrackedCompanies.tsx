@@ -21,9 +21,8 @@ interface TrackedArticle {
   relevanceReason?: string;
   keywordMatched?: string | null;
   keywordPrefilterReason?: string;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback' | 'priority_source_bypass' | 'keyword_prefilter';
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'keyword_prefilter';
   aiRelevanceReason?: string;
-  priorityAnalysisReason?: string;
 }
 
 function normalizeReasonText(value?: string | null) {
@@ -48,10 +47,6 @@ function getAnalysisBasisLabel(basis?: TrackedArticle['relevanceBasis']) {
   switch (basis) {
     case 'ai':
       return '원문 AI 관련성 검토 통과';
-    case 'priority_source_override':
-      return '우선 매체 예외로 분석 진행';
-    case 'priority_source_fallback':
-      return '우선 매체 예외 보류 통과로 분석 진행';
     case 'keyword_reject':
       return '';
     default:

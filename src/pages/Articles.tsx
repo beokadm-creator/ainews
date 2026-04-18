@@ -130,12 +130,11 @@ interface ArticleItem {
   category: string;
   tags: string[];
   relevanceScore?: number;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback' | 'priority_source_bypass' | 'keyword_prefilter';
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'keyword_prefilter';
   relevanceReason?: string;
   aiRelevanceReason?: string;
   keywordMatched?: string | null;
   keywordPrefilterReason?: string;
-  priorityAnalysisReason?: string;
   content: string;
   url: string;
 }
@@ -154,7 +153,6 @@ function isInternalExclusionReason(value?: string | null) {
     'contains excluded keyword',
     'missing required keyword',
     '제목 키워드 매칭',
-    '우선 매체 수집',
   ].some((token) => normalized.includes(token.toLowerCase()));
 }
 
@@ -162,10 +160,6 @@ function getAnalysisBasisLabel(basis?: ArticleItem['relevanceBasis']) {
   switch (basis) {
     case 'ai':
       return '원문 AI 관련성 검토 통과';
-    case 'priority_source_override':
-      return '우선 매체 예외로 분석 진행';
-    case 'priority_source_fallback':
-      return '우선 매체 예외 보류 통과로 분석 진행';
     case 'keyword_reject':
       return '';
     default:

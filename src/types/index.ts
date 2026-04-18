@@ -46,6 +46,15 @@ export interface Article {
   
   status: ArticleStatus;
   relevanceScore?: number; // 1단계 필터링 점수 (옵션)
+  relevanceBasis?: 'keyword_reject' | 'ai' | 'keyword_prefilter';
+  relevanceReason?: string | null;
+  aiRelevanceDecision?: boolean;
+  aiRelevanceScore?: number | null;
+  aiRelevanceConfidence?: number | null;
+  aiRelevanceReason?: string | null;
+  keywordMatched?: string | null;
+  keywordPrefilterReason?: string | null;
+  collectedByKeywordFilter?: boolean;
   
   // 북마크 및 관리 데이터
   isBookmarked?: boolean; // 북마크 여부

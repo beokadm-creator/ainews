@@ -155,7 +155,7 @@ export default function AdminDashboard() {
     activeSources: 0,
   });
   const [runningAction, setRunningAction] = useState<'collection' | 'premiumCollection' | 'analysis' | null>(null);
-  const [keywordConfig, setKeywordConfig] = useState<{ titleKeywords: string[]; bypassSourcePatterns: string[] } | null>(null);
+  const [keywordConfig, setKeywordConfig] = useState<{ titleKeywords: string[] } | null>(null);
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -173,7 +173,6 @@ export default function AdminDashboard() {
         const kwData = kwSnap.data() as any;
         setKeywordConfig({
           titleKeywords: Array.isArray(kwData.titleKeywords) ? kwData.titleKeywords : [],
-          bypassSourcePatterns: Array.isArray(kwData.bypassSourcePatterns) ? kwData.bypassSourcePatterns : [],
         });
       }
 
@@ -347,11 +346,7 @@ export default function AdminDashboard() {
                     </span>
                   </p>
                   <p className="mt-0.5 text-xs text-white/45">
-                    키워드가 제목에 하나라도 포함(OR)된 기사만 수집 ·{' '}
-                    <span className="text-green-400">
-                      <Shield className="inline h-3 w-3 mr-0.5" />
-                      우선 매체: {keywordConfig.bypassSourcePatterns.join(', ')}
-                    </span>
+                    키워드가 제목에 하나라도 포함(OR)된 기사만 수집
                   </p>
                 </div>
               </div>

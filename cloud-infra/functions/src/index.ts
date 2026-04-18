@@ -4074,11 +4074,11 @@ export const saveGlobalKeywords = onCall({ region: 'us-central1' }, async (reque
   if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
     throw new HttpsError('permission-denied', 'Superadmin only');
   }
-  const { titleKeywords, bypassSourcePatterns, trackedCompanies } = request.data || {};
+  const { titleKeywords, trackedCompanies } = request.data || {};
   if (!Array.isArray(titleKeywords)) {
     throw new HttpsError('invalid-argument', 'titleKeywords must be an array');
   }
-  await saveGlobalKeywordConfig(titleKeywords, bypassSourcePatterns, trackedCompanies);
+  await saveGlobalKeywordConfig(titleKeywords, trackedCompanies);
   invalidateKeywordCache();
   return { success: true, count: titleKeywords.length };
 });

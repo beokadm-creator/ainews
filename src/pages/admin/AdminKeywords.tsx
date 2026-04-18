@@ -16,7 +16,6 @@ import {
 
 interface KeywordConfig {
   titleKeywords: string[];
-  bypassSourcePatterns: string[];
   trackedCompanies: string[];
 }
 
@@ -28,14 +27,12 @@ const DEAL_KEYWORDS = [
 ];
 
 export default function AdminKeywords() {
-  const [config, setConfig] = useState<KeywordConfig>({ titleKeywords: [], bypassSourcePatterns: [], trackedCompanies: [] });
+  const [config, setConfig] = useState<KeywordConfig>({ titleKeywords: [], trackedCompanies: [] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [newKeyword, setNewKeyword] = useState('');
   const [searchFilter, setSearchFilter] = useState('');
-  const [showBypass, setShowBypass] = useState(false);
-  const [newBypass, setNewBypass] = useState('');
   const [newTrackedCompany, setNewTrackedCompany] = useState('');
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -64,7 +61,6 @@ export default function AdminKeywords() {
       const fn = httpsCallable(functions, 'saveGlobalKeywords');
       await fn({
         titleKeywords: config.titleKeywords,
-        bypassSourcePatterns: config.bypassSourcePatterns,
         trackedCompanies: config.trackedCompanies,
       });
       setMessage({ type: 'success', text: `키워드 ${config.titleKeywords.length}개 저장 완료` });
@@ -84,17 +80,6 @@ export default function AdminKeywords() {
 
   const removeKeyword = (kw: string) => {
     setConfig((prev) => ({ ...prev, titleKeywords: prev.titleKeywords.filter((k) => k !== kw) }));
-  };
-
-  const addBypass = () => {
-    const bp = newBypass.trim();
-    if (!bp || config.bypassSourcePatterns.includes(bp)) return;
-    setConfig((prev) => ({ ...prev, bypassSourcePatterns: [...prev.bypassSourcePatterns, bp] }));
-    setNewBypass('');
-  };
-
-  const removeBypass = (bp: string) => {
-    setConfig((prev) => ({ ...prev, bypassSourcePatterns: prev.bypassSourcePatterns.filter((b) => b !== bp) }));
   };
 
   const addTrackedCompany = () => {
@@ -298,51 +283,6 @@ export default function AdminKeywords() {
             </span>
           ))}
         </div>
-      </div>
-
-      {/* Bypass sources */}
-      <div className="bg-gray-900 border border-white/5 rounded-xl overflow-hidden">
-        <button
-          onClick={() => setShowBypass(!showBypass)}
-          className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/3 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-green-400" />
-            <span className="text-sm font-semibold text-white">우선 매체 (키워드 무시 전체 수집)</span>
-            <span className="text-xs text-white/40">{config.bypassSourcePatterns.length}개</span>
-          </div>
-          {showBypass ? <ChevronUp className="w-4 h-4 text-white/40" /> : <ChevronDown className="w-4 h-4 text-white/40" />}
-        </button>
-        {showBypass && (
-          <div className="px-5 pb-5 border-t border-white/5">
-            <p className="text-xs text-white/40 mt-3 mb-3">
-              아래 패턴이 소스명 또는 소스ID에 포함되면 키워드 필터를 건너뜁니다.
-            </p>
-            <div className="flex gap-2 mb-3">
-              <input
-                value={newBypass}
-                onChange={(e) => setNewBypass(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addBypass()}
-                placeholder="패턴 추가 (예: thebell)"
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/25 focus:outline-none focus:border-[#d4af37]/50"
-              />
-              <button onClick={addBypass} className="flex items-center gap-1.5 px-3 py-2 bg-green-500/10 text-green-400 border border-green-500/20 rounded-lg text-sm font-medium hover:bg-green-500/20 transition-colors">
-                <Plus className="w-4 h-4" />
-                추가
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {config.bypassSourcePatterns.map((bp) => (
-                <span key={bp} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                  {bp}
-                  <button onClick={() => removeBypass(bp)} className="hover:opacity-70 transition-opacity">
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Danger zone: Reset all articles */}

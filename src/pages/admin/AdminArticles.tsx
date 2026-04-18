@@ -42,7 +42,7 @@ interface Article {
   status: string;
   content?: string;
   relevanceScore?: number;
-  relevanceBasis?: 'keyword_reject' | 'ai' | 'priority_source_override' | 'priority_source_fallback';
+  relevanceBasis?: 'keyword_reject' | 'ai';
   relevanceReason?: string;
   filterReason?: string;
   category?: string;
@@ -87,9 +87,6 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
 
 const SOURCE_OPTIONS = [
   { value: '', label: '전체 매체' },
-  { value: 'thebell', label: '더벨' },
-  { value: 'marketinsight', label: '마켓인사이트' },
-  { value: 'hankyung_ma', label: '한국경제 M&A' },
 ];
 
 const SOURCE_HEALTH_IDS = [
@@ -134,10 +131,6 @@ function relevanceBasisLabel(basis?: Article['relevanceBasis']) {
   switch (basis) {
     case 'keyword_reject':
       return '키워드 규칙 제외';
-    case 'priority_source_override':
-      return '우선 매체 예외 통과 (사용안함)';
-    case 'priority_source_fallback':
-      return '우선 매체 예외 보류 (사용안함)';
     case 'ai':
       return 'AI 판정';
     default:

@@ -29,9 +29,7 @@ export interface RelevanceResult {
 
 type RelevanceBasis =
   | 'keyword_reject'
-  | 'ai'
-  | 'priority_source_override'
-  | 'priority_source_fallback';
+  | 'ai';
 
 interface PromptExecutionContext {
   companyId?: string;
@@ -45,13 +43,6 @@ interface ApiCallResult {
   usage: TokenUsage;
   provider: AiProvider;
   model: string;
-}
-
-interface SourcePriorityDecision {
-  isPriority: boolean;
-  priority: number;
-  reason: string | null;
-  sourceMeta: Record<string, any> | null;
 }
 
 interface CallProviderTelemetry {
@@ -75,8 +66,6 @@ interface NormalizedAnalysisResult {
   insights: string | null;
   tags: string[];
 }
-
-const PRIORITY_SOURCE_NAME_PATTERNS: string[] = [];
 
 const sourceMetaCache = new Map<string, Record<string, any> | null>();
 
@@ -656,52 +645,9 @@ async function loadSourceMetadata(article: any): Promise<Record<string, any> | n
   return data;
 }
 
-async function getSourcePriorityDecision(article: any): Promise<SourcePriorityDecision> {
-  const sourceMeta = await loadSourceMetadata(article);
-  const sourceName = normalizeSourceName(article?.source || sourceMeta?.name);
-  const pricingTier = sourceMeta?.pricingTier || article?.sourcePricingTier || null;
-
-  if (pricingTier === 'paid' || pricingTier === 'requires_subscription') {
-    return {
-      isPriority: true,
-      priority: pricingTier === 'paid' ? 120 : 110,
-      reason: `priority pricing tier: ${pricingTier}`,
-      sourceMeta,
-    };
-  }
-
-  if (PRIORITY_SOURCE_NAME_PATTERNS.some((pattern) => sourceName.includes(pattern))) {
-    return {
-      isPriority: true,
-      priority: 100,
-      reason: 'priority source name match',
-      sourceMeta,
-    };
-  }
-
-  const matchedKeyword = `${article?.keywordMatched || ''}`.trim();
-  if (matchedKeyword && DEFAULT_TRACKED_COMPANIES.includes(matchedKeyword)) {
-    return {
-      isPriority: true,
-      priority: 100,
-      reason: `tracked company match: ${matchedKeyword}`,
-      sourceMeta,
-    };
-  }
-
-  // 대표님 요청: 더벨/마켓인사이트 등 우선 매체 예외 통과를 원천 차단하기 위해
-  // article.priorityAnalysis (globalKeywordService에서 넘어온 값) 무시하고 항상 false 반환
-  return {
-    isPriority: false, // 기존: Boolean(article?.priorityAnalysis),
-    priority: 0,       // 기존: Number(article?.analysisPriority || 0),
-    reason: null,      // 기존: article?.priorityAnalysisReason || null,
-    sourceMeta,
-  };
-}
-
-// ?????????????????????????????????????????
+// ────────────────────────────────────────
 // Provider-specific API callers
-// ?????????????????????????????????????????
+// ────────────────────────────────────────
 async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Promise<string> {
   const db = admin.firestore();
 
@@ -1385,37 +1331,34 @@ export async function processRelevanceFiltering(options?: {
     const results = await Promise.all(chunk.map(async (doc) => {
       const article = doc.data() as any;
       try {
-        const priorityDecision = await getSourcePriorityDecision(article);
         let fastRejectReason: string | null = null;
 
-        if (!priorityDecision.isPriority) {
-          const textToSearch = `${article.title || ''} ${article.content || ''}`;
-          const normalizedText = textToSearch.toLowerCase();
-          if (hasSportsContext(textToSearch)) {
-            fastRejectReason = 'Sports context article';
-          }
+        const textToSearch = `${article.title || ''} ${article.content || ''}`;
+        const normalizedText = textToSearch.toLowerCase();
+        if (hasSportsContext(textToSearch)) {
+          fastRejectReason = 'Sports context article';
+        }
 
-          const mustKeywords = filters?.mustIncludeKeywords || [];
-          if (!fastRejectReason && mustKeywords.length > 0) {
-            const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
-              kw.trim() && normalizedText.includes(kw.trim().toLowerCase())
-            );
-            for (const kw of mustKeywords) {
-              if (kw.trim() && !normalizedText.includes(kw.trim().toLowerCase())) {
-                if (hasAnyMustKeyword) break;
-                fastRejectReason = `Missing required keyword: ${kw}`;
-                break;
-              }
+        const mustKeywords = filters?.mustIncludeKeywords || [];
+        if (!fastRejectReason && mustKeywords.length > 0) {
+          const hasAnyMustKeyword = mustKeywords.some((kw: string) =>
+            kw.trim() && normalizedText.includes(kw.trim().toLowerCase())
+          );
+          for (const kw of mustKeywords) {
+            if (kw.trim() && !normalizedText.includes(kw.trim().toLowerCase())) {
+              if (hasAnyMustKeyword) break;
+              fastRejectReason = `Missing required keyword: ${kw}`;
+              break;
             }
           }
+        }
 
-          const excludeKeywords = filters?.excludeKeywords || [];
-          if (!fastRejectReason && excludeKeywords.length > 0) {
-            for (const kw of excludeKeywords) {
-              if (kw.trim() && normalizedText.includes(kw.trim().toLowerCase())) {
-                fastRejectReason = `Contains excluded keyword: ${kw}`;
-                break;
-              }
+        const excludeKeywords = filters?.excludeKeywords || [];
+        if (!fastRejectReason && excludeKeywords.length > 0) {
+          for (const kw of excludeKeywords) {
+            if (kw.trim() && normalizedText.includes(kw.trim().toLowerCase())) {
+              fastRejectReason = `Contains excluded keyword: ${kw}`;
+              break;
             }
           }
         }
@@ -1447,32 +1390,23 @@ export async function processRelevanceFiltering(options?: {
               status: aiError.response?.status,
               responseData: aiError.response?.data ? JSON.stringify(aiError.response.data).substring(0, 300) : undefined,
             });
-
-            if (priorityDecision.isPriority) {
-              result = {
-                isRelevant: true,
-                confidence: 1,
-                reason: `Priority analysis override (${priorityDecision.reason || 'priority source'}). Relevance check failed: ${aiError.message}`,
-              };
-            } else {
-              throw aiError;
-            }
+            throw aiError;
           }
         }
 
-        return { doc, result, aiRelevanceResult, priorityDecision, error: null };
+        return { doc, result, aiRelevanceResult, error: null };
       } catch (error: any) {
         registerAiRateLimit(error);
         console.error(`Failed to filter article ${doc.id}:`, error.message);
         recordError();
-        return { doc, result: null, aiRelevanceResult: null, priorityDecision: null, error };
+        return { doc, result: null, aiRelevanceResult: null, error };
       }
     }));
 
     const batch = db.batch();
     const rejectedDocs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
 
-    for (const { doc, result, aiRelevanceResult, priorityDecision, error } of results) {
+    for (const { doc, result, aiRelevanceResult, error } of results) {
       if (result) {
         const aiConfidence = clampConfidence(aiRelevanceResult?.confidence ?? null);
         let relevanceBasis: RelevanceBasis = 'ai';
@@ -1500,10 +1434,6 @@ export async function processRelevanceFiltering(options?: {
           aiRelevanceReason: aiRelevanceResult?.reason ?? result.reason,
           keywordMatched: collectedData?.keywordMatched || null,
           keywordPrefilterReason: collectedData?.keywordPrefilterReason || null,
-          priorityAnalysis: priorityDecision?.isPriority || false,
-          analysisPriority: priorityDecision?.priority || 0,
-          priorityAnalysisReason: priorityDecision?.reason || null,
-          sourcePricingTier: priorityDecision?.sourceMeta?.pricingTier || doc.data()?.sourcePricingTier || null,
           relevanceAttemptCount: admin.firestore.FieldValue.delete(),
           lastAiErrorStage: admin.firestore.FieldValue.delete(),
           lastAiError: admin.firestore.FieldValue.delete(),
@@ -1533,7 +1463,7 @@ export async function processRelevanceFiltering(options?: {
         // batch에 삭제된 문서가 포함된 경우(수동 초기화 후 등) 개별 업데이트로 폴백
         if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
           console.warn('[RelevanceFilter] batch.commit NOT_FOUND → individual fallback');
-          for (const { doc: d, result: r, aiRelevanceResult, priorityDecision, error: e } of results) {
+          for (const { doc: d, result: r, aiRelevanceResult, error: e } of results) {
             if (!r && !e) continue;
             try {
               if (r) {
@@ -1618,9 +1548,8 @@ export async function processDeepAnalysis(options?: {
 
   const articles = (await Promise.all(claimedArticles.map(async (doc) => {
     const article = doc.data() as any;
-    const priorityDecision = await getSourcePriorityDecision(article);
-    return { doc, article, priorityDecision };
-  }))).sort((a, b) => (b.priorityDecision.priority || 0) - (a.priorityDecision.priority || 0));
+    return { doc, article };
+  })));
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
     if (options?.abortChecker && await options.abortChecker()) {
@@ -1629,7 +1558,7 @@ export async function processDeepAnalysis(options?: {
     }
 
     const chunk = articles.slice(i, i + parallelLimit);
-    const results = await Promise.all(chunk.map(async ({ doc, article, priorityDecision }) => {
+    const results = await Promise.all(chunk.map(async ({ doc, article }) => {
       try {
         const publishedAtStr = article.publishedAt
           ? (article.publishedAt.toDate ? article.publishedAt.toDate().toISOString() : new Date(article.publishedAt).toISOString())
@@ -1642,17 +1571,17 @@ export async function processDeepAnalysis(options?: {
           { companyId: article.companyId || options?.companyId, pipelineRunId: article.pipelineRunId || options?.pipelineRunId }
         );
 
-        return { doc, analysisResult, priorityDecision, error: null };
+        return { doc, analysisResult, error: null };
       } catch (error) {
         registerAiRateLimit(error);
         console.error(`Failed to analyze article ${doc.id}:`, error);
         recordError();
-        return { doc, analysisResult: null, priorityDecision, error };
+        return { doc, analysisResult: null, error };
       }
     }));
 
     const batch = db.batch();
-    for (const { doc, analysisResult, priorityDecision, error } of results) {
+    for (const { doc, analysisResult, error } of results) {
       if (analysisResult) {
         const normalized = normalizeAnalysisResult(analysisResult);
         batch.update(doc.ref, {
@@ -1664,9 +1593,6 @@ export async function processDeepAnalysis(options?: {
           deal: normalized.deal,
           insights: normalized.insights,
           tags: normalized.tags,
-          priorityAnalysis: priorityDecision?.isPriority || false,
-          analysisPriority: priorityDecision?.priority || 0,
-          priorityAnalysisReason: priorityDecision?.reason || null,
           analysisAttemptCount: admin.firestore.FieldValue.delete(),
           lastAiErrorStage: admin.firestore.FieldValue.delete(),
           lastAiError: admin.firestore.FieldValue.delete(),
@@ -1693,7 +1619,7 @@ export async function processDeepAnalysis(options?: {
       } catch (batchErr: any) {
         if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
           console.warn('[DeepAnalysis] batch.commit NOT_FOUND → individual fallback');
-          for (const { doc, analysisResult, priorityDecision, error } of results) {
+          for (const { doc, analysisResult, error } of results) {
             try {
               if (analysisResult) {
                 const normalized = normalizeAnalysisResult(analysisResult);
@@ -1706,9 +1632,6 @@ export async function processDeepAnalysis(options?: {
                   deal: normalized.deal,
                   insights: normalized.insights,
                   tags: normalized.tags,
-                  priorityAnalysis: priorityDecision?.isPriority || false,
-                  analysisPriority: priorityDecision?.priority || 0,
-                  priorityAnalysisReason: priorityDecision?.reason || null,
                   analysisAttemptCount: admin.firestore.FieldValue.delete(),
                   lastAiErrorStage: admin.firestore.FieldValue.delete(),
                   lastAiError: admin.firestore.FieldValue.delete(),

@@ -158,8 +158,6 @@ export interface ArticleData {
   category?: string;
   isPaid?: boolean;
   sourcePricingTier?: 'free' | 'paid' | 'requires_subscription';
-  priorityAnalysis?: boolean;
-  priorityAnalysisReason?: string;
   author?: string;
   subtitle?: string;
   date?: string;
@@ -192,8 +190,6 @@ export async function saveArticleGlobal(article: ArticleData): Promise<boolean> 
     globalSourceId: article.globalSourceId || article.sourceId,
     sourceCategory: article.category || null,
     sourcePricingTier: article.sourcePricingTier || (article.isPaid ? 'paid' : 'free'),
-    priorityAnalysis: article.priorityAnalysis ?? Boolean(article.isPaid),
-    priorityAnalysisReason: article.priorityAnalysisReason || (article.isPaid ? 'local paid source' : null),
     isPaid: article.isPaid ?? true, // 로컬 스크래퍼 기사는 유료
     author: article.author || null,
     subtitle: article.subtitle || null,

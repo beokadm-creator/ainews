@@ -51,7 +51,6 @@ function resolveKeywordFilter(article: ParsedArticle, source: any, sourceId: str
     if (sourceMatched) {
       return {
         passes: true,
-        isBypassSource: false,
         matchedKeyword: sourceMatched,
       };
     }
@@ -270,15 +269,12 @@ export async function processRssSources(options?: {
           const initialStatus = 'pending';
           const relevanceFields = {
             filteredAt: admin.firestore.FieldValue.serverTimestamp(),
-            relevanceBasis: kw.isBypassSource ? 'priority_source_bypass' : 'keyword_prefilter',
-            relevanceScore: kw.isBypassSource ? 100 : 80,
-            relevanceConfidence: kw.isBypassSource ? 1.0 : 0.9,
-            relevanceReason: kw.isBypassSource
-              ? `우선 매체 (${source.name}) - 전량 수집`
-              : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+            relevanceBasis: 'keyword_prefilter',
+            relevanceScore: 80,
+            relevanceConfidence: 0.9,
+            relevanceReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
             keywordMatched: kw.matchedKeyword || null,
-            priorityAnalysis: kw.isBypassSource,
-            keywordPrefilterReason: kw.isBypassSource ? '우선 매체 수집' : `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+            keywordPrefilterReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
             collectedByKeywordFilter: true,
           };
 
