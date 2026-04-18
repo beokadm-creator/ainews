@@ -36,23 +36,28 @@ export async function recordArticleDedupEntry(article: ArticleLike) {
   const dedupKey = getArticleDedupKey(article.url);
   const ref = db.collection('articleDedup').doc(dedupKey);
 
-  await ref.set({
-    id: dedupKey,
-    urlHash: dedupKey,
-    normalizedUrl: normalizeUrl(article.url),
-    articleId: article.id || null,
-    companyId: article.companyId ?? null,
-    titleHash: hashTitle(article.title || ''),
-    sourceId: article.sourceId || null,
-    globalSourceId: article.globalSourceId || article.sourceId || null,
-    source: article.source || null,
-    title: article.title || null,
-    lastStatus: article.status || 'pending',
-    publishedAt: toTimestamp(article.publishedAt),
-    firstSeenAt: admin.firestore.FieldValue.serverTimestamp(),
-    lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
-    lastCollectedAt: toTimestamp(article.collectedAt),
-  }, { merge: true });
+  await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+    if (!doc.exists) {
+      transaction.set(ref, {
+        id: dedupKey,
+        urlHash: dedupKey,
+        normalizedUrl: normalizeUrl(article.url || ''),
+        articleId: article.id || null,
+        companyId: article.companyId ?? null,
+        titleHash: hashTitle(article.title || ''),
+        sourceId: article.sourceId || null,
+        globalSourceId: article.globalSourceId || article.sourceId || null,
+        source: article.source || null,
+        title: article.title || null,
+        lastStatus: article.status || 'pending',
+        publishedAt: toTimestamp(article.publishedAt),
+        firstSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastCollectedAt: toTimestamp(article.collectedAt),
+      });
+    }
+  });
 
   return dedupKey;
 }

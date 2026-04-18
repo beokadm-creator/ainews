@@ -28,6 +28,43 @@ function resolveOutputDate(output: any): string {
   return new Date().toLocaleDateString('ko-KR');
 }
 
+export function splitMessageSafely(message: string, maxLen = 3800): string[] {
+  if (message.length <= maxLen) return [message];
+
+  const chunks: string[] = [];
+  let remaining = message;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // 안전한 분할점 찾기: 개행 → 닫는 태그 → 공백 순서
+    let splitAt = -1;
+    const searchRange = remaining.substring(maxLen - 200, maxLen + 200);
+
+    // 1순위: 개행 문자
+    splitAt = remaining.lastIndexOf('\n', maxLen);
+    // 2순위: 닫는 HTML 태그 뒤
+    if (splitAt < maxLen - 500) {
+      const tagClose = remaining.lastIndexOf('>', maxLen);
+      if (tagClose > maxLen - 500) splitAt = tagClose + 1;
+    }
+    // 3순위: 공백
+    if (splitAt < maxLen - 500) {
+      splitAt = remaining.lastIndexOf(' ', maxLen);
+    }
+
+    if (splitAt <= 0) splitAt = maxLen;
+
+    chunks.push(remaining.substring(0, splitAt));
+    remaining = remaining.substring(splitAt);
+  }
+
+  return chunks;
+}
+
 export function formatOutputForTelegram(output: any, articles: any[]): string {
   const dateStr = resolveOutputDate(output);
   const structured = output.structuredOutput || {};
@@ -82,7 +119,7 @@ export function formatOutputForTelegram(output: any, articles: any[]): string {
   return message;
 }
 
-export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'MarkdownV2' = 'HTML') {
+export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'MarkdownV2' = 'HTML', maxRetries = 3) {
   const config = await getTelegramConfig();
 
   if (!config.botToken || !config.chatId) {
@@ -92,17 +129,44 @@ export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'Mar
 
   const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`;
 
-  try {
-    const response = await axios.post(url, {
-      chat_id: config.chatId,
-      text,
-      parse_mode: parseMode,
-      disable_web_page_preview: false,
-    });
-    return { success: true, messageId: response.data.result.message_id };
-  } catch (error: any) {
-    console.error('Error sending Telegram message:', error.response?.data || error.message);
-    throw error;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios.post(url, {
+        chat_id: config.chatId,
+        text,
+        parse_mode: parseMode,
+        disable_web_page_preview: false,
+      });
+      return { success: true, messageId: response.data.result.message_id };
+    } catch (error: any) {
+      const status = error.response?.status;
+
+      if (status === 429) {
+        // Retry-After 헤더 활용
+        const retryAfter = error.response?.headers?.['retry-after'];
+        const delay = retryAfter ? parseInt(retryAfter) * 1000 : (2 ** attempt) * 1000;
+        console.warn(`Telegram rate limited, retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      if (status === 400 && parseMode === 'HTML') {
+        // HTML 파싱 실패 → HTML 태그 제거 후 plaintext로 재시도
+        console.warn('Telegram HTML parse failed, retrying as plain text');
+        const stripped = text.replace(/<[^>]*>/g, '');
+        return await axios.post(url, {
+          chat_id: config.chatId,
+          text: stripped.substring(0, 4096),
+          disable_web_page_preview: false,
+        }).then(r => ({ success: true, messageId: r.data.result.message_id }));
+      }
+
+      if (attempt === maxRetries) {
+        console.error('Error sending Telegram message:', error.response?.data || error.message);
+        throw error;
+      }
+      await new Promise(r => setTimeout(r, (2 ** attempt) * 1000));
+    }
   }
 }
 
@@ -146,8 +210,17 @@ async function loadTelegramArticles(output: any): Promise<any[]> {
         : undefined;
 
   if (effectiveIds) {
-    const docs = await Promise.all(effectiveIds.map((id: string) => db.collection('articles').doc(id).get()));
-    return docs.filter((d) => d.exists).map((d) => ({ id: d.id, ...(d.data() as any) }));
+    const results: any[] = [];
+    for (let i = 0; i < effectiveIds.length; i += 10) {
+      const chunk = effectiveIds.slice(i, i + 10);
+      const snap = await db.collection('articles')
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .get();
+      results.push(...snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }
+    // 원래 배열 순서 보존
+    const byId = new Map(results.map(a => [a.id, a]));
+    return effectiveIds.map((id: string) => byId.get(id)).filter(Boolean);
   }
 
   const snap = await db.collection('articles').where('publishedInOutputId', '==', output.id || '').get();
@@ -202,16 +275,7 @@ export async function sendBriefingToTelegram(outputId: string) {
       : formatOutputForTelegram(output, articles);
 
     // Telegram has 4096 char limit per message
-    const chunks: string[] = [];
-    if (message.length <= 4096) {
-      chunks.push(message);
-    } else {
-      let remaining = message;
-      while (remaining.length > 0) {
-        chunks.push(remaining.substring(0, 4000));
-        remaining = remaining.substring(4000);
-      }
-    }
+    const chunks: string[] = splitMessageSafely(message);
 
     let lastResult: any = null;
     for (const chunk of chunks) {

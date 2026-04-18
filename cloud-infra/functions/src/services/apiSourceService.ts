@@ -239,14 +239,18 @@ async function collectFromNaverNews(
     async (article) => enrichArticleBody(article),
   );
 
-  // STEP 3: 키워드 필터 병렬 처리
-  const keywordResults = await Promise.all(
+  // STEP 3: 키워드 필터 병렬 처리 (에러 방어)
+  const keywordResultsRaw = await Promise.allSettled(
     enrichedCandidates.map(async (article) => ({
       article,
       kw: await checkKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId),
     }))
   );
-  const keywordPassed = keywordResults.filter(({ kw }) => kw.passes);
+  
+  const keywordPassed = keywordResultsRaw
+    .filter((res): res is PromiseFulfilledResult<any> => res.status === 'fulfilled')
+    .map((res) => res.value)
+    .filter(({ kw }) => kw.passes);
 
   // STEP 4: 2차 dedup (ledger에 없는 기사에 대해 URL/제목 유사도 체크)
   const finalCandidates: typeof keywordPassed = [];

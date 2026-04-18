@@ -108,8 +108,9 @@ export async function batchFetchDedupEntries(urlHashes: string[]): Promise<Map<s
   const result = new Map<string, any>();
   if (urlHashes.length === 0) return result;
   const unique = [...new Set(urlHashes)];
-  for (let i = 0; i < unique.length; i += 30) {
-    const chunk = unique.slice(i, i + 30);
+  const CHUNK_SIZE = 10;
+  for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+    const chunk = unique.slice(i, i + CHUNK_SIZE);
     const snap = await db.collection('articleDedup')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
       .get();

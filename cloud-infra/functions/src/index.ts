@@ -39,6 +39,21 @@ import { recordMetric } from './services/metricsService';
 import { DEFAULT_TRACKED_COMPANIES } from './services/trackedCompanyConfig';
 admin.initializeApp();
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Log critical error to firestore without blocking
+  try {
+    admin.firestore().collection('systemLogs').add({
+      type: 'unhandledRejection',
+      reason: String(reason),
+      stack: reason instanceof Error ? reason.stack : null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }).catch(() => {});
+  } catch (e) {
+    console.error('Failed to log unhandledRejection to firestore:', e);
+  }
+});
+
 // ─── Module-level source ID cache (mirrors globalKeywordService pattern) ─────
 let cachedActiveSourceIds: string[] | null = null;
 let sourceCacheExpiresAt = 0;
@@ -389,8 +404,21 @@ async function withWorkerLease<T>(
     return { executed: false };
   }
 
+  // Heartbeat to prevent deadlocks during long-running tasks
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      await leaseRef.update({
+        leaseUntil: admin.firestore.Timestamp.fromMillis(Date.now() + leaseMs),
+        lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      console.error(`Heartbeat failed for worker ${workerId}:`, e);
+    }
+  }, Math.min(leaseMs / 2, 60000)); // Every 1 minute or half lease time
+
   try {
     const result = await fn();
+    clearInterval(heartbeatInterval);
     await leaseRef.set({
       workerId,
       status: 'idle',
@@ -402,6 +430,7 @@ async function withWorkerLease<T>(
     }, { merge: true });
     return { executed: true, result };
   } catch (error: any) {
+    clearInterval(heartbeatInterval);
     await leaseRef.set({
       workerId,
       status: 'error',
