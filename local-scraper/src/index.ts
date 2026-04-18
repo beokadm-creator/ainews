@@ -35,10 +35,18 @@ const KEEPALIVE_INTERVAL_MS = 20 * 60 * 1000; // 20분마다
 
 async function runSessionKeepAlive() {
   if (!isKoreanBusinessHours()) return; // 업무시간 외에는 패스
-  await thebellService.refreshSession();
+  try {
+    await thebellService.refreshSession();
+  } catch (e: any) {
+    console.error('[KeepAlive] TheBell session refresh failed (continuing):', e.message);
+  }
   // 사이트 간 자연스러운 간격
   await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
-  await marketInsightService.refreshSession();
+  try {
+    await marketInsightService.refreshSession();
+  } catch (e: any) {
+    console.error('[KeepAlive] MarketInsight session refresh failed (continuing):', e.message);
+  }
 }
 
 function startSessionKeepAlive() {
