@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
@@ -59,7 +60,7 @@ export default function History() {
       }
     }
 
-    loadHistory().catch(console.error);
+    loadHistory().catch(handleError);
   }, [companyId]);
 
   return (

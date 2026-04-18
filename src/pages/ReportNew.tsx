@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, FileText, Loader2, Sparkles } from 'lucide-react';
@@ -119,7 +120,7 @@ export default function ReportNew() {
       }
     };
 
-    loadCompanyPrompt().catch(console.error);
+    loadCompanyPrompt().catch(handleError);
   }, [companyId]);
 
   const handleGenerate = async () => {

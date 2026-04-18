@@ -1,35 +1,46 @@
-import { useEffect } from 'react';
+import { useEffect, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
+import { ErrorBoundary } from 'react-error-boundary';
+import { Toaster } from 'react-hot-toast';
+import { GlobalErrorFallback } from '@/components/GlobalErrorFallback';
 
 // Layouts
 import Layout from '@/components/Layout';
 import AdminLayout from '@/components/AdminLayout';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { Loader2 } from 'lucide-react';
 
-// ─── Company user pages ────────────────────────────────────
-import Login from '@/pages/Login';
-import UserHome from '@/pages/UserHome';
-import Articles from '@/pages/Articles';
-import TrackedCompanies from '@/pages/TrackedCompanies';
-import ReportNew from '@/pages/ReportNew';
-import Briefing from '@/pages/Briefing';
-import History from '@/pages/History';
-import MediaSelector from '@/pages/MediaSelector';
-import Team from '@/pages/Team';
-import Settings from '@/pages/Settings';
-import DeliveryCenter from '@/pages/DeliveryCenter';
+// Loading Fallback
+const PageLoader = () => (
+  <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
+    <Loader2 className="h-8 w-8 animate-spin text-[#d4af37]" />
+  </div>
+);
+
+// ─── Lazy loaded pages ────────────────────────────────────
+const Login = lazy(() => import('@/pages/Login'));
+const UserHome = lazy(() => import('@/pages/UserHome'));
+const Articles = lazy(() => import('@/pages/Articles'));
+const TrackedCompanies = lazy(() => import('@/pages/TrackedCompanies'));
+const ReportNew = lazy(() => import('@/pages/ReportNew'));
+const Briefing = lazy(() => import('@/pages/Briefing'));
+const History = lazy(() => import('@/pages/History'));
+const MediaSelector = lazy(() => import('@/pages/MediaSelector'));
+const Team = lazy(() => import('@/pages/Team'));
+const Settings = lazy(() => import('@/pages/Settings'));
+const DeliveryCenter = lazy(() => import('@/pages/DeliveryCenter'));
 
 // ─── Superadmin pages ──────────────────────────────────────
-import AdminDashboard from '@/pages/admin/AdminDashboard';
-import AdminArticles from '@/pages/admin/AdminArticles';
-import AdminSettings from '@/pages/admin/AdminSettings';
-import AdminKeywords from '@/pages/admin/AdminKeywords';
-import AdminManagement from '@/pages/AdminManagement';
-import MediaAdmin from '@/pages/MediaAdmin';
-import NotFound from '@/pages/NotFound';
+const AdminDashboard = lazy(() => import('@/pages/admin/AdminDashboard'));
+const AdminArticles = lazy(() => import('@/pages/admin/AdminArticles'));
+const AdminSettings = lazy(() => import('@/pages/admin/AdminSettings'));
+const AdminKeywords = lazy(() => import('@/pages/admin/AdminKeywords'));
+const AdminManagement = lazy(() => import('@/pages/AdminManagement'));
+const MediaAdmin = lazy(() => import('@/pages/MediaAdmin'));
+const NotFound = lazy(() => import('@/pages/NotFound'));
 
 // ─── Role-based root redirect ──────────────────────────────
 function RootRedirect() {
@@ -52,10 +63,12 @@ export default function App() {
   }, [setUserWithProfile]);
 
   return (
-    <Router>
-      <Routes>
-        {/* Public */}
-        <Route path="/login" element={<Login />} />
+    <ErrorBoundary FallbackComponent={GlobalErrorFallback} onReset={() => window.location.href = '/'}>
+      <Router>
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            {/* Public */}
+            <Route path="/login" element={<Login />} />
 
         {/* Root redirect based on role */}
         <Route path="/" element={<RootRedirect />} />
@@ -145,7 +158,34 @@ export default function App() {
         } />
         {/* Catch all */}
         <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Router>
+          </Routes>
+        </Suspense>
+      </Router>
+      <Toaster 
+        position="bottom-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#333',
+            color: '#fff',
+            fontSize: '14px',
+            borderRadius: '8px',
+          },
+          success: {
+            iconTheme: {
+              primary: '#10b981',
+              secondary: '#fff',
+            },
+          },
+          error: {
+            iconTheme: {
+              primary: '#ef4444',
+              secondary: '#fff',
+            },
+            duration: 6000,
+          },
+        }}
+      />
+    </ErrorBoundary>
   );
 }

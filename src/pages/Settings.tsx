@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useState } from 'react';
 import {
   BarChart3,
@@ -109,7 +110,7 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    loadAll().catch(console.error);
+    loadAll().catch(handleError);
   }, [companyId]);
 
   const saveSettings = async () => {

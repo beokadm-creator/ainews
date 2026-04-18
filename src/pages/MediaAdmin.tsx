@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -295,7 +296,7 @@ export default function MediaAdmin() {
   }, []);
 
   useEffect(() => {
-    loadSources().catch(console.error);
+    loadSources().catch(handleError);
   }, [loadSources]);
 
   const stats = useMemo(() => ({
@@ -360,7 +361,7 @@ export default function MediaAdmin() {
           <h1 className="mt-3 text-3xl font-semibold tracking-tight">슈퍼어드민, 회사, 스태프가 공유하는 단일 마스터 매체 파이프</h1>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => loadSources().catch(console.error)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10">
+          <button onClick={() => loadSources().catch(handleError)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10">
             <RefreshCw className="h-4 w-4" />
             Refresh
           </button>

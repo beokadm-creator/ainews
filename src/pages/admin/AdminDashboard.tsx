@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -212,7 +213,7 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    loadDashboard().catch(console.error);
+    loadDashboard().catch(handleError);
 
     const unsubCollection = onSnapshot(doc(db, 'systemRuntime', 'worker_continuous-collection'), (snap) => {
       setCollectionWorker((snap.data() || {}) as RuntimeDoc);
@@ -291,7 +292,7 @@ export default function AdminDashboard() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => {
-              loadDashboard().catch(console.error);
+              loadDashboard().catch(handleError);
             }}
             className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10"
           >
@@ -299,7 +300,7 @@ export default function AdminDashboard() {
             새로고침
           </button>
           <button
-            onClick={() => triggerWorker('collection').catch(console.error)}
+            onClick={() => triggerWorker('collection').catch(handleError)}
             disabled={runningAction !== null}
             className="inline-flex items-center gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-50"
           >
@@ -307,7 +308,7 @@ export default function AdminDashboard() {
             수집 즉시 실행
           </button>
           <button
-            onClick={() => triggerWorker('premiumCollection').catch(console.error)}
+            onClick={() => triggerWorker('premiumCollection').catch(handleError)}
             disabled={runningAction !== null}
             className="inline-flex items-center gap-2 rounded-xl border border-violet-500/20 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-200 transition hover:bg-violet-500/20 disabled:opacity-50"
           >
@@ -315,7 +316,7 @@ export default function AdminDashboard() {
             유료 매체 수집
           </button>
           <button
-            onClick={() => triggerWorker('analysis').catch(console.error)}
+            onClick={() => triggerWorker('analysis').catch(handleError)}
             disabled={runningAction !== null}
             className="inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition hover:bg-amber-500/20 disabled:opacity-50"
           >

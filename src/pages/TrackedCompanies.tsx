@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Building2, Calendar, ExternalLink, Loader2, Search, Tag, X } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
@@ -108,7 +109,7 @@ export default function TrackedCompanies() {
       setCompanies(trackedCompanies);
       setSelectedCompany((prev) => prev || trackedCompanies[0] || '');
     };
-    loadSettings().catch(console.error);
+    loadSettings().catch(handleError);
   }, [companyId]);
 
   const loadArticles = useCallback(async () => {

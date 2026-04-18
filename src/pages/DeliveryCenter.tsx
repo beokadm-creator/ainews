@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useMemo, useState } from 'react';
 import { collection, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -21,6 +22,7 @@ import {
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { fetchSubscribedSources } from '@/lib/sourceSubscriptions';
+import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
 
 type DatePreset = '24h' | '3d' | '7d' | '15d' | '30d';
 
@@ -59,69 +61,6 @@ function parseLines(value: string) {
     .split(/[\n,;]/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function sanitizeReportHtml(raw: string) {
-  const trimmed = (raw || '').trim();
-  let cleaned = trimmed;
-
-  if (trimmed.startsWith('```')) {
-    const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
-    cleaned = fenceMatch
-      ? fenceMatch[1].trim()
-      : trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
-  }
-
-  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
-  let fullDoc = doctypeIdx >= 0
-    ? cleaned.slice(doctypeIdx).trim()
-    : cleaned.search(/<html[\s>]/i) >= 0
-      ? cleaned.slice(cleaned.search(/<html[\s>]/i)).trim()
-      : cleaned;
-      
-  // Scope CSS
-  const scopedStyles: string[] = [];
-  const withoutStyles = fullDoc.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_, attrs, css) => {
-    const scoped = css
-      .replace(/\bbody\b/g, '.report-html-body')
-      .replace(/\bhtml\b/g, '.report-html-body');
-    scopedStyles.push(`<style${attrs}>${scoped}</style>`);
-    return '';
-  });
-
-  const bodyMatch = withoutStyles.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const bodyContent = bodyMatch ? bodyMatch[1] : fullDoc;
-  const cleanedBody = bodyContent.replace(/\[(\d{1,3})\]/g, '');
-
-  let securedBody = cleanedBody
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<(iframe|object|embed)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi, '')
-    .replace(/<(iframe|object|embed)\b[^>]*>/gi, '');
-
-  if (typeof window === 'undefined') {
-    return scopedStyles.join('\n') + securedBody;
-  }
-
-  const parser = new DOMParser();
-  const tmpDoc = parser.parseFromString(`<html><body>${securedBody}</body></html>`, 'text/html');
-
-  const walkAndClean = (node: Element) => {
-    Array.from(node.attributes).forEach(attr => {
-      if (attr.name.toLowerCase().startsWith('on')) {
-        node.removeAttribute(attr.name);
-      }
-    });
-    if (node.tagName.toLowerCase() === 'a') {
-      const href = node.getAttribute('href');
-      if (href && href.trim().toLowerCase().startsWith('javascript:')) {
-        node.removeAttribute('href');
-      }
-    }
-    Array.from(node.children).forEach(child => walkAndClean(child));
-  };
-  walkAndClean(tmpDoc.body);
-
-  return scopedStyles.join('\n') + tmpDoc.body.innerHTML;
 }
 
 export default function DeliveryCenter() {
@@ -216,7 +155,7 @@ export default function DeliveryCenter() {
             setExternalTemplate({ id: externalTemplateId, title: output.title || '스타일 템플릿' });
             setUseTemplate(true);
           }
-        }).catch(console.error);
+        }).catch(handleError);
       } else {
         setExternalTemplate(null);
         setUseTemplate(false);
@@ -255,7 +194,7 @@ export default function DeliveryCenter() {
   };
 
   useEffect(() => {
-    loadAll().catch(console.error);
+    loadAll().catch(handleError);
   }, [companyId]);
 
   useEffect(() => {

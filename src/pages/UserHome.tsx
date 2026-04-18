@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -111,7 +112,7 @@ export default function UserHome() {
       }
     }
 
-    loadDashboard().catch(console.error);
+    loadDashboard().catch(handleError);
   }, [companyId, canViewUsage]);
 
   const hour = new Date().getHours();

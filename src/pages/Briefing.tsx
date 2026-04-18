@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -24,6 +25,7 @@ import { format } from 'date-fns';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
+import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
 
 // URL로 articles 배열에서 article ID를 찾는 헬퍼
 function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
@@ -106,228 +108,6 @@ function resolveArticleIdByHeadline(text: string, articles: any[]): string | nul
   // Lower threshold to 0.2 to catch heavily shortened AI titles
   if (bestMatch && maxOverlap >= 0.2) return bestMatch.id || null;
   return null;
-}
-
-function sanitizeReportHtml(raw: string, articles: any[] = []) {
-  const trimmed = (raw || '').trim();
-  let cleaned = trimmed;
-
-  if (trimmed.startsWith('```')) {
-    const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/);
-    cleaned = fenceMatch
-      ? fenceMatch[1].trim()
-      : trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/\s*```$/, '').trim();
-  }
-
-  const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
-  const fullDoc = doctypeIdx >= 0
-    ? cleaned.slice(doctypeIdx).trim()
-    : cleaned.search(/<html[\s>]/i) >= 0
-      ? cleaned.slice(cleaned.search(/<html[\s>]/i)).trim()
-      : cleaned;
-
-  // Scope body/html CSS selectors to .report-html-body to prevent layout bleed into app shell
-  const scopedStyles: string[] = [];
-  const withoutStyles = fullDoc.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_, attrs, css) => {
-    const scoped = css
-      .replace(/\bbody\b/g, '.report-html-body')
-      .replace(/\bhtml\b/g, '.report-html-body');
-    scopedStyles.push(`<style${attrs}>${scoped}</style>`);
-    return '';
-  });
-
-  // Extract only <body> content (strip html/head/body wrapper tags)
-  const bodyMatch = withoutStyles.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const bodyContent = bodyMatch ? bodyMatch[1] : fullDoc;
-
-  // Strip [N] footnote references
-  const cleanedBody = bodyContent.replace(/\[(\d{1,3})\]/g, '');
-
-  // Basic security sanitization before DOM parsing
-  let securedBody = cleanedBody
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<(iframe|object|embed)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi, '')
-    .replace(/<(iframe|object|embed)\b[^>]*>/gi, '');
-
-  // DOM-based post-processing (browser only)
-  if (typeof window === 'undefined') {
-    return scopedStyles.join('\n') + securedBody;
-  }
-
-  const parser = new DOMParser();
-  const tmpDoc = parser.parseFromString(`<html><body>${securedBody}</body></html>`, 'text/html');
-
-  // H1: Strip inline event handlers and javascript: links
-  const walkAndClean = (node: Element) => {
-    Array.from(node.attributes).forEach(attr => {
-      if (attr.name.toLowerCase().startsWith('on')) {
-        node.removeAttribute(attr.name);
-      }
-    });
-    if (node.tagName.toLowerCase() === 'a') {
-      const href = node.getAttribute('href');
-      if (href && href.trim().toLowerCase().startsWith('javascript:')) {
-        node.removeAttribute('href');
-      }
-    }
-    Array.from(node.children).forEach(child => walkAndClean(child));
-  };
-  walkAndClean(tmpDoc.body);
-
-  // 1. Remove "Vol. X" line from report date header
-  tmpDoc.querySelectorAll('.report-date-block').forEach((block) => {
-    Array.from(block.children).forEach((child) => {
-      if (/^Vol\b/i.test((child.textContent || '').trim())) child.remove();
-    });
-  });
-
-  // 2. Convert div.article-block → <details> accordion
-  tmpDoc.querySelectorAll('div.article-block').forEach((block) => {
-    const details = tmpDoc.createElement('details');
-    details.className = 'article-block';
-
-    const summary = tmpDoc.createElement('summary');
-    summary.className = 'article-summary-row';
-
-    const titleEl = block.querySelector('.article-title');
-    const sectorEl = block.querySelector('.article-sector');
-    if (titleEl) summary.appendChild(titleEl.cloneNode(true));
-    if (sectorEl) summary.appendChild(sectorEl.cloneNode(true));
-    details.appendChild(summary);
-
-    const bodyDiv = tmpDoc.createElement('div');
-    bodyDiv.className = 'article-body';
-    Array.from(block.children).forEach((child) => {
-      const cls = (child as HTMLElement).className || '';
-      if (!cls.includes('article-title') && !cls.includes('article-sector')) {
-        bodyDiv.appendChild(child.cloneNode(true));
-      }
-    });
-
-    // 원문 보기 button (uses article URL from title link; onClick interceptor opens modal)
-    const articleLink = titleEl?.querySelector('a') as HTMLAnchorElement | null;
-    const href = articleLink?.getAttribute('href');
-    if (href && !href.startsWith('javascript')) {
-      const btn = tmpDoc.createElement('a');
-      btn.setAttribute('href', href);
-      btn.className = 'article-source-btn';
-      btn.textContent = '원문 보기 →';
-      // 서버가 div.article-block에 심은 data-article-id를 새 버튼으로 복사
-      const blockArticleId = (block as HTMLElement).getAttribute('data-article-id');
-      if (blockArticleId) btn.setAttribute('data-article-id', blockArticleId);
-      bodyDiv.appendChild(btn);
-    }
-
-    details.appendChild(bodyDiv);
-    block.replaceWith(details);
-  });
-
-  // 3. For <details class="article-block"> already generated by AI — add 원문 보기 button if missing
-  tmpDoc.querySelectorAll('details.article-block').forEach((details) => {
-    if (details.querySelector('.article-source-btn')) return;
-    const summaryEl = details.querySelector('summary');
-    const articleLink = summaryEl?.querySelector('a') as HTMLAnchorElement | null;
-    const href = articleLink?.getAttribute('href');
-    if (!href || href.startsWith('javascript')) return;
-
-    let bodyDiv = details.querySelector('.article-body') as HTMLElement | null;
-    if (!bodyDiv) {
-      // Wrap non-summary children in .article-body
-      bodyDiv = tmpDoc.createElement('div');
-      bodyDiv.className = 'article-body';
-      const toMove = Array.from(details.children).filter((c) => c !== summaryEl);
-      toMove.forEach((c) => bodyDiv!.appendChild(c.cloneNode(true)));
-      toMove.forEach((c) => c.remove());
-      details.appendChild(bodyDiv);
-    }
-
-    const btn = tmpDoc.createElement('a');
-    btn.setAttribute('href', href);
-    btn.className = 'article-source-btn';
-    btn.textContent = '원문 보기 →';
-    // 서버가 details.article-block에 심은 data-article-id를 새 버튼으로 복사
-    const detailsArticleId = (details as HTMLElement).getAttribute('data-article-id');
-    if (detailsArticleId) btn.setAttribute('data-article-id', detailsArticleId);
-    bodyDiv.appendChild(btn);
-  });
-
-  // Steps 2+3 complete: assign data-article-id to every 원문 보기 button.
-  // URL 매칭·제목 텍스트 매칭을 최우선으로 사용하여 서버(AI)가 심은 잘못된 ID를 덮어씁니다.
-  let articleBlockIdx = 0;
-  tmpDoc.querySelectorAll('details.article-block .article-source-btn').forEach((btn) => {
-    const href = (btn as HTMLElement).getAttribute('href') || '';
-    const block = btn.closest('.article-block');
-    const titleText = block ? (block.querySelector('.article-title')?.textContent || '').trim() : '';
-    
-    const urlResolvedId = resolveArticleIdByUrl(href, articles);
-    const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
-    const existingId = (btn as HTMLElement).getAttribute('data-article-id');
-    
-    // AI가 심은 existingId가 고유 UUID 형태라면 가장 정확하므로 최우선 사용합니다.
-    // 하지만 AI가 "1", "2" 등 단순 번호(인덱스)를 심은 경우 환각(오류)일 확률이 매우 높으므로 텍스트 매칭을 우선합니다.
-    let isExistingIdUuid = existingId && existingId.length > 5 && isNaN(Number(existingId));
-    const articleId = (isExistingIdUuid ? existingId : null) || textResolvedId || urlResolvedId || existingId || null;
-    
-    if (articleId) {
-      btn.setAttribute('data-article-id', articleId);
-    }
-    btn.setAttribute('data-article-idx', String(articleBlockIdx));
-    articleBlockIdx++;
-  });
-
-  // 4. Make ref-table headline cells (3rd col) clickable via data-article-id.
-  // 제목 텍스트 매칭을 최우선으로 사용.
-  tmpDoc.querySelectorAll('.ref-table tr').forEach((row) => {
-    const cells = Array.from(row.querySelectorAll('td'));
-    if (cells.length < 3) return; // skip header row (has <th> only)
-    const headlineCell = cells[2];
-    if (!headlineCell) return;
-
-    // Determine article index from first column
-    const rawNum = (cells[0]?.textContent || '').replace(/[^\d]/g, '').trim();
-    const articleIdx = rawNum ? parseInt(rawNum, 10) - 1 : -1;
-
-    const headlineText = (headlineCell.textContent || '').trim();
-    const textMatchedId = resolveArticleIdByHeadline(headlineText, articles);
-
-    const existingBtn = headlineCell.querySelector('[data-article-ref], .ref-headline-btn') as HTMLElement | null;
-    
-    let serverArticleId = existingBtn?.getAttribute('data-article-id') || null;
-    if (serverArticleId && !articles.some(a => a.id === serverArticleId)) serverArticleId = null;
-
-    let rowArticleId = (row as HTMLElement).getAttribute('data-article-id') || null;
-    if (rowArticleId && !articles.some(a => a.id === rowArticleId)) rowArticleId = null;
-
-    let isServerIdUuid = serverArticleId && serverArticleId.length > 5 && isNaN(Number(serverArticleId));
-    let isRowIdUuid = rowArticleId && rowArticleId.length > 5 && isNaN(Number(rowArticleId));
-    
-    const resolvedId = (isRowIdUuid ? rowArticleId : null) || (isServerIdUuid ? serverArticleId : null) || textMatchedId || rowArticleId || serverArticleId || null;
-
-    const linkStyles = 'cursor:pointer; text-decoration:underline; color:#1e3a5f; background:transparent; border:none; padding:0; outline:none; display:inline; font-weight:500;';
-
-    if (existingBtn) {
-      const a = tmpDoc.createElement('a');
-      a.href = '#';
-      a.className = 'ref-headline-btn';
-      a.setAttribute('data-article-ref', String(articleIdx));
-      if (resolvedId) a.setAttribute('data-article-id', resolvedId);
-      a.style.cssText = linkStyles;
-      a.innerHTML = existingBtn.innerHTML;
-      existingBtn.replaceWith(a);
-    } else if (!headlineCell.querySelector('a')) {
-      const a = tmpDoc.createElement('a');
-      a.href = '#';
-      a.setAttribute('data-article-ref', String(articleIdx));
-      if (resolvedId) a.setAttribute('data-article-id', resolvedId);
-      a.className = 'ref-headline-btn';
-      a.style.cssText = linkStyles;
-      a.innerHTML = headlineCell.innerHTML;
-      headlineCell.innerHTML = '';
-      headlineCell.appendChild(a);
-    }
-  });
-
-  return scopedStyles.join('\n') + tmpDoc.body.innerHTML;
 }
 
 function formatArticleDate(value: any) {
@@ -436,7 +216,7 @@ export default function Briefing() {
   };
 
   useEffect(() => {
-    loadOutputs().catch(console.error);
+    loadOutputs().catch(handleError);
   }, [companyId]);
 
   useEffect(() => {
@@ -445,14 +225,14 @@ export default function Briefing() {
       .then((snap) => {
         if (snap.exists()) setCurrentTemplates((snap.data() as any)?.styleTemplates || {});
       })
-      .catch(console.error);
+      .catch(handleError);
   }, [companyId]);
 
   useEffect(() => {
     const outputId = searchParams.get('outputId');
     if (outputId) {
       setEditMode(false);
-      loadOutputDetail(outputId).catch(console.error);
+      loadOutputDetail(outputId).catch(handleError);
     } else {
       setSelectedOutput(null);
       setArticles([]);
@@ -469,14 +249,14 @@ export default function Briefing() {
 
       const data = snap.data() as any;
       if (['pending', 'processing'].includes(data.status)) {
-        loadOutputs().catch(console.error);
-        loadOutputDetail(outputId).catch(console.error);
+        loadOutputs().catch(handleError);
+        loadOutputDetail(outputId).catch(handleError);
         return;
       }
 
       if (data.generatedOutputId || data.status === 'completed' || data.status === 'failed') {
-        loadOutputs().catch(console.error);
-        loadOutputDetail(outputId).catch(console.error);
+        loadOutputs().catch(handleError);
+        loadOutputDetail(outputId).catch(handleError);
       }
     });
 

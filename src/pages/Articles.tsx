@@ -1,3 +1,4 @@
+import { handleError } from "@/utils/errorHandler";
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
@@ -231,7 +232,7 @@ export default function Articles() {
       ).map((item) => ({ id: item.id, name: item.name, category: item.category, localScraperId: item.localScraperId }));
       setSources(available);
     };
-    loadSources().catch(console.error);
+    loadSources().catch(handleError);
   }, [companyId]);
 
   const runSearch = useCallback(async (offset = 0, append = false) => {
