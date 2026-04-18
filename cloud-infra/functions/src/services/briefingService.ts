@@ -5,6 +5,16 @@ import { PROVIDER_DEFAULTS, RuntimeAiConfig, RuntimeOutputConfig } from '../type
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
 import { calculateTokenSimilarity } from './duplicateService';
 
+export function escapeHtml(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 interface OutputGenerationOptions {
   companyId: string;
   pipelineRunId?: string;
@@ -51,13 +61,15 @@ function ensureHtmlDocument(raw: string, title: string) {
     .filter(Boolean)
     .map((item) => `<p>${item}</p>`)
     .join('\n');
+    
+  const safeTitle = escapeHtml(title);
 
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title}</title>
+  <title>${safeTitle}</title>
   <style>
     body { margin: 0; background: linear-gradient(180deg, #f4f7fb 0%, #e9eef5 100%); color: #102033; font-family: "Noto Sans KR Variable", "Malgun Gothic", sans-serif; }
     .report-content { max-width: 940px; margin: 40px auto; padding: 0 20px 40px; }
@@ -70,7 +82,7 @@ function ensureHtmlDocument(raw: string, title: string) {
 </head>
 <body>
   <article class="report-content">
-    <header class="report-header"><h1>${title}</h1></header>
+    <header class="report-header"><h1>${safeTitle}</h1></header>
     <section class="section-summary">
       <h2>Executive Summary</h2>
       ${paragraphs || '<p>Report content was not generated.</p>'}
@@ -651,6 +663,7 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const companyDisplayName = await resolveCompanyDisplayName(options.companyId);
   const keywordSummary = options.keywords.length > 0 ? options.keywords.join(', ') : 'deal flow, investment, portfolio, private equity';
   const reportTitle = options.reportTitle || `${companyDisplayName} Market Intelligence Report`;
+  const safeReportTitle = escapeHtml(reportTitle);
   const volNumber = options.volNumber || 1;
 
   // 서버에서 완벽한 HTML 뼈대(Skeleton)를 사전 생성하여 AI에게 전달 (Fill-in-the-blank 방식)
@@ -707,7 +720,7 @@ Do not change the structure or IDs.
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <title>${reportTitle}</title>
+  <title>${safeReportTitle}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; background: #ffffff; line-height: 1.6; padding: 20px; max-width: 1000px; margin: 0 auto; }
     h1 { font-size: 24px; font-weight: bold; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
@@ -718,13 +731,14 @@ Do not change the structure or IDs.
     .article-title a:hover { text-decoration: underline; }
     .article-analysis { font-size: 15px; color: #374151; }
     .article-analysis p { margin-bottom: 12px; }
-    .ref-table { width: 100%; border-collapse: collapse; margin-top: 50px; font-size: 13px; }
-    .ref-table th, .ref-table td { border: 1px solid #e5e7eb; padding: 12px 10px; text-align: left; }
-    .ref-table th { background: #f9fafb; font-weight: bold; color: #4b5563; }
+    .ref-table { width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 13px; }
+    .ref-table th, .ref-table td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+    .ref-table th { background: #f9fafb; font-weight: bold; }
+    .ref-table td a { color: #2563eb; text-decoration: none; }
   </style>
 </head>
 <body>
-  <h1>${reportTitle}</h1>
+  <h1>${safeReportTitle}</h1>
   
   <div class="report-content">
 ${articleBlocksSkeleton}
@@ -813,6 +827,7 @@ export async function generateEumDailyReport(options: CustomReportOptions) {
   const { digest: articleDigest, orderedArticles } = buildCustomReportArticleDigest(articles);
   const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
   const reportTitle = options.reportTitle || '이음M&A뉴스';
+  const safeReportTitle = escapeHtml(reportTitle);
   const volNumber = options.volNumber || 1;
 
   const today = new Date();
@@ -864,7 +879,7 @@ HTML 태그·클래스명·data-article-id 속성은 절대 변경하지 마세�
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <title>${reportTitle}</title>
+  <title>${safeReportTitle}</title>
   <style>
     body { font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #333; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; }
     .report-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2a4a; padding-bottom: 12px; margin-bottom: 30px; }

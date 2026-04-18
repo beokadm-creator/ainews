@@ -143,13 +143,36 @@ function sanitizeReportHtml(raw: string, articles: any[] = []) {
   // Strip [N] footnote references
   const cleanedBody = bodyContent.replace(/\[(\d{1,3})\]/g, '');
 
+  // Basic security sanitization before DOM parsing
+  let securedBody = cleanedBody
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<(iframe|object|embed)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi, '')
+    .replace(/<(iframe|object|embed)\b[^>]*>/gi, '');
+
   // DOM-based post-processing (browser only)
   if (typeof window === 'undefined') {
-    return scopedStyles.join('\n') + cleanedBody;
+    return scopedStyles.join('\n') + securedBody;
   }
 
   const parser = new DOMParser();
-  const tmpDoc = parser.parseFromString(`<html><body>${cleanedBody}</body></html>`, 'text/html');
+  const tmpDoc = parser.parseFromString(`<html><body>${securedBody}</body></html>`, 'text/html');
+
+  // H1: Strip inline event handlers and javascript: links
+  const walkAndClean = (node: Element) => {
+    Array.from(node.attributes).forEach(attr => {
+      if (attr.name.toLowerCase().startsWith('on')) {
+        node.removeAttribute(attr.name);
+      }
+    });
+    if (node.tagName.toLowerCase() === 'a') {
+      const href = node.getAttribute('href');
+      if (href && href.trim().toLowerCase().startsWith('javascript:')) {
+        node.removeAttribute('href');
+      }
+    }
+    Array.from(node.children).forEach(child => walkAndClean(child));
+  };
+  walkAndClean(tmpDoc.body);
 
   // 1. Remove "Vol. X" line from report date header
   tmpDoc.querySelectorAll('.report-date-block').forEach((block) => {

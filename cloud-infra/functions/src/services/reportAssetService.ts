@@ -300,6 +300,31 @@ export function sanitizeGeneratedReportBody(bodyHtml: string) {
   return $('body').length > 0 ? ($('body').html() || '') : $.root().html() || '';
 }
 
+export function sanitizeSecurityHtml(html: string): string {
+  if (!html) return '';
+  const $ = load(html, {}, false);
+
+  // Remove dangerous tags
+  $('script, iframe, object, embed').remove();
+
+  // Remove dangerous attributes and javascript: links
+  $('*').each((_, element) => {
+    if (element.type === 'tag') {
+      const attribs = element.attribs || {};
+      for (const attr in attribs) {
+        if (attr.toLowerCase().startsWith('on')) {
+          $(element).removeAttr(attr);
+        }
+      }
+      if (element.name === 'a' && attribs.href && attribs.href.trim().toLowerCase().startsWith('javascript:')) {
+        $(element).removeAttr('href');
+      }
+    }
+  });
+
+  return $.html() || '';
+}
+
 export function resolveOutputDate(output: any): string {
   try {
     if (output.createdAt?.toDate) return output.createdAt.toDate().toLocaleDateString('ko-KR');
@@ -1238,7 +1263,9 @@ export async function getOutputHtmlDocument(output: any, articles?: any[]) {
   const branding = await loadCompanyBranding(output.companyId);
   const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
   const fallbackHtml = buildFallbackReportHtml(output, loadedArticles);
-  const sourceHtml = rawHtml || fallbackHtml;
+  let sourceHtml = rawHtml || fallbackHtml;
+  
+  sourceHtml = sanitizeSecurityHtml(sourceHtml);
 
   const $ = load(sourceHtml);
   const bodyHtml = $('body').length > 0 ? $('body').html() || '' : sourceHtml;
@@ -1275,7 +1302,9 @@ export async function buildEmailHtml(
 ): Promise<string> {
   const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
   const fallbackHtml = buildFallbackReportHtml(output, articles);
-  const sourceHtml = rawHtml || fallbackHtml;
+  let sourceHtml = rawHtml || fallbackHtml;
+  
+  sourceHtml = sanitizeSecurityHtml(sourceHtml);
 
   const $ = load(sourceHtml);
 
@@ -1437,7 +1466,9 @@ export async function buildSharedReportPage(output: any): Promise<string> {
   const articles = await loadOutputArticles(output);
   const rawHtml = extractHtmlPayload(output.htmlContent || output.rawOutput || '');
   const fallbackHtml = buildFallbackReportHtml(output, articles);
-  const sourceHtml = rawHtml || fallbackHtml;
+  let sourceHtml = rawHtml || fallbackHtml;
+
+  sourceHtml = sanitizeSecurityHtml(sourceHtml);
 
   const $ = load(sourceHtml);
 

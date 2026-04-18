@@ -3405,45 +3405,62 @@ export const regenerateReportContent = onCall(
 export const generateReportContentHttp = onRequest(
   { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
   async (req, res) => {
-    const { outputId, companyId, articleIds, keywords = [], analysisPrompt = '', reportTitle, requestedBy } = req.body;
-
-    if (!outputId || !companyId) {
-      res.status(400).json({ error: 'Missing outputId or companyId' });
+    // CORS
+    res.set('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+      res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.set('Access-Control-Max-Age', '3600');
+      res.status(204).send('');
       return;
     }
 
     try {
+      const auth = req.headers.authorization?.split('Bearer ')[1];
+      if (!auth) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      const decodedToken = await admin.auth().verifyIdToken(auth);
+      if (!decodedToken.uid) {
+        res.status(401).json({ error: 'Invalid token' });
+        return;
+      }
+
+      const { outputId, companyId, articleIds, keywords = [], analysisPrompt = '', reportTitle, requestedBy } = req.body;
+
+      if (!outputId || !companyId) {
+        res.status(400).json({ error: 'Missing outputId or companyId' });
+        return;
+      }
+
+      await assertCompanyAccess(decodedToken.uid, companyId);
+
       const db = admin.firestore();
       const outputRef = db.collection('outputs').doc(outputId);
 
-      // 利됱떆 ?묐떟 (?대씪?댁뼵?멸? 湲곕떎由ъ? ?딆쓬)
       res.json({ accepted: true, outputId, status: 'processing' });
 
-      // 諛깃렇?쇱슫?쒖뿉???앹꽦 ?쒖옉
       (async () => {
         try {
-          // Status ?낅뜲?댄듃: processing
           await outputRef.update({
             status: 'processing',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
 
-          // ?고????ㅼ젙 議고쉶
           const runtime = await getCompanyRuntimeConfig(companyId);
 
-          // ?ㅼ젣 蹂닿퀬???앹꽦
           const result = await generateCustomReport({
             companyId,
             articleIds,
             keywords,
             analysisPrompt,
             reportTitle,
-            requestedBy,
+            requestedBy: requestedBy || decodedToken.uid,
             aiConfig: runtime.ai,
             outputId,
           });
 
-          // Status ?낅뜲?댄듃: completed
           await outputRef.update({
             status: 'completed',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -3452,7 +3469,6 @@ export const generateReportContentHttp = onRequest(
           console.log(`Report ${outputId} generated successfully`);
         } catch (err: any) {
           console.error(`Report ${outputId} generation failed:`, err);
-          // Status ?낅뜲?댄듃: failed
           await outputRef.update({
             status: 'failed',
             errorMessage: err.message || 'Unknown error',
