@@ -689,10 +689,12 @@ async function getSourcePriorityDecision(article: any): Promise<SourcePriorityDe
     };
   }
 
+  // 대표님 요청: 더벨/마켓인사이트 등 우선 매체 예외 통과를 원천 차단하기 위해
+  // article.priorityAnalysis (globalKeywordService에서 넘어온 값) 무시하고 항상 false 반환
   return {
-    isPriority: Boolean(article?.priorityAnalysis),
-    priority: Number(article?.analysisPriority || 0),
-    reason: article?.priorityAnalysisReason || null,
+    isPriority: false, // 기존: Boolean(article?.priorityAnalysis),
+    priority: 0,       // 기존: Number(article?.analysisPriority || 0),
+    reason: null,      // 기존: article?.priorityAnalysisReason || null,
     sourceMeta,
   };
 }

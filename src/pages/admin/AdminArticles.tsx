@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -135,9 +135,9 @@ function relevanceBasisLabel(basis?: Article['relevanceBasis']) {
     case 'keyword_reject':
       return '키워드 규칙 제외';
     case 'priority_source_override':
-      return '우선 매체 예외 통과';
+      return '우선 매체 예외 통과 (사용안함)';
     case 'priority_source_fallback':
-      return '우선 매체 예외 보류 통과';
+      return '우선 매체 예외 보류 (사용안함)';
     case 'ai':
       return 'AI 판정';
     default:

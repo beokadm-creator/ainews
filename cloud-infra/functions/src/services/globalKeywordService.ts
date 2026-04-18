@@ -271,10 +271,9 @@ export async function checkKeywordFilter(
   const sourceNameLower = `${sourceName || ''}`.toLowerCase();
   const sourceIdLower = `${sourceId || ''}`.toLowerCase();
 
-  const isBypassSource = bypassPatterns.some((pattern) => {
-    const p = pattern.toLowerCase();
-    return sourceNameLower.includes(p) || sourceIdLower.includes(p);
-  });
+  // 대표님 요청: 더벨, 마켓인사이트 등 우선 매체 예외 통과 로직을 원천 차단
+  const isBypassSource = false; // 강제로 false 처리하여 키워드 필터를 무조건 거치도록 함
+
   if (isBypassSource) {
     return { passes: true, isBypassSource: true, matchedKeyword: null };
   }
