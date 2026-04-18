@@ -122,6 +122,7 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
   if (!html || !orderedArticles.length) return html;
 
   const $ = cheerioLoad(html);
+  const validArticleIds = new Set<string>(orderedArticles.map((a) => a.id).filter(Boolean));
 
   // URL → article ID 룩업맵 (pathname 기준)
   const urlToId = new Map<string, string>();
@@ -217,21 +218,21 @@ function embedArticleIdsInHtml(html: string, orderedArticles: any[]): string {
   $('details.article-block, div.article-block').each(function () {
     const blockId = ($(this).attr('data-article-id') || '').trim() || null;
     const btn = $(this).find('.article-source-btn');
-    if (btn.length) {
-      const href = (btn.attr('href') || '').trim();
-      const titleText = $(this).find('.article-title').text().trim();
-      
-      const urlResolvedId = resolveIdByUrl(href);
-      const textResolvedId = resolveIdByHeadline(titleText);
-      
-      // AI가 넣은 blockId가 고유 UUID라면 가장 정확. 단순 번호면 텍스트 매칭 우선.
-      let isBlockIdUuid = blockId && blockId.length > 5 && isNaN(Number(blockId));
-      const articleId = (isBlockIdUuid ? blockId : null) || textResolvedId || urlResolvedId || null;
-      
-      if (articleId) {
-        btn.attr('data-article-id', articleId);
-        $(this).attr('data-article-id', articleId);
-      }
+    const titleAnchor = $(this).find('.article-title a').first();
+    const hrefFromTitle = (titleAnchor.attr('href') || '').trim();
+    const hrefFromBtn = btn.length ? (btn.attr('href') || '').trim() : '';
+    const href = hrefFromBtn || hrefFromTitle;
+    const titleText = $(this).find('.article-title').text().trim();
+
+    const urlResolvedId = resolveIdByUrl(href);
+    const textResolvedId = resolveIdByHeadline(titleText);
+
+    const isBlockIdUuid = Boolean(blockId && blockId.length > 5 && isNaN(Number(blockId)) && validArticleIds.has(blockId));
+    const articleId = (isBlockIdUuid ? blockId : null) || textResolvedId || urlResolvedId || null;
+
+    if (articleId) {
+      $(this).attr('data-article-id', articleId);
+      if (btn.length) btn.attr('data-article-id', articleId);
     }
   });
 
@@ -934,6 +935,9 @@ ${articleDigest}
   // --- Cheerio Post-processing (Part 1, 2, 3 분류 재배치) ---
   const rawHtml = ensureHtmlDocument(response.content, reportTitle);
   const $ = cheerioLoad(rawHtml);
+  const categoryById = new Map<string, string>(
+    orderedArticles.map((a: any) => [a.id, `${a.category || ''}`.toUpperCase()])
+  );
 
   // 파트 컨테이너 생성
   const part1 = $('<div class="report-part" id="part-1-ma"><div class="part-title">PART 1. M&A</div><div class="part-body"></div></div>');
@@ -942,14 +946,32 @@ ${articleDigest}
 
   // AI가 작성한 기사 블록들을 카테고리에 맞게 이동
   $('#ai-raw-blocks .article-block').each(function () {
-    const categoryText = $(this).find('.meta-category').text().toUpperCase();
-    
-    // 카테고리 행 숨기기 (리포트에는 표시하지 않음)
-    $(this).find('.meta-category').parent().attr('style', 'display:none');
+    const block = $(this);
+    const categoryEl = block.find('.meta-category').first();
+    const rawCategoryText = categoryEl.text().toUpperCase();
+    const blockId = (block.attr('data-article-id') || '').trim();
+    const fallbackCategory = (blockId ? (categoryById.get(blockId) || '') : '');
+    const categoryText = rawCategoryText.includes('[AI_FILL') || rawCategoryText.trim().length === 0
+      ? fallbackCategory
+      : rawCategoryText;
+
+    const metaBlock = block.find('.article-meta-block').first();
+    if (metaBlock.length && categoryEl.length) {
+      const label = metaBlock.find('.label').filter((_, el) => $(el).text().trim().startsWith('분류')).first();
+      if (label.length) label.remove();
+      categoryEl.remove();
+      const br = metaBlock.find('br').first();
+      if (br.length) br.remove();
+      metaBlock.contents().each(function () {
+        if (this.type === 'text' && !($(this).text() || '').trim()) {
+          $(this).remove();
+        }
+      });
+    }
 
     if (categoryText.includes('M&A') || categoryText.includes('인수합병')) {
       part1.find('.part-body').append(this);
-    } else if (categoryText.includes('PE') || categoryText.includes('VC') || categoryText.includes('사모펀드')) {
+    } else if (categoryText.includes('PE') || categoryText.includes('VC') || categoryText.includes('사모펀드') || categoryText.includes('펀드')) {
       part2.find('.part-body').append(this);
     } else {
       part3.find('.part-body').append(this);
@@ -957,7 +979,12 @@ ${articleDigest}
   });
 
   // 기존 ai-raw-blocks 자리에 파트들 삽입
-  $('#ai-raw-blocks').replaceWith((part1.prop('outerHTML') || '') + (part2.prop('outerHTML') || '') + (part3.prop('outerHTML') || ''));
+  const partHtml = [
+    part1.find('.article-block').length > 0 ? (part1.prop('outerHTML') || '') : '',
+    part2.find('.article-block').length > 0 ? (part2.prop('outerHTML') || '') : '',
+    part3.find('.article-block').length > 0 ? (part3.prop('outerHTML') || '') : '',
+  ].join('');
+  $('#ai-raw-blocks').replaceWith(partHtml);
 
   const finalHtmlContent = embedArticleIdsInHtml($.html(), orderedArticles);
 

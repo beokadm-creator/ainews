@@ -198,7 +198,7 @@ export async function processRssSources(options?: {
       });
 
       // 제목 키워드 필터를 본문 fetch 전에 적용 → 불필요한 HTTP 요청 절감
-      // checkKeywordFilter: 통과 여부 + bypass/매칭키워드 함께 반환 (수집 시 status 결정용)
+      // checkKeywordFilter: 통과 여부 + 매칭키워드 함께 반환 (수집 시 status 결정용)
       const keywordResults = await Promise.all(
         dateFiltered.map(async (article) => ({
           article,
