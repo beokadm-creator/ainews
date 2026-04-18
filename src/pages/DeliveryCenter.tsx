@@ -73,10 +73,55 @@ function sanitizeReportHtml(raw: string) {
   }
 
   const doctypeIdx = cleaned.search(/<!doctype\s+html/i);
-  if (doctypeIdx >= 0) return cleaned.slice(doctypeIdx).trim();
-  const htmlIdx = cleaned.search(/<html[\s>]/i);
-  if (htmlIdx >= 0) return cleaned.slice(htmlIdx).trim();
-  return cleaned;
+  let fullDoc = doctypeIdx >= 0
+    ? cleaned.slice(doctypeIdx).trim()
+    : cleaned.search(/<html[\s>]/i) >= 0
+      ? cleaned.slice(cleaned.search(/<html[\s>]/i)).trim()
+      : cleaned;
+      
+  // Scope CSS
+  const scopedStyles: string[] = [];
+  const withoutStyles = fullDoc.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_, attrs, css) => {
+    const scoped = css
+      .replace(/\bbody\b/g, '.report-html-body')
+      .replace(/\bhtml\b/g, '.report-html-body');
+    scopedStyles.push(`<style${attrs}>${scoped}</style>`);
+    return '';
+  });
+
+  const bodyMatch = withoutStyles.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const bodyContent = bodyMatch ? bodyMatch[1] : fullDoc;
+  const cleanedBody = bodyContent.replace(/\[(\d{1,3})\]/g, '');
+
+  let securedBody = cleanedBody
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<(iframe|object|embed)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi, '')
+    .replace(/<(iframe|object|embed)\b[^>]*>/gi, '');
+
+  if (typeof window === 'undefined') {
+    return scopedStyles.join('\n') + securedBody;
+  }
+
+  const parser = new DOMParser();
+  const tmpDoc = parser.parseFromString(`<html><body>${securedBody}</body></html>`, 'text/html');
+
+  const walkAndClean = (node: Element) => {
+    Array.from(node.attributes).forEach(attr => {
+      if (attr.name.toLowerCase().startsWith('on')) {
+        node.removeAttribute(attr.name);
+      }
+    });
+    if (node.tagName.toLowerCase() === 'a') {
+      const href = node.getAttribute('href');
+      if (href && href.trim().toLowerCase().startsWith('javascript:')) {
+        node.removeAttribute('href');
+      }
+    }
+    Array.from(node.children).forEach(child => walkAndClean(child));
+  };
+  walkAndClean(tmpDoc.body);
+
+  return scopedStyles.join('\n') + tmpDoc.body.innerHTML;
 }
 
 export default function DeliveryCenter() {
@@ -322,6 +367,9 @@ export default function DeliveryCenter() {
       setSelectedId(targetRef.id);
       setMessage('메일링 그룹 설정을 저장했습니다.');
       await loadAll();
+    } catch (err: any) {
+      console.error('Failed to save group:', err);
+      setMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSaving(false);
     }
@@ -355,6 +403,9 @@ export default function DeliveryCenter() {
 
       setMessage(scheduledAt ? '예약 발송을 등록했습니다.' : '외부 메일 리포트 생성과 즉시 발송을 시작했습니다.');
       await loadAll();
+    } catch (err: any) {
+      console.error('Failed to request report:', err);
+      setMessage(`요청 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSending(false);
     }
@@ -390,16 +441,24 @@ export default function DeliveryCenter() {
       setPreviewRequestId(result.data?.outputId || null);
       setMessage('미리보기 리포트 생성을 시작했습니다. 완료되면 아래 미리보기 영역에 표시됩니다.');
       await loadAll();
+    } catch (err: any) {
+      console.error('Failed to generate preview:', err);
+      setMessage(`미리보기 요청 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setPreviewing(false);
     }
   };
 
   const retryRun = async (outputId: string) => {
-    const fn = httpsCallable(functions, 'retryManagedReport');
-    await fn({ outputId });
-    setMessage('실패한 외부 리포트를 다시 실행했습니다.');
-    await loadAll();
+    try {
+      const fn = httpsCallable(functions, 'retryManagedReport');
+      await fn({ outputId });
+      setMessage('실패한 외부 리포트를 다시 실행했습니다.');
+      await loadAll();
+    } catch (err: any) {
+      console.error('Failed to retry run:', err);
+      setMessage(`재실행 요청 실패: ${err.message || '알 수 없는 오류'}`);
+    }
   };
 
   const toggleSubscription = async (email: string, action: 'subscribe' | 'unsubscribe') => {

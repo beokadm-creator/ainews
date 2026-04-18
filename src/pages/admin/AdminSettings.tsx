@@ -223,7 +223,6 @@ export default function AdminSettings() {
 
   // ─── Save key ──────────────────────────────────────────────
   const handleSave = async (provider: AiProvider) => {
-    console.log('handleSave called, companyId:', companyId, 'user:', (user as any)?.uid, 'role:', (user as any)?.role);
     if (!companyId) {
       alert('companyId가 없습니다. 사용자 설정을 확인하세요.');
       return;
@@ -244,7 +243,6 @@ export default function AdminSettings() {
         fallbackModel: state.selectedFallbackModel || null,
         setAsActive: state.isActive,
       }) as any;
-      console.log(`✅ Saved ${provider}:`, result.data);
       update(provider, { saving: false, hasKey: true, apiKeyInput: '', showKey: false });
     } catch (err: any) {
       console.error(`❌ Save error for ${provider}:`, {

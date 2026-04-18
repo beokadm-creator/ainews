@@ -43,6 +43,7 @@ export default function ReportNew() {
     '팩트 중심으로만 요약하고, PE 업계에서 놓치면 안 되는 체크포인트를 정리해주세요. AI 의견이나 추가 제언은 제외해주세요.',
   );
   const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [done, setDone] = useState<{ outputId: string } | null>(null);
   const [availableTemplate, setAvailableTemplate] = useState<{ id: string; title: string } | null>(null);
   const [useTemplate, setUseTemplate] = useState(false);
@@ -51,6 +52,7 @@ export default function ReportNew() {
   useEffect(() => {
     const loadArticles = async () => {
       setLoadingArticles(true);
+      setErrorMsg(null);
       try {
         if (articleIds.length > 0) {
           const docs = await Promise.all(articleIds.map((articleId) => getDoc(doc(db, 'articles', articleId))));
@@ -84,12 +86,15 @@ export default function ReportNew() {
         const nextArticles = result.data?.articles || [];
         setArticles(nextArticles);
         setResolvedArticleIds(nextArticles.map((article: ArticlePreview) => article.id));
+      } catch (err: any) {
+        console.error('Failed to load articles:', err);
+        setErrorMsg(`기사 로드 중 오류가 발생했습니다: ${err.message || '알 수 없는 오류'}`);
       } finally {
         setLoadingArticles(false);
       }
     };
 
-    loadArticles().catch(console.error);
+    loadArticles();
   }, [articleIds, companyId, endDate, keywords, sourceIds, startDate]);
 
   useEffect(() => {
@@ -121,6 +126,7 @@ export default function ReportNew() {
     if (!companyId || resolvedArticleIds.length === 0) return;
 
     setSubmitting(true);
+    setErrorMsg(null);
     try {
       const fn = httpsCallable(functions, 'requestManagedReport');
       const result = await fn({
@@ -140,7 +146,14 @@ export default function ReportNew() {
         templateOutputId: useTemplate && availableTemplate ? availableTemplate.id : null,
       }) as any;
 
-      setDone({ outputId: result.data.outputId });
+      if (result.data?.outputId) {
+        setDone({ outputId: result.data.outputId });
+      } else {
+        throw new Error('Failed to start report generation (no outputId returned)');
+      }
+    } catch (err: any) {
+      console.error('Failed to generate report:', err);
+      setErrorMsg(`리포트 생성 요청에 실패했습니다: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSubmitting(false);
     }
@@ -189,6 +202,13 @@ export default function ReportNew() {
           검색 결과와 동일한 기사 집합을 기준으로 내부 분석 리포트를 생성합니다.
         </p>
       </div>
+
+      {errorMsg && (
+        <div className="rounded-xl bg-red-50 p-4 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-800/30">
+          <p className="font-semibold mb-1">오류가 발생했습니다</p>
+          <p>{errorMsg}</p>
+        </div>
+      )}
 
       <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
         <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">

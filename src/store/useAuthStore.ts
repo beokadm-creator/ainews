@@ -7,6 +7,7 @@ export type AppUserRole = 'superadmin' | 'company_admin' | 'company_editor' | 'v
 
 export interface AppUser extends User {
   role?: AppUserRole;
+  companyId?: string; // Add this missing property
   companyIds?: string[];
   managedCompanyIds?: string[];
   primaryCompanyId?: string | null;
@@ -35,6 +36,7 @@ async function mergeUserProfile(firebaseUser: User): Promise<AppUser> {
       return {
         ...firebaseUser,
         role: profile.role,
+        companyId: profile.companyId,
         companyIds,
         managedCompanyIds,
         primaryCompanyId: companyIds[0] || managedCompanyIds[0] || profile.companyId || null,

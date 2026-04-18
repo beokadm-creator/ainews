@@ -20,8 +20,8 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#1e3a5f] to-[#0f1f33] flex items-center justify-center px-4">
-      <div className="max-w-md w-full">
+    <div className="relative z-10 flex min-h-screen flex-col items-center justify-center p-4">
+      <div className="w-full max-w-[400px]">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-[#d4af37] rounded-2xl mb-4">
@@ -99,9 +99,9 @@ export default function Login() {
         </div>
 
         {/* Footer */}
-        <div className="mt-8 text-center">
-          <p className="text-gray-400 text-sm">
-            © 2024 NEWS. All rights reserved.
+        <div className="absolute bottom-6 left-0 w-full text-center">
+          <p className="text-xs text-gray-500">
+            &copy; {new Date().getFullYear()} NEWS. All rights reserved.
           </p>
         </div>
       </div>

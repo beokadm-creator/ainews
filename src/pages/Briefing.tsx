@@ -693,10 +693,13 @@ export default function Briefing() {
     }
   };
 
-  const renderHtml = sanitizeReportHtml(
-    selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
-    articles,
-  );
+  const renderHtml = useMemo(() => {
+    return sanitizeReportHtml(
+      selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
+      articles,
+    );
+  }, [selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput, articles]);
+
   const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
 
   function StatusBadge({ status }: { status: string }) {

@@ -29,6 +29,7 @@ import AdminSettings from '@/pages/admin/AdminSettings';
 import AdminKeywords from '@/pages/admin/AdminKeywords';
 import AdminManagement from '@/pages/AdminManagement';
 import MediaAdmin from '@/pages/MediaAdmin';
+import NotFound from '@/pages/NotFound';
 
 // ─── Role-based root redirect ──────────────────────────────
 function RootRedirect() {
@@ -143,7 +144,7 @@ export default function App() {
           </ProtectedRoute>
         } />
         {/* Catch all */}
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </Router>
   );
