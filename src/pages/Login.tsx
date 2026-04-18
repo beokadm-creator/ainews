@@ -20,7 +20,7 @@ export default function Login() {
   };
 
   return (
-    <div className="relative z-10 flex min-h-screen flex-col items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-[#1e3a5f] to-[#0f1f33] flex items-center justify-center px-4 relative z-10 flex-col">
       <div className="w-full max-w-[400px]">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -99,8 +99,8 @@ export default function Login() {
         </div>
 
         {/* Footer */}
-        <div className="absolute bottom-6 left-0 w-full text-center">
-          <p className="text-xs text-gray-500">
+        <div className="mt-8 text-center">
+          <p className="text-gray-400 text-sm">
             &copy; {new Date().getFullYear()} NEWS. All rights reserved.
           </p>
         </div>
