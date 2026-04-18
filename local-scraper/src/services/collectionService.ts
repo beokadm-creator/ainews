@@ -104,19 +104,15 @@ export async function collectAllArticles(
     firestoreEnabled: isFirestoreReady(),
   };
 
-  // 슈퍼어드민이 전체 수집 — 회사 구분 없음
-  if (!options.onlyTheBell) {
-    await collectMarketInsight(marketInsightService, result.marketinsight, pipelineRunId);
-  }
-
-  // 소스 간 자연스러운 간격 (5~15초)
-  if (!options.onlyMarketInsight && !options.onlyTheBell) {
-    await humanDelay(5000, 15000);
-  }
-
-  if (!options.onlyMarketInsight) {
-    await collectTheBell(thebellService, result.thebell, pipelineRunId);
-  }
+  // 각 소스를 독립 실행 — 한 소스 실패가 다른 소스를 블로킹하지 않음
+  await Promise.allSettled([
+    options.onlyTheBell
+      ? Promise.resolve()
+      : collectMarketInsight(marketInsightService, result.marketinsight, pipelineRunId),
+    options.onlyMarketInsight
+      ? Promise.resolve()
+      : collectTheBell(thebellService, result.thebell, pipelineRunId),
+  ]);
 
   result.totalCollected = result.marketinsight.collected + result.thebell.collected;
   console.log(
