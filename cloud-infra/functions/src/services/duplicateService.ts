@@ -2,6 +2,8 @@ import * as admin from 'firebase-admin';
 import { logPromptExecution, callAiProvider, resolveAiCallOptions } from './aiService';
 import { RuntimeAiConfig } from '../types/runtime';
 
+import { buildSafePrompt, parseAiJsonResponse } from '../utils/aiHelpers';
+
 export function normalizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -72,14 +74,14 @@ export function calculateTokenSimilarity(str1: string, str2: string): number {
 }
 
 async function checkSemanticDuplicateWithAI(article1: any, article2: any, aiConfig: RuntimeAiConfig): Promise<boolean> {
-  const prompt = `Determine if these two articles describe the same event or deal.
-Return only valid JSON:
+  const instruction = `Determine if these two articles describe the exact same event or deal.
+Return ONLY valid JSON in this format:
 {
-  "duplicate": true,
+  "duplicate": true/false,
   "reason": "short reason"
-}
+}`;
 
-Article A
+  const contentStr = `Article A
 Title: ${article1.title}
 Content: ${(article1.content || '').substring(0, 300)}
 
@@ -87,9 +89,11 @@ Article B
 Title: ${article2.title}
 Content: ${(article2.content || '').substring(0, 300)}`;
 
+  const prompt = buildSafePrompt(instruction, contentStr);
+
   try {
     const result = await callAiProvider(prompt, aiConfig, resolveAiCallOptions(aiConfig.provider, 'dedup'), undefined);
-    const parsed = JSON.parse(result.content.match(/\{[\s\S]*\}/)?.[0] || result.content);
+    const parsed = parseAiJsonResponse<{ duplicate: boolean; reason: string }>(result.content);
     await logPromptExecution('dedup-check', { title_a: article1.title, title_b: article2.title }, result.content, result.model);
     return Boolean(parsed?.duplicate);
   } catch (error) {

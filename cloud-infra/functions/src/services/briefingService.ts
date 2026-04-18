@@ -4,6 +4,7 @@ import { callAiProvider, logPromptExecution, resolveAiCallOptions, trackAiCost }
 import { PROVIDER_DEFAULTS, RuntimeAiConfig, RuntimeOutputConfig } from '../types/runtime';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
 import { calculateTokenSimilarity } from './duplicateService';
+import { buildSafePrompt, parseAiJsonResponse } from '../utils/aiHelpers';
 
 export function escapeHtml(str: string): string {
   if (!str) return '';
@@ -533,16 +534,16 @@ ${digest}`;
 - highlights와 trends의 'articleIndex'는 기사 번호와 정확히 일치해야 합니다.
 - 보고서 전체를 100% 한국어로 작성하세요.`);
 
-    prompt = `${basePrompt}
+    const systemPrompt = `${basePrompt}
 
 [필수 지시사항]
 보고서의 모든 내용(제목, 요약, 트렌드, 태그 포함)을 반드시 자연스러운 한국어로 작성하세요.
-영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.
+영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.`;
 
-Company: ${options.companyId}
-Output title: ${options.outputConfig.title || 'AI News Output'}
-Article digest:
-${digest}`;
+    const prompt = buildSafePrompt(
+      `${systemPrompt}\n\nCompany: ${options.companyId}\nOutput title: ${options.outputConfig.title || 'AI News Output'}\nArticle digest:`,
+      digest
+    );
 
     const response = await callAiProvider(
       prompt,
@@ -670,7 +671,7 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const articleBlocksSkeleton = orderedArticles.map((a: any, index: number) => `
     <div class="article-block" data-article-id="${a.id}">
       <div class="article-sector">[AI_FILL: 섹터/카테고리 태그 (예: M&A, IPO 등)]</div>
-      <div class="article-title"><a href="${a.url || '#'}">${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></div>
+      <div class="article-title"><a href="${escapeHtml(a.url || '#')}">${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.title || '')))}</a></div>
       <div class="article-analysis">
         [AI_FILL: 기사 ${index + 1}에 대한 심층 분석 내용 작성 (단락별로 <p> 태그 사용)]
       </div>
@@ -679,7 +680,7 @@ export async function generateCustomReport(options: CustomReportOptions) {
 
   const refTableSkeleton = orderedArticles.map((a: any, index: number) => {
     const dateStr = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
-    return `      <tr data-article-id="${a.id}"><td>${index + 1}</td><td>${dateStr}</td><td>${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</td><td>${fixEncodingIssues(cleanHtmlContent(a.source || ''))}</td></tr>`;
+    return `      <tr data-article-id="${a.id}"><td>${index + 1}</td><td>${dateStr}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.title || '')))}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.source || '')))}</td></tr>`;
   }).join('\n');
 
   const systemPrompt = `You are a senior private equity analyst.
@@ -755,8 +756,10 @@ ${refTableSkeleton}
 </HTML_SKELETON>
 `;
 
+  const finalPrompt = buildSafePrompt(systemPrompt, userPrompt);
+
   const response = await callAiProvider(
-    `${systemPrompt}\n\n${userPrompt}`,
+    finalPrompt,
     reportAiConfig,
     resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 32000, temperature: 0.4 }),
     options.companyId

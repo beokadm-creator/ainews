@@ -1170,6 +1170,8 @@ export async function logPromptExecution(
 // ?????????????????????????????????????????
 // Relevance Check
 // ?????????????????????????????????????????
+import { buildSafePrompt, parseAiJsonResponse } from '../utils/aiHelpers';
+
 export async function checkRelevance(
   article: { title: string; content: string; source: string },
   aiConfig: RuntimeAiConfig,
@@ -1197,7 +1199,7 @@ export async function checkRelevance(
     }
   }
 
-  const prompt = `${sanitizePromptOverride(aiConfig.relevancePrompt) || DEFAULT_RELEVANCE_PROMPT}
+  const instruction = `${sanitizePromptOverride(aiConfig.relevancePrompt) || DEFAULT_RELEVANCE_PROMPT}
 
 ${extraGuidelines}
 
@@ -1206,16 +1208,18 @@ Important:
 - If a registered keyword appears only as a short alias, abbreviation, or incidental mention but the body is mainly about another topic, mark it as not relevant.
 - Only keep the article when the body materially relates to the matched company, tracked company, investment, fundraising, sale, restructuring, or transaction theme.
 
-Title: ${article.title}
-Content: ${article.content.substring(0, 2000)}
-Source: ${article.source}
-
-Return only valid JSON:
+Return ONLY valid JSON in this format:
 {
-  "relevant": true,
-  "confidence": 0.0,
+  "relevant": true/false,
+  "confidence": 0.0 to 1.0,
   "reason": "short Korean reason"
 }`;
+
+  const contentStr = `Title: ${article.title}
+Source: ${article.source}
+Content: ${article.content.substring(0, 2000)}`;
+
+  const prompt = buildSafePrompt(instruction, contentStr);
 
   try {
     const result = await callAiProvider(
@@ -1225,7 +1229,7 @@ Return only valid JSON:
       context?.companyId,
     );
 
-    const parsed = parseJsonObject<{ relevant?: boolean; confidence?: number; reason?: string }>(result.content);
+    const parsed = parseAiJsonResponse<{ relevant?: boolean; confidence?: number; reason?: string }>(result.content) || {};
     const isRelevant = Boolean(parsed.relevant);
     const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : (isRelevant ? 0.5 : 0);
     const reason = `${parsed.reason || (isRelevant ? 'Relevant' : 'Not relevant')}`.trim();
@@ -1250,19 +1254,21 @@ export async function analyzeArticle(
   aiConfig: RuntimeAiConfig,
   context?: PromptExecutionContext
 ) {
-  const prompt = `${sanitizePromptOverride(aiConfig.analysisPrompt) || DEFAULT_ANALYSIS_PROMPT}
+  const instruction = `${sanitizePromptOverride(aiConfig.analysisPrompt) || DEFAULT_ANALYSIS_PROMPT}
 
 Additional rules:
 - summary, category, insights, and tags must be written in Korean.
 - Do not output explanatory text outside JSON.
-- Keep company names, brands, and legal entity names in their natural form when needed.
+- Keep company names, brands, and legal entity names in their natural form when needed.`;
 
-Article title: ${article.title}
+  const contentStr = `Article title: ${article.title}
 Source: ${article.source}
 Published at: ${article.publishedAt}
 URL: ${article.url}
 Article body:
 ${article.content}`;
+
+  const prompt = buildSafePrompt(instruction, contentStr);
 
   const result = await callAiProvider(
     prompt,
@@ -1270,12 +1276,14 @@ ${article.content}`;
     resolveAiCallOptions(aiConfig.provider, 'analysis'),
     context?.companyId,
   );
-  const content = cleanupJsonResponse(result.content);
+  
+  const parsed = parseAiJsonResponse<any>(result.content) || {};
+  const content = JSON.stringify(parsed);
 
   await logPromptExecution('deep-analysis', { title: article.title, source: article.source, url: article.url }, content, result.model, { ...context, prompt });
   trackAiCost('deep-analysis', result.usage, result.model, result.provider, context?.companyId, context?.pipelineRunId).catch(() => {});
 
-  return JSON.parse(content);
+  return parsed;
 }
 
 // ?????????????????????????????????????????

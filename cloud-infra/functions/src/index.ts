@@ -1,5 +1,6 @@
 // v2026-04-16
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { throwSafeError } from './utils/safeError';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
