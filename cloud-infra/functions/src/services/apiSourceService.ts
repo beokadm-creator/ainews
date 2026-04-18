@@ -1,5 +1,5 @@
 import * as admin from 'firebase-admin';
-import { isDuplicateArticle, hashTitle, hashUrl } from './duplicateService';
+import { isDuplicateArticle, hashTitle, hashUrl, batchFetchDedupEntries } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
 import { sendErrorNotificationToAdmin } from './telegramService';
 import { cleanHtmlContent, fixEncodingIssues } from '../utils/encodingUtils';
@@ -178,6 +178,14 @@ async function collectFromNaverNews(
   ];
   if (keywords.length === 0) keywords.push('M&A', '인수합병', '사모펀드 투자');
 
+  // Naver API는 날짜 범위 파라미터가 없으므로, 수집 후 freshness 필터로 신규 기사만 처리
+  // 매 시간 실행 기준: 4시간 이내 기사만 대상 (1시간 간격 실행 대비 충분한 버퍼)
+  const NAVER_FRESHNESS_MS = 4 * 60 * 60 * 1000;
+  const naverStartDate = new Date(Date.now() - NAVER_FRESHNESS_MS);
+  const effectiveStartDate = startDate
+    ? new Date(Math.max(startDate.getTime(), naverStartDate.getTime()))
+    : naverStartDate;
+
   const seenUrls = new Set<string>();
   const candidates: Array<{ title: string; url: string; content: string; publishedAt: Date }> = [];
 
@@ -198,7 +206,7 @@ async function collectFromNaverNews(
         if (seenUrls.has(url)) continue;
         seenUrls.add(url);
         const publishedAt = item.pubDate ? new Date(item.pubDate) : new Date();
-        if (startDate && publishedAt < startDate) continue;
+        if (publishedAt < effectiveStartDate) continue;
         if (endDate && publishedAt > endDate) continue;
         candidates.push({
           title: cleanNaverHtml(item.title),
@@ -212,21 +220,56 @@ async function collectFromNaverNews(
     }
   }
 
-  let collected = 0;
+  if (candidates.length === 0) {
+    console.log(`Naver News: 0 fresh candidates in last ${NAVER_FRESHNESS_MS / 3600000}h`);
+    return 0;
+  }
+
+  // STEP 1: 배치 dedup 체크 (body enrichment 전) — 불필요한 HTTP 요청 방지
+  const urlHashes = candidates.map((c) => hashUrl(c.url));
+  const dedupEntries = await batchFetchDedupEntries(urlHashes);
+  const freshCandidates = candidates.filter((c) => !dedupEntries.has(hashUrl(c.url)));
+
+  console.log(`Naver News: ${candidates.length} fresh → ${freshCandidates.length} after dedup filter`);
+
+  if (freshCandidates.length === 0) {
+    return 0;
+  }
+
+  // STEP 2: 신규 기사만 body enrichment
   const enrichedCandidates = await mapWithConcurrency(
-    candidates,
+    freshCandidates,
     API_BODY_ENRICH_CONCURRENCY,
     async (article) => enrichArticleBody(article),
   );
 
-  for (const article of enrichedCandidates) {
-    const dupCheck = await isDuplicateArticle(article, { companyId: options?.companyId, fastMode: true });
-    if (dupCheck.isDuplicate) continue;
-    // 제목 키워드 필터 (Naver API는 키워드 검색이지만 추가 보호)
-    const kw = await checkKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId);
-    if (!kw.passes) continue;
+  // STEP 3: 키워드 필터 병렬 처리
+  const keywordResults = await Promise.all(
+    enrichedCandidates.map(async (article) => ({
+      article,
+      kw: await checkKeywordFilter(article.title, source.name || '네이버 뉴스', sourceId),
+    }))
+  );
+  const keywordPassed = keywordResults.filter(({ kw }) => kw.passes);
 
-    // 키워드 통과 기사: AI 관련도 필터 생략하고 바로 filtered 저장
+  // STEP 4: 2차 dedup (ledger에 없는 기사에 대해 URL/제목 유사도 체크)
+  const finalCandidates: typeof keywordPassed = [];
+  for (const item of keywordPassed) {
+    const dupCheck = await isDuplicateArticle(item.article, { companyId: options?.companyId, fastMode: true });
+    if (!dupCheck.isDuplicate) finalCandidates.push(item);
+  }
+
+  if (finalCandidates.length === 0) {
+    console.log(`Naver News: saved 0 / ${candidates.length} articles`);
+    return 0;
+  }
+
+  // STEP 5: 배치 저장
+  let collected = 0;
+  const batch = db.batch();
+  const dedupWrites: Promise<any>[] = [];
+
+  for (const { article, kw } of finalCandidates) {
     const relevanceFields = {
       filteredAt: admin.firestore.FieldValue.serverTimestamp(),
       relevanceBasis: 'keyword_prefilter',
@@ -239,7 +282,7 @@ async function collectFromNaverNews(
     };
 
     const articleRef = db.collection('articles').doc();
-    await articleRef.set({
+    batch.set(articleRef, {
       id: articleRef.id,
       ...article,
       companyId: options?.companyId || null,
@@ -255,7 +298,7 @@ async function collectFromNaverNews(
       titleHash: hashTitle(article.title),
       ...relevanceFields,
     });
-    await recordArticleDedupEntry({
+    dedupWrites.push(recordArticleDedupEntry({
       id: articleRef.id,
       ...article,
       companyId: options?.companyId || null,
@@ -264,9 +307,12 @@ async function collectFromNaverNews(
       source: source.name || '네이버 뉴스',
       status: 'pending',
       collectedAt: new Date(),
-    });
+    }));
     collected++;
   }
+
+  await batch.commit();
+  await Promise.all(dedupWrites);
 
   console.log(`Naver News: saved ${collected} / ${candidates.length} articles`);
   return collected;
