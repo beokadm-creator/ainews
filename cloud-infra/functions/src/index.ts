@@ -1458,28 +1458,6 @@ export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invo
     throw new HttpsError('internal', err.message);
   }
 });
-export const testGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
-  if (userDoc.data()?.role !== 'superadmin') {
-    throw new HttpsError('permission-denied', 'Superadmin required');
-  }
-
-  const { sourceId } = request.data || {};
-  if (!sourceId) {
-    throw new HttpsError('invalid-argument', 'sourceId required');
-  }
-
-  const result = await runGlobalSourceTest(sourceId);
-  await admin.firestore().collection('globalSources').doc(sourceId).update({
-    lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
-    lastTestResult: result,
-    ...(result.success ? { status: 'active' } : { status: 'error' }),
-    lastStatus: result.success ? 'success' : 'error',
-    errorMessage: result.success ? null : result.message,
-  });
-  return result;
-});
 /** 湲濡쒕쾶 ?뚯뒪 ?앹꽦/?섏젙 (Superadmin留? */
 export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
@@ -1555,50 +1533,6 @@ export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, in
 
   return { success: true };
 });
-/** 湲濡쒕쾶 ?뚯뒪 ?곌껐 ?뚯뒪??(Superadmin留? - HTTP ?⑥닔 with CORS */
-export const testSourceConnectionHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 60, memory: '512MiB' },
-  async (request, response) => {
-    // CORS ?ㅻ뜑 ?ㅼ젙
-    response.set('Access-Control-Allow-Origin', '*');
-    response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (request.method === 'OPTIONS') {
-      response.status(204).send('');
-      return;
-    }
-    try {
-      const auth = request.headers.authorization?.split('Bearer ')[1];
-      if (!auth) {
-        response.status(401).json({ error: 'Authentication required' });
-        return;
-      }
-      const decodedToken = await admin.auth().verifyIdToken(auth);
-      const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
-      if (userDoc.data()?.role !== 'superadmin') {
-        response.status(403).json({ error: 'Superadmin required' });
-        return;
-      }
-      const { sourceId } = request.body || {};
-      if (!sourceId) {
-        response.status(400).json({ error: 'sourceId required' });
-        return;
-      }
-      const result = await runGlobalSourceTest(sourceId);
-      // ?뚯뒪??寃곌낵瑜?臾몄꽌?????
-      await admin.firestore().collection('globalSources').doc(sourceId).update({
-        lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastTestResult: result,
-        ...(result.success ? { status: 'active' } : { status: 'error' }),
-        lastStatus: result.success ? 'success' : 'error',
-        errorMessage: result.success ? null : result.message,
-      });
-      response.json(result);
-    } catch (err: any) {
-      response.status(500).json({ error: err.message || 'Test failed' });
-    }
-  }
-);
 /** ?뚯궗媛 援щ룆 ?뚯뒪 ?좏깮 ???*/
 export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
@@ -1621,21 +1555,6 @@ export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', 
   return { success: true, companyId };
 });
 
-/** ?뚮┝ ?ㅼ젙 (?대찓?? ?붾젅洹몃옩 ?? ?낅뜲?댄듃 */
-export const updateNotificationSettings = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-  const { companyId: rawCompanyId, telegram, emails } = request.data || {};
-  const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
-  await assertCompanyAccess(request.auth.uid, companyId);
-  
-  const db = admin.firestore();
-  const updates: any = {};
-  if (telegram) updates['notifications.telegram'] = telegram;
-  if (emails) updates['subscriberEmails'] = emails;
-  
-  await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
-  return { success: true };
-});
 // ?????????????????????????????????????????
 // [NEW] Company & User Management
 // ?????????????????????????????????????????
@@ -3874,219 +3793,19 @@ async function purgeRejectedArticlesByQuery(db: admin.firestore.Firestore, q: ad
 // ?????????????????????????????????????????
 // 紐⑤뱺 湲곗궗 ??젣 (Superadmin??
 // ?????????????????????????????????????????
-export const deleteAllArticlesHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    // CORS
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') {
-      response.status(200).send('OK');
-      return;
-    }
-
-    try {
-      const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) {
-        response.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
-        response.status(403).json({ error: 'Forbidden - Superadmin only' });
-        return;
-      }
-
-      const q = db.collection('articles');
-      const deleted = await deleteArticlesByQuery(db, q);
-
-      response.json({
-        success: true,
-        message: `전체 기사 삭제 완료: ${deleted}건`,
-        deletedCount: deleted,
-      });
-    } catch (err: any) {
-      console.error('deleteAllArticles error:', err);
-      response.status(500).json({ error: err.message });
-    }
-  }
-);
 
 // ?????????????????????????????????????????
 // ?쒖쇅??湲곗궗 ??젣 (status='rejected')
 // ?????????????????????????????????????????
-export const deleteExcludedArticlesHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    // CORS
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') {
-      response.status(200).send('OK');
-      return;
-    }
-
-    try {
-      const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) {
-        response.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
-        response.status(403).json({ error: 'Forbidden - Superadmin only' });
-        return;
-      }
-
-      const q = db.collection('articles').where('status', '==', 'rejected');
-      const deleted = await purgeRejectedArticlesByQuery(db, q);
-
-      response.json({
-        success: true,
-        message: `제외된 기사 삭제 완료: ${deleted}건`,
-        deletedCount: deleted,
-      });
-    } catch (err: any) {
-      console.error('deleteExcludedArticles error:', err);
-      response.status(500).json({ error: err.message });
-    }
-  }
-);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // findAndRemoveDuplicates: 저장된 기사 중 제목/내용 중복 탐지 후 하위 중복 제거
 // ─────────────────────────────────────────────────────────────────────────────
-export const findAndRemoveDuplicates = onCall(
-  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 120, memory: '512MiB' },
-  async (request) => {
-    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
-    await requireSuperadminUid(request.auth.uid);
 
-    const db = admin.firestore();
-    const statuses = ['pending', 'filtered', 'analyzed'];
-
-    const snaps = await Promise.all(
-      statuses.map((s) => db.collection('articles').where('status', '==', s).limit(500).get())
-    );
-
-    const all: any[] = [];
-    for (const snap of snaps) {
-      for (const d of snap.docs) {
-        all.push({ id: d.id, ...d.data() });
-      }
-    }
-
-    // Group by title hash
-    const groups = new Map<string, any[]>();
-    for (const article of all) {
-      const key: string = article.titleHash || hashTitle(article.title || '');
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(article);
-    }
-
-    const batch = db.batch();
-    let removedCount = 0;
-    let groupsFound = 0;
-
-    for (const [, group] of groups) {
-      if (group.length < 2) continue;
-      // Keep the article with the highest relevance score (or most recent if tied)
-      const sorted = [...group].sort((a, b) => {
-        const scoreDiff = (b.relevanceScore || 0) - (a.relevanceScore || 0);
-        if (scoreDiff !== 0) return scoreDiff;
-        const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : 0;
-        const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : 0;
-        return timeB - timeA;
-      });
-      const keep = sorted[0];
-      const candidates = sorted.slice(1);
-
-      // Secondary check: token similarity > 0.85
-      const duplicates = candidates.filter((c) => {
-        const sim = calculateTokenSimilarity(keep.title || '', c.title || '');
-        return sim > 0.85;
-      });
-      if (duplicates.length === 0) continue;
-
-      groupsFound++;
-      for (const dup of duplicates) {
-        batch.set(db.collection('articles').doc(dup.id), {
-          status: 'rejected',
-          filterReason: 'duplicate_detected',
-          duplicateOf: keep.id,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-        removedCount++;
-      }
-    }
-
-    if (removedCount > 0) await batch.commit();
-    return { success: true, removedCount, groupsFound };
-  }
-);
-
-export const cleanupRejectedArticles = onSchedule(
-  { region: 'us-central1', schedule: 'every 1 hours', timeoutSeconds: 300, memory: '512MiB' },
-  async () => {
-    const db = admin.firestore();
-    const q = db.collection('articles').where('status', '==', 'rejected');
-    const snapshot = await q.limit(500).get();
-    if (snapshot.empty) {
-      logger.info('cleanupRejectedArticles found no rejected articles to sync');
-      return;
-    }
-
-    const deleted = await purgeRejectedArticlesPreservingDedupe(snapshot.docs);
-    logger.info(`cleanupRejectedArticles synced and deleted ${deleted} rejected articles`);
-  }
-);
 
 // ?????????????????????????????????????????
 // 紐⑤뱺 蹂닿퀬????젣 (outputs 而щ젆??
 // ?????????????????????????????????????????
-export const deleteAllOutputsHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    // CORS
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') {
-      response.status(200).send('OK');
-      return;
-    }
-
-    try {
-      const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) {
-        response.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
-        response.status(403).json({ error: 'Forbidden - Superadmin only' });
-        return;
-      }
-
-      const q = db.collection('outputs');
-      const deleted = await deleteArticlesByQuery(db, q);
-
-      response.json({
-        success: true,
-        message: `모든 보고서 삭제 완료: ${deleted}건`,
-        deletedCount: deleted,
-      });
-    } catch (err: any) {
-      console.error('deleteAllOutputs error:', err);
-      response.status(500).json({ error: err.message });
-    }
-  }
-);
 
 // ?????????????????????????????????????????
 // 글로벌 키워드 관리 (슈퍼어드민 전용)
