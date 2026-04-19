@@ -9,7 +9,7 @@ export function stripFootnotes(text: string): string {
  * Client-side HTML sanitization that mimics the server-side logic
  * but uses DOMParser to safely handle and scope CSS/JS in the browser.
  */
-export function sanitizeReportHtml(raw: string, articles: any[] = []) {
+export function sanitizeReportHtml(raw: string) {
   const trimmed = (raw || '').trim();
   let cleaned = trimmed;
 
@@ -173,18 +173,11 @@ export function sanitizeReportHtml(raw: string, articles: any[] = []) {
       tr.classList.add('interactive-ref-row');
       tr.setAttribute('data-href', href);
 
-      // find matching article from DB data to get real ID
+      // Set the headline so onClick can match it
       const headlineCell = tr.querySelector('td:nth-child(3)') || tr.querySelector('td:nth-child(2)');
       const headline = (headlineCell?.textContent || '').trim();
-      if (headline && articles && articles.length > 0) {
-        const matched = articles.find((a) => {
-          const dbTitle = (a.title || '').replace(/[\s\p{P}]/gu, '');
-          const tableTitle = headline.replace(/[\s\p{P}]/gu, '');
-          return dbTitle.includes(tableTitle) || tableTitle.includes(dbTitle);
-        });
-        if (matched) {
-          tr.setAttribute('data-article-id', matched.id);
-        }
+      if (headline) {
+        tr.setAttribute('data-headline', headline);
       }
     });
   });

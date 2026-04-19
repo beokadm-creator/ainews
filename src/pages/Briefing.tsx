@@ -26,105 +26,8 @@ import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
 import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
-
-// URL로 articles 배열에서 article ID를 찾는 헬퍼
-function resolveArticleIdByUrl(href: string, articles: any[]): string | null {
-  if (!href || !articles.length) return null;
-  try {
-    const targetUrl = new URL(href);
-    const targetPath = targetUrl.pathname;
-    // Don't match blindly on just '/' unless the domain and everything perfectly matches
-    if (targetPath === '/' && href.length < 15) return null;
-    
-    const match = articles.find((a) => {
-      if (!a.url) return false;
-      // Exact match is always safest
-      if (a.url === href) return true;
-      try { 
-        const aUrl = new URL(a.url);
-        // If they have meaningful paths, compare them. If not, require domain match too.
-        if (targetPath !== '/' && aUrl.pathname === targetPath) return true;
-        if (aUrl.hostname === targetUrl.hostname && aUrl.pathname === targetPath && aUrl.search === targetUrl.search) return true;
-        return false;
-      }
-      catch { return a.url === href; }
-    });
-    return match?.id || null;
-  } catch {
-    return articles.find((a) => a.url === href)?.id || null;
-  }
-}
-
-// 헤드라인 텍스트로 articles 배열에서 article ID를 찾는 헬퍼 (AI 재번호 매기기 대응)
-function resolveArticleIdByHeadline(text: string, articles: any[]): string | null {
-  if (!text || !articles.length) return null;
-  // Remove all whitespace and punctuation for robust matching
-  const normalize = (s: string) => s.replace(/[\s\p{P}]/gu, '').toLowerCase();
-  
-  const normalized = normalize(text);
-  if (!normalized) return null;
-
-  const exact = articles.find((a) => normalize(a.title || '') === normalized);
-  if (exact) return exact.id || null;
-  
-  if (normalized.length < 2) return null;
-  
-  let bestMatch = null;
-  let maxOverlap = 0;
-  for (const a of articles) {
-    const t = normalize(a.title || '');
-    if (!t) continue;
-    
-    if (t.includes(normalized) || normalized.includes(t)) {
-      const ratio = Math.min(t.length, normalized.length) / Math.max(t.length, normalized.length);
-      if (ratio > maxOverlap) {
-        maxOverlap = ratio;
-        bestMatch = a;
-      }
-    } else {
-      let matchCount = 0;
-      const getBigrams = (str: string) => {
-        const bigrams = new Set<string>();
-        for (let i = 0; i < str.length - 1; i++) bigrams.add(str.slice(i, i + 2));
-        return bigrams;
-      };
-      
-      const bigrams1 = getBigrams(normalized);
-      const bigrams2 = getBigrams(t);
-      if (bigrams1.size === 0 || bigrams2.size === 0) continue;
-      
-      let intersection = 0;
-      for (const b of bigrams1) {
-        if (bigrams2.has(b)) intersection++;
-      }
-      
-      const diceCoefficient = (2.0 * intersection) / (bigrams1.size + bigrams2.size);
-      if (diceCoefficient > maxOverlap) {
-        maxOverlap = diceCoefficient;
-        bestMatch = a;
-      }
-    }
-  }
-  // Threshold 0.6: balance between catching shortened AI titles and avoiding false matches
-  if (bestMatch && maxOverlap >= 0.6) return bestMatch.id || null;
-  return null;
-}
-
-function formatArticleDate(value: any) {
-  if (!value) return '';
-
-  try {
-    if (typeof value?.toDate === 'function') {
-      return format(value.toDate(), 'yyyy.MM.dd HH:mm');
-    }
-
-    const converted = new Date(value);
-    if (Number.isNaN(converted.getTime())) return '';
-    return format(converted, 'yyyy.MM.dd HH:mm');
-  } catch {
-    return '';
-  }
-}
+import { resolveArticleIdByHeadline, resolveArticleIdByUrl } from '@/utils/articleResolution';
+import { formatArticleDate } from '@/lib/articleContent';
 
 export default function Briefing() {
   const [searchParams] = useSearchParams();
@@ -475,10 +378,9 @@ export default function Briefing() {
 
   const renderHtml = useMemo(() => {
     return sanitizeReportHtml(
-      selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
-      articles,
+      selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || ''
     );
-  }, [selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput, articles]);
+  }, [selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput]);
 
   const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
 
@@ -986,6 +888,40 @@ export default function Briefing() {
                               if (resolvedId) {
                                 const byTitle = articles.find(a => a.id === resolvedId);
                                 if (byTitle) { setPreviewArticle(byTitle); return; }
+                              }
+                            }
+                            return;
+                          }
+
+                          // 1-b. table interactive-ref-row (from sanitizeHtml)
+                          const refRow = target.closest('.interactive-ref-row') as HTMLElement | null;
+                          if (refRow) {
+                            e.preventDefault();
+                            // 우선 data-article-id (서버에서 심은 경우)
+                            const byId = findByDataId(refRow);
+                            if (byId) { setPreviewArticle(byId); return; }
+                            
+                            // 폴백: sanitizeHtml이 추가한 data-headline 매칭
+                            const headline = refRow.getAttribute('data-headline');
+                            if (headline && headline.length > 1) {
+                              const resolvedId = resolveArticleIdByHeadline(headline, articles);
+                              if (resolvedId) {
+                                const byTitle = articles.find(a => a.id === resolvedId);
+                                if (byTitle) { setPreviewArticle(byTitle); return; }
+                              }
+                            }
+                            
+                            // 폴백: data-href 매칭
+                            const href = refRow.getAttribute('data-href');
+                            if (href) {
+                              const urlResolvedId = resolveArticleIdByUrl(href, articles);
+                              if (urlResolvedId) {
+                                const byUrl = articles.find(a => a.id === urlResolvedId);
+                                if (byUrl) { setPreviewArticle(byUrl); return; }
+                              }
+                              // 다 실패하면 href로 이동
+                              if (!href.startsWith('javascript')) {
+                                window.open(href, '_blank');
                               }
                             }
                             return;

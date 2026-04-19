@@ -1,3 +1,5 @@
+import { format } from 'date-fns';
+
 const NOISE_LINE_PATTERNS = [
   /^다른기사\s*보기$/i,
   /^지금\s*인기\s*있는\s*기사$/i,
@@ -83,4 +85,18 @@ export function formatArticleContentParagraphs(value: string) {
     .map((paragraph) => paragraph.trim())
     .filter(Boolean)
     .flatMap(splitLongParagraph);
+}
+
+export function formatArticleDate(value: any) {
+  if (!value) return '';
+  try {
+    if (typeof value?.toDate === 'function') {
+      return format(value.toDate(), 'yyyy.MM.dd HH:mm');
+    }
+    const converted = new Date(value);
+    if (Number.isNaN(converted.getTime())) return '';
+    return format(converted, 'yyyy.MM.dd HH:mm');
+  } catch {
+    return '';
+  }
 }
