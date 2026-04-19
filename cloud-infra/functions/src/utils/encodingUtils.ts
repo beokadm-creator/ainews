@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as iconv from 'iconv-lite';
 import * as cheerio from 'cheerio';
 
@@ -43,7 +44,7 @@ export function decodeBuffer(buffer: Buffer, encoding?: string, contentTypeHeade
     }
     return iconv.decode(buffer, 'utf-8');
   } catch (error) {
-    console.error('Decoding failed:', error);
+    logger.error('Decoding failed:', error);
     return buffer.toString('utf-8');
   }
 }

@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import Parser from 'rss-parser';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
@@ -87,7 +88,7 @@ async function fetchRssResponse(url: string, attempt = 1) {
   } catch (error: any) {
     const isTimeout = error?.code === 'ECONNABORTED' || `${error?.message || ''}`.includes('timeout');
     if (attempt < 3 && isTimeout) {
-      console.warn(`RSS timeout for ${url}, retrying (${attempt}/2)`);
+      logger.warn(`RSS timeout for ${url}, retrying (${attempt}/2)`);
       await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
       return fetchRssResponse(url, attempt + 1);
     }
@@ -111,7 +112,7 @@ export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
   try {
     feed = await parser.parseString(fixedXml);
   } catch (err: any) {
-    console.error(`RSS parse failed for ${url}: ${err.message}`);
+    logger.error(`RSS parse failed for ${url}: ${err.message}`);
     throw new Error(`RSS parse failed for ${url}: ${err.message}`);
   }
 
@@ -135,7 +136,7 @@ export async function fetchRssFeed(url: string): Promise<ParsedArticle[]> {
 
     let title = item.title ? item.title.trim() : '';
     if (title.match(/[\uFFFD\u0080-\u009F]{3,}/)) {
-      console.warn(`Skipping article with corrupted title: "${title.substring(0, 50)}"`);
+      logger.warn(`Skipping article with corrupted title: "${title.substring(0, 50)}"`);
       continue;
     }
 
@@ -178,7 +179,7 @@ export async function processRssSources(options?: {
     });
   });
 
-  console.log(`[RSS] Total sources to process: ${allSourcesToProcess.length}`);
+  logger.info(`[RSS] Total sources to process: ${allSourcesToProcess.length}`);
 
   const results = await mapWithConcurrency(allSourcesToProcess, RSS_SOURCE_CONCURRENCY, async ({ id: sourceId, data: source }) => {
     const docRef = db.collection('globalSources').doc(sourceId);
@@ -208,7 +209,7 @@ export async function processRssSources(options?: {
       const keywordFiltered = keywordResults.filter(({ kw }) => kw.passes);
 
       if (keywordFiltered.length < dateFiltered.length) {
-        console.log(`[RSS] ${source.name}: title filter ${dateFiltered.length} → ${keywordFiltered.length} (${dateFiltered.length - keywordFiltered.length} skipped)`);
+        logger.info(`[RSS] ${source.name}: title filter ${dateFiltered.length} → ${keywordFiltered.length} (${dateFiltered.length - keywordFiltered.length} skipped)`);
       }
 
       const enrichedArticles = await mapWithConcurrency(
@@ -218,7 +219,7 @@ export async function processRssSources(options?: {
       );
 
       if (enrichedArticles.length === 0) {
-        console.log(`[RSS] ${source.name}: no articles in date range`);
+        logger.info(`[RSS] ${source.name}: no articles in date range`);
         await docRef.update({
           lastScrapedAt: admin.firestore.FieldValue.serverTimestamp(),
           lastStatus: 'success',
@@ -318,11 +319,11 @@ export async function processRssSources(options?: {
         errorMessage: null,
       });
 
-      console.log(`[RSS] ${source.name}: +${sourceCollected} articles`);
+      logger.info(`[RSS] ${source.name}: +${sourceCollected} articles`);
       return sourceCollected;
     } catch (error: any) {
       await docRef.update({ lastStatus: 'error', errorMessage: error.message }).catch(() => {});
-      console.error(`[RSS] ${source.name} error: ${error.message}`);
+      logger.error(`[RSS] ${source.name} error: ${error.message}`);
       return 0;
     }
   });

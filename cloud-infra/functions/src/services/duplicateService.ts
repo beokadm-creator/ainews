@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import { logPromptExecution, callAiProvider, resolveAiCallOptions } from './aiService';
 import { RuntimeAiConfig } from '../types/runtime';
@@ -97,7 +98,7 @@ Content: ${(article2.content || '').substring(0, 300)}`;
     await logPromptExecution('dedup-check', { title_a: article1.title, title_b: article2.title }, result.content, result.model);
     return Boolean(parsed?.duplicate);
   } catch (error) {
-    console.error('AI duplicate check failed:', error);
+    logger.error('AI duplicate check failed:', error);
     return false;
   }
 }

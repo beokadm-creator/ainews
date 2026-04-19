@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import { HttpsError } from 'firebase-functions/v2/https';
 
 const SAFE_MESSAGES: Record<string, string> = {
@@ -11,7 +12,7 @@ const SAFE_MESSAGES: Record<string, string> = {
 export function throwSafeError(code: string, internalError?: unknown): never {
   if (internalError) {
     // 내부 에러는 서버 콘솔에만 로깅 (클라이언트에 노출되지 않음)
-    console.error(`[Internal ${code}]`, internalError);
+    logger.error(`[Internal ${code}]`, internalError);
   }
   
   // 클라이언트에는 안전하고 규격화된 메시지만 전달

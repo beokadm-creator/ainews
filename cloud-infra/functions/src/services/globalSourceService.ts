@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { testScrapingSource } from './scrapingSourceService';
@@ -329,7 +330,7 @@ export async function seedGlobalSources(): Promise<void> {
 
   const existing = await colRef.limit(1).get();
   if (!existing.empty) {
-    console.log('Global sources already seeded, skipping.');
+    logger.info('Global sources already seeded, skipping.');
     return;
   }
 
@@ -345,7 +346,7 @@ export async function seedGlobalSources(): Promise<void> {
     });
   }
   await batch.commit();
-  console.log(`Seeded ${INITIAL_GLOBAL_SOURCES.length} global sources.`);
+  logger.info(`Seeded ${INITIAL_GLOBAL_SOURCES.length} global sources.`);
 }
 
 // ─────────────────────────────────────────

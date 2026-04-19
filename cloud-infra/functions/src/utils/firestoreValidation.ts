@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 
 const REQUIRED_COLLECTIONS = [
@@ -30,7 +31,7 @@ export async function validateFirestoreCollections(): Promise<{
       if (error.code === 5 || error.code === 'NOT_FOUND') {
         missing.push(collectionName);
       } else {
-        console.warn(`Warning checking collection ${collectionName}:`, error.message);
+        logger.warn(`Warning checking collection ${collectionName}:`, error.message);
         existing.push(collectionName);
       }
     }
@@ -47,9 +48,9 @@ export async function ensureCollectionsExist(): Promise<void> {
   const validation = await validateFirestoreCollections();
   
   if (!validation.valid) {
-    console.warn('Missing Firestore collections:', validation.missing.join(', '));
-    console.warn('Please create the following collections:', validation.missing.join(', '));
+    logger.warn('Missing Firestore collections:', validation.missing.join(', '));
+    logger.warn('Please create the following collections:', validation.missing.join(', '));
   } else {
-    console.log('All required Firestore collections exist:', validation.existing.join(', '));
+    logger.info('All required Firestore collections exist:', validation.existing.join(', '));
   }
 }

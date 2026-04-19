@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import { DEFAULT_TRACKED_COMPANIES } from './trackedCompanyConfig';
 
@@ -85,7 +86,7 @@ async function loadKeywordConfig(): Promise<void> {
       cachedTrackedCompanies = DEFAULT_TRACKED_COMPANIES;
     }
   } catch (err) {
-    console.warn('[GlobalKeyword] Firestore 로드 실패, 캐시 유지:', err);
+    logger.warn('[GlobalKeyword] Firestore 로드 실패, 캐시 유지:', err);
     if (cachedTitleKeywords === null) cachedTitleKeywords = [];
     if (cachedTrackedCompanies === null) cachedTrackedCompanies = DEFAULT_TRACKED_COMPANIES;
   }
@@ -304,6 +305,6 @@ export async function seedGlobalKeywordsIfEmpty(): Promise<boolean> {
     return false; // 이미 설정됨
   }
   await saveGlobalKeywordConfig(SEED_TITLE_KEYWORDS, DEFAULT_TRACKED_COMPANIES);
-  console.log(`[GlobalKeyword] 초기 키워드 ${SEED_TITLE_KEYWORDS.length}개 시드 완료`);
+  logger.info(`[GlobalKeyword] 초기 키워드 ${SEED_TITLE_KEYWORDS.length}개 시드 완료`);
   return true;
 }

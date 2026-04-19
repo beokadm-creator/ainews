@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 export const INSTRUCTION_DELIMITER = '===USER_CONTENT_BELOW===';
 
 export function sanitizeForPrompt(text: string, maxLength: number = 5000): string {
@@ -30,7 +31,7 @@ export function parseAiJsonResponse<T>(rawContent: string): T | null {
     if (start === -1 || end === -1 || start >= end) throw new Error('Valid JSON bounds not found');
     return JSON.parse(cleaned.substring(start, end + 1)) as T;
   } catch (error) {
-    console.warn('[parseAiJsonResponse] Failed:', error);
+    logger.warn('[parseAiJsonResponse] Failed:', error);
     return null;
   }
 }

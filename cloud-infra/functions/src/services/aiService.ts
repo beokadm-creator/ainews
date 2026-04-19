@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
 import { randomBytes } from 'crypto';
@@ -313,7 +314,7 @@ async function waitForAiThrottleWindow(provider: AiProvider): Promise<void> {
   await loadThrottleFromFirestore();
   const waitMs = (aiThrottleUntilByProvider[provider] || 0) - Date.now();
   if (waitMs > 0) {
-    console.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
+    logger.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 }
@@ -322,7 +323,7 @@ async function waitForAiThrottleWindowWithTelemetry(provider: AiProvider): Promi
   await loadThrottleFromFirestore();
   const waitMs = Math.max(0, (aiThrottleUntilByProvider[provider] || 0) - Date.now());
   if (waitMs > 0) {
-    console.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
+    logger.warn(`[AI-THROTTLE] ${provider} 쿨다운 ${Math.round(waitMs / 1000)}초 대기 (Firestore 동기화됨)`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   return waitMs;
@@ -434,10 +435,10 @@ async function claimArticlesForStage(
 
     await batch.commit();
 
-    console.log(`[AI-${stage}] Successfully claimed ${claimableArticles.length} articles using batch operation`);
+    logger.info(`[AI-${stage}] Successfully claimed ${claimableArticles.length} articles using batch operation`);
     return claimableArticles;
   } catch (error) {
-    console.warn(`[AI-${stage}] Batch claim failed, falling back to individual transactions:`, error);
+    logger.warn(`[AI-${stage}] Batch claim failed, falling back to individual transactions:`, error);
 
     // Fallback to individual transactions on batch failure
     const claimed: FirebaseFirestore.QueryDocumentSnapshot[] = [];
@@ -477,7 +478,7 @@ async function claimArticlesForStage(
           claimed.push(doc);
         }
       } catch (txError) {
-        console.warn(`[AI-${stage}] Failed to claim article ${doc.id} in fallback:`, txError);
+        logger.warn(`[AI-${stage}] Failed to claim article ${doc.id} in fallback:`, txError);
       }
     }
 
@@ -523,7 +524,7 @@ async function recoverStaleArticlesForStage(stage: 'filtering' | 'analyzing') {
 
   if (recovered > 0) {
     await batch.commit();
-    console.warn(`[AI-${stage}] Recovered ${recovered} stale articles back to ${recoveryStatus}.`);
+    logger.warn(`[AI-${stage}] Recovered ${recovered} stale articles back to ${recoveryStatus}.`);
   }
 
   return recovered;
@@ -586,7 +587,7 @@ async function loadClaimableArticlesForStage(
 ) {
   const snapshot = await queryRef.limit(Math.max(baseBatchSize * 3, baseBatchSize)).get();
   if (snapshot.empty) {
-    console.log(emptyLog);
+    logger.info(emptyLog);
     return [];
   }
 
@@ -596,7 +597,7 @@ async function loadClaimableArticlesForStage(
 
   const claimed = await claimArticlesForStage(claimCandidates, stage);
   if (claimed.length === 0) {
-    console.log(unclaimableLog);
+    logger.info(unclaimableLog);
   }
 
   return claimed;
@@ -660,7 +661,7 @@ async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Pro
     const sysKey = sysData?.apiKeys?.[aiConfig.provider] || sysData?.[`apiKeys.${aiConfig.provider}`];
     if (sysKey) return sysKey;
   } catch (err) {
-    console.warn('resolveApiKey: systemSettings load failed:', err);
+    logger.warn('resolveApiKey: systemSettings load failed:', err);
   }
 
   // 2李? companySettings fallback (companyId 吏???먮뒗 泥??쒖꽦 ?뚯궗)
@@ -682,7 +683,7 @@ async function resolveApiKey(aiConfig: RuntimeAiConfig, companyId?: string): Pro
       }
     }
   } catch (err) {
-    console.warn('resolveApiKey: companySettings fallback failed:', err);
+    logger.warn('resolveApiKey: companySettings fallback failed:', err);
   }
 
   return getApiKeyByEnvKey(aiConfig.apiKeyEnvKey);
@@ -824,7 +825,7 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
     let url = aiConfig.baseUrl || GLM_API_URL;
     if (url.endsWith('/')) url = url.slice(0, -1);
     if (!url.endsWith('/chat/completions')) url += '/chat/completions';
-    console.log(`[AI-START] Calling ${aiConfig.provider} (${aiConfig.model}) at ${url}...`);
+    logger.info(`[AI-START] Calling ${aiConfig.provider} (${aiConfig.model}) at ${url}...`);
     const requestBody: Record<string, any> = {
       model: aiConfig.model,
       request_id: randomBytes(8).toString('hex'),
@@ -857,7 +858,7 @@ async function callGlmApi(prompt: string, apiKey: string, aiConfig: RuntimeAiCon
     const rawContent = response.data.choices?.[0]?.message?.content;
     if (rawContent == null) {
       const finishReason = response.data.choices?.[0]?.finish_reason;
-      console.error('GLM empty content. finish_reason:', finishReason, 'full response:', JSON.stringify(response.data).substring(0, 500));
+      logger.error('GLM empty content. finish_reason:', finishReason, 'full response:', JSON.stringify(response.data).substring(0, 500));
       throw new Error(`Model returned empty content. finish_reason: ${finishReason || 'unknown'}. Check model name "${aiConfig.model}" and endpoint.`);
     }
     return {
@@ -975,7 +976,7 @@ export async function callAiProvider(
   try {
     const result = await routeToProvider(aiConfig.provider, prompt, apiKey, aiConfig, primaryOpts);
     const latencyMs = Date.now() - startedAt;
-    console.log(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs} fallbackUsed=false promptChars=${prompt.length}`);
+    logger.info(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs} fallbackUsed=false promptChars=${prompt.length}`);
     recordMetric({
       stage: 'ai',
       action: 'call',
@@ -998,7 +999,7 @@ export async function callAiProvider(
     const fallbackConfig = resolveFallbackAiConfig(aiConfig);
     if (fallbackConfig && isRetryableForFallback(primaryError)) {
       const fallbackOpts: ApiCallOptions = { ...options, maxRetries: 2 };
-      console.warn(
+      logger.warn(
         `[AI-FALLBACK] ${aiConfig.provider}(${aiConfig.model}) failed: ${primaryError.message?.substring(0, 120)}` +
         ` -> ${fallbackConfig.provider}(${fallbackConfig.model})`
       );
@@ -1009,7 +1010,7 @@ export async function callAiProvider(
       try {
         const result = await routeToProvider(fallbackConfig.provider, prompt, fallbackKey, fallbackConfig, fallbackOpts);
         const latencyMs = Date.now() - startedAt;
-        console.log(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs + fallbackThrottleWaitMs} fallbackUsed=true promptChars=${prompt.length}`);
+        logger.info(`[AI-CALL] provider=${result.provider} model=${result.model} latencyMs=${latencyMs} throttleWaitMs=${telemetry.throttleWaitMs + fallbackThrottleWaitMs} fallbackUsed=true promptChars=${prompt.length}`);
         recordMetric({
           stage: 'ai',
           action: 'call',
@@ -1032,7 +1033,7 @@ export async function callAiProvider(
       } catch (fallbackError: any) {
         registerAiRateLimit(fallbackError, fallbackConfig.provider);
         const latencyMs = Date.now() - startedAt;
-        console.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=true error=${fallbackError.message}`);
+        logger.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=true error=${fallbackError.message}`);
         recordMetric({
           stage: 'ai',
           action: 'call',
@@ -1055,7 +1056,7 @@ export async function callAiProvider(
       }
     }
     const latencyMs = Date.now() - startedAt;
-    console.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=false error=${primaryError.message}`);
+    logger.error(`[AI-CALL] provider=${aiConfig.provider} model=${aiConfig.model} failed latencyMs=${latencyMs} fallbackUsed=false error=${primaryError.message}`);
     recordMetric({
       stage: 'ai',
       action: 'call',
@@ -1241,7 +1242,7 @@ Content: ${article.content.substring(0, 2000)}`;
     return { isRelevant, confidence: normalizedConfidence, reason };
   } catch (error) {
     // API ?ㅻ쪟??re-throw ??"愿???놁쓬"?쇰줈 泥섎━?섎㈃ ????(湲곗궗媛 wrongly rejected??
-    console.error('Error calling AI API for relevance check:', error);
+    logger.error('Error calling AI API for relevance check:', error);
     throw error;
   }
 }
@@ -1319,7 +1320,7 @@ export async function processRelevanceFiltering(options?: {
     return { success: true, processed: 0, passed: 0 };
   }
 
-  console.log(`[RelevanceFilter] Claimed ${articles.length} articles to process.`);
+  logger.info(`[RelevanceFilter] Claimed ${articles.length} articles to process.`);
 
   let processed = 0;
   let passed = 0;
@@ -1331,7 +1332,7 @@ export async function processRelevanceFiltering(options?: {
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
     if (options?.abortChecker && await options.abortChecker()) {
-      console.log(`[RelevanceFilter] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
+      logger.info(`[RelevanceFilter] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
       break;
     }
 
@@ -1390,7 +1391,7 @@ export async function processRelevanceFiltering(options?: {
             result = aiRelevanceResult;
           } catch (aiError: any) {
             registerAiRateLimit(aiError);
-            console.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {
+            logger.error(`[RelevanceFilter] AI call failed for article ${doc.id}:`, {
               title: article.title?.substring(0, 50),
               provider: filteringAiConfig.provider,
               model: filteringAiConfig.model,
@@ -1405,7 +1406,7 @@ export async function processRelevanceFiltering(options?: {
         return { doc, result, aiRelevanceResult, error: null };
       } catch (error: any) {
         registerAiRateLimit(error);
-        console.error(`Failed to filter article ${doc.id}:`, error.message);
+        logger.error(`Failed to filter article ${doc.id}:`, error.message);
         recordError();
         return { doc, result: null, aiRelevanceResult: null, error };
       }
@@ -1470,7 +1471,7 @@ export async function processRelevanceFiltering(options?: {
       } catch (batchErr: any) {
         // batch에 삭제된 문서가 포함된 경우(수동 초기화 후 등) 개별 업데이트로 폴백
         if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
-          console.warn('[RelevanceFilter] batch.commit NOT_FOUND → individual fallback');
+          logger.warn('[RelevanceFilter] batch.commit NOT_FOUND → individual fallback');
           for (const { doc: d, result: r, aiRelevanceResult, error: e } of results) {
             if (!r && !e) continue;
             try {
@@ -1491,7 +1492,7 @@ export async function processRelevanceFiltering(options?: {
               }
             } catch (indErr: any) {
               if (indErr?.code !== 5 && !`${indErr?.message || ''}`.includes('NOT_FOUND')) {
-                console.warn(`[RelevanceFilter] fallback update failed for ${d.id}:`, indErr.message);
+                logger.warn(`[RelevanceFilter] fallback update failed for ${d.id}:`, indErr.message);
               }
               // NOT_FOUND → 이미 삭제된 문서, 무시
             }
@@ -1544,7 +1545,7 @@ export async function processDeepAnalysis(options?: {
     return { success: true, processed: 0 };
   }
 
-  console.log(`[DeepAnalysis] Claimed ${claimedArticles.length} articles to analyze.`);
+  logger.info(`[DeepAnalysis] Claimed ${claimedArticles.length} articles to analyze.`);
 
   let processed = 0;
   let failed = 0;
@@ -1561,7 +1562,7 @@ export async function processDeepAnalysis(options?: {
 
   for (let i = 0; i < articles.length; i += parallelLimit) {
     if (options?.abortChecker && await options.abortChecker()) {
-      console.log(`[DeepAnalysis] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
+      logger.info(`[DeepAnalysis] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
       break;
     }
 
@@ -1582,7 +1583,7 @@ export async function processDeepAnalysis(options?: {
         return { doc, analysisResult, error: null };
       } catch (error) {
         registerAiRateLimit(error);
-        console.error(`Failed to analyze article ${doc.id}:`, error);
+        logger.error(`Failed to analyze article ${doc.id}:`, error);
         recordError();
         return { doc, analysisResult: null, error };
       }
@@ -1626,7 +1627,7 @@ export async function processDeepAnalysis(options?: {
         await batch.commit();
       } catch (batchErr: any) {
         if (batchErr?.code === 5 || `${batchErr?.message || ''}`.includes('NOT_FOUND')) {
-          console.warn('[DeepAnalysis] batch.commit NOT_FOUND → individual fallback');
+          logger.warn('[DeepAnalysis] batch.commit NOT_FOUND → individual fallback');
           for (const { doc, analysisResult, error } of results) {
             try {
               if (analysisResult) {
@@ -1657,7 +1658,7 @@ export async function processDeepAnalysis(options?: {
               }
             } catch (indErr: any) {
               if (indErr?.code !== 5 && !`${indErr?.message || ''}`.includes('NOT_FOUND')) {
-                console.warn(`[DeepAnalysis] individual update failed for ${doc.id}:`, indErr.message);
+                logger.warn(`[DeepAnalysis] individual update failed for ${doc.id}:`, indErr.message);
               }
               // NOT_FOUND → doc was deleted, skip silently
             }

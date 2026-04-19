@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import { AiProvider } from '../types/runtime';
 
@@ -15,7 +16,7 @@ export async function getSecretValue(envKey: string): Promise<string> {
   if (value) {
     secretCache.set(envKey, value);
   } else {
-    console.warn(`Environment variable ${envKey} is not set.`);
+    logger.warn(`Environment variable ${envKey} is not set.`);
   }
   return value;
 }

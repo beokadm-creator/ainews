@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 
 export interface PipelineMetrics {
@@ -24,7 +25,7 @@ export async function recordMetric(metric: PipelineMetrics): Promise<void> {
     });
   } catch (error) {
     // 메트릭 저장 실패는 파이프라인을 중단시키지 않음
-    console.warn('Failed to record metric:', error);
+    logger.warn('Failed to record metric:', error);
   }
 }
 
@@ -50,7 +51,7 @@ export async function recordMetrics(metrics: PipelineMetrics[]): Promise<void> {
 
     await batch.commit();
   } catch (error) {
-    console.warn('Failed to record metrics batch:', error);
+    logger.warn('Failed to record metrics batch:', error);
   }
 }
 
@@ -90,7 +91,7 @@ export async function getDailyMetrics(dateStr: string): Promise<Record<string, a
     aggregated.total = metricsSnapshot.size;
     return aggregated;
   } catch (error) {
-    console.warn('Failed to get daily metrics:', error);
+    logger.warn('Failed to get daily metrics:', error);
     return { date: dateStr, total: 0, error: String(error) };
   }
 }
@@ -118,7 +119,7 @@ export async function cleanupOldMetrics(daysToKeep: number = 30): Promise<number
 
     return oldMetrics.size;
   } catch (error) {
-    console.warn('Failed to cleanup old metrics:', error);
+    logger.warn('Failed to cleanup old metrics:', error);
     return 0;
   }
 }

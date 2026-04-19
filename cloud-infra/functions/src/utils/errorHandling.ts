@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import axios, { AxiosError } from 'axios';
 import { validateApiKey } from './secretManager';
 
@@ -35,7 +36,7 @@ export async function retryWithBackoff<T>(
               : 0;
             const jitter = Math.floor(Math.random() * 2000);
             const waitTime = Math.max(base, retryAfterDelay) + jitter;
-            console.warn(`[retry] HTTP ${status} (attempt ${attempt + 1}/${maxRetries}). Retrying after ${Math.round(waitTime/1000)}s...`);
+            logger.warn(`[retry] HTTP ${status} (attempt ${attempt + 1}/${maxRetries}). Retrying after ${Math.round(waitTime/1000)}s...`);
             await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
           }
@@ -157,7 +158,7 @@ export function classifyError(error: unknown, context?: Record<string, any>): Cl
 export async function logError(classified: ClassifiedError): Promise<void> {
   // LOW 심각도는 로깅하지 않음 (console.warn으로만 처리)
   if (classified.severity === ErrorSeverity.LOW) {
-    console.warn(`[${classified.category}] ${classified.message}`);
+    logger.warn(`[${classified.category}] ${classified.message}`);
     return;
   }
 
@@ -179,7 +180,7 @@ export async function logError(classified: ClassifiedError): Promise<void> {
     console[logMethod](`[${classified.severity.toUpperCase()}][${classified.category}] ${classified.message}`);
   } catch (loggingError) {
     // 로깅 자체가 실패하면 콘솔로만 출력
-    console.error(`Failed to log error to Firestore:`, loggingError);
-    console.error(`Original error: [${classified.severity}][${classified.category}] ${classified.message}`);
+    logger.error(`Failed to log error to Firestore:`, loggingError);
+    logger.error(`Original error: [${classified.severity}][${classified.category}] ${classified.message}`);
   }
 }

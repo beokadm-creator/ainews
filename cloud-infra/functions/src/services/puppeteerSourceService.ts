@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import puppeteer from 'puppeteer-core';
 import type { Browser, Page } from 'puppeteer-core';
@@ -232,7 +233,7 @@ async function enrichArticles(browser: Browser, source: PuppeteerSource, baseArt
           continue;
         }
       } catch (error: any) {
-        console.warn(`[Puppeteer] Failed to enrich ${article.url}: ${error.message}`);
+        logger.warn(`[Puppeteer] Failed to enrich ${article.url}: ${error.message}`);
       }
 
       enriched.push(article);
@@ -254,7 +255,7 @@ export async function processPuppeteerSources(options?: {
   const sources = await listPuppeteerSources(options?.filters);
 
   if (sources.length === 0) {
-    console.log('[Puppeteer] no active puppeteer sources found.');
+    logger.info('[Puppeteer] no active puppeteer sources found.');
     return { success: true, totalCollected: 0 };
   }
 
@@ -272,7 +273,7 @@ export async function processPuppeteerSources(options?: {
       try {
         // 로그인 필요 소스는 Cloud Run에서 처리 불가 → 로컬 PC 스크래퍼가 담당
         if (source.loginRequired || source.authType === 'session') {
-          console.log(`[Puppeteer] ${source.name}: loginRequired=true → skipping (handled by local scraper)`);
+          logger.info(`[Puppeteer] ${source.name}: loginRequired=true → skipping (handled by local scraper)`);
           await page.close().catch(() => {});
           continue;
         }
@@ -337,13 +338,13 @@ export async function processPuppeteerSources(options?: {
           errorMessage: null,
         }, { merge: true });
 
-        console.log(`[Puppeteer] ${source.name}: +${sourceCollected} articles`);
+        logger.info(`[Puppeteer] ${source.name}: +${sourceCollected} articles`);
       } catch (error: any) {
         await sourceRef.set({
           lastStatus: 'error',
           errorMessage: error.message || 'Unknown puppeteer error',
         }, { merge: true }).catch(() => {});
-        console.error(`[Puppeteer] ${source.name} error:`, error.message || error);
+        logger.error(`[Puppeteer] ${source.name} error:`, error.message || error);
       } finally {
         await page.close().catch(() => {});
       }

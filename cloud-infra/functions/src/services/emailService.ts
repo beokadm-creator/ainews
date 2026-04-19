@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as nodemailer from 'nodemailer';
 import * as admin from 'firebase-admin';
 import { createHmac } from 'crypto';
@@ -108,7 +109,7 @@ export async function sendOutputEmails(
     }
 
     if (subscriberEmails.length === 0) {
-      console.log('No active subscribers found.');
+      logger.info('No active subscribers found.');
       return { success: true, sentCount: 0, message: 'No subscribers configured' };
     }
 
@@ -124,7 +125,7 @@ export async function sendOutputEmails(
     }
 
     if (subscriberEmails.length === 0) {
-      console.log('All subscribers have unsubscribed.');
+      logger.info('All subscribers have unsubscribed.');
       return { success: true, sentCount: 0, message: 'All subscribers unsubscribed' };
     }
 
@@ -154,7 +155,7 @@ export async function sendOutputEmails(
         lastMessageId = info.messageId;
         sentCount++;
       } catch (err) {
-        console.error(`Failed to send email to ${recipientEmail}:`, err);
+        logger.error(`Failed to send email to ${recipientEmail}:`, err);
       }
     }
 
@@ -170,7 +171,7 @@ export async function sendOutputEmails(
 
     return { success: true, sentCount, messageId: info.messageId };
   } catch (error) {
-    console.error('Error sending briefing emails:', error);
+    logger.error('Error sending briefing emails:', error);
     throw error;
   }
 }

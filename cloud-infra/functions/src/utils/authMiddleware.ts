@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 
 /**
@@ -66,7 +67,7 @@ export async function requireAuth(
     
     return true;
   } catch (error: any) {
-    console.error('Authentication error:', error);
+    logger.error('Authentication error:', error);
     
     if (error.code === 'auth/id-token-expired') {
       response.status(401).json({
@@ -138,7 +139,7 @@ export async function requireAdmin(
     
     return true;
   } catch (error: any) {
-    console.error('Admin authorization error:', error);
+    logger.error('Admin authorization error:', error);
     response.status(500).json({
       success: false,
       error: `Authorization check failed: ${error.message || 'Unknown error'}`

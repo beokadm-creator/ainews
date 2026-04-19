@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 
 /**
@@ -98,5 +99,5 @@ SIMILARITY: HIGH/MEDIUM/LOW`,
   }
 
   await batch.commit();
-  console.log(`Seeded ${templates.length} prompt templates`);
+  logger.info(`Seeded ${templates.length} prompt templates`);
 }

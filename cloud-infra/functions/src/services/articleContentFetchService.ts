@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import axios from 'axios';
 import { decodeBuffer, cleanHtmlContent } from '../utils/encodingUtils';
 import { extractTextFromHtml, normalizeArticleText } from '../utils/textUtils';
@@ -119,7 +120,7 @@ export async function enrichArticleBody<T extends { url: string; content?: strin
       };
     }
   } catch (error: any) {
-    console.warn(`[ArticleBodyFetch] Failed to fetch article body for ${article.url}: ${error.message}`);
+    logger.warn(`[ArticleBodyFetch] Failed to fetch article body for ${article.url}: ${error.message}`);
   }
 
   return {

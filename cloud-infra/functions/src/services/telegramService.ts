@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
 
@@ -123,7 +124,7 @@ export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'Mar
   const config = await getTelegramConfig();
 
   if (!config.botToken || !config.chatId) {
-    console.warn('Telegram Bot Token or Chat ID is not configured.');
+    logger.warn('Telegram Bot Token or Chat ID is not configured.');
     return { success: false, error: 'Telegram configuration missing' };
   }
 
@@ -145,14 +146,14 @@ export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'Mar
         // Retry-After 헤더 활용
         const retryAfter = error.response?.headers?.['retry-after'];
         const delay = retryAfter ? parseInt(retryAfter) * 1000 : (2 ** attempt) * 1000;
-        console.warn(`Telegram rate limited, retrying in ${delay}ms`);
+        logger.warn(`Telegram rate limited, retrying in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
 
       if (status === 400 && parseMode === 'HTML') {
         // HTML 파싱 실패 → HTML 태그 제거 후 plaintext로 재시도
-        console.warn('Telegram HTML parse failed, retrying as plain text');
+        logger.warn('Telegram HTML parse failed, retrying as plain text');
         const stripped = text.replace(/<[^>]*>/g, '');
         return await axios.post(url, {
           chat_id: config.chatId,
@@ -162,7 +163,7 @@ export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'Mar
       }
 
       if (attempt === maxRetries) {
-        console.error('Error sending Telegram message:', error.response?.data || error.message);
+        logger.error('Error sending Telegram message:', error.response?.data || error.message);
         throw error;
       }
       await new Promise(r => setTimeout(r, (2 ** attempt) * 1000));
@@ -194,7 +195,7 @@ export async function sendErrorNotificationToAdmin(errorType: string, errorMessa
     });
     return { success: true, messageId: response.data.result.message_id };
   } catch (error: any) {
-    console.error('Error sending admin notification:', error.response?.data || error.message);
+    logger.error('Error sending admin notification:', error.response?.data || error.message);
     return { success: false };
   }
 }
@@ -291,7 +292,7 @@ export async function sendBriefingToTelegram(outputId: string) {
 
     return lastResult;
   } catch (error) {
-    console.error('Error in sendBriefingToTelegram:', error);
+    logger.error('Error in sendBriefingToTelegram:', error);
     throw error;
   }
 }

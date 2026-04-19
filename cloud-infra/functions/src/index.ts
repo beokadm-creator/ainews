@@ -1,10 +1,11 @@
+import * as logger from 'firebase-functions/logger';
 // v2026-04-16
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { throwSafeError } from './utils/safeError';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
-import { logger } from 'firebase-functions';
+
 
 setGlobalOptions({
   region: 'us-central1',
@@ -41,7 +42,7 @@ import { DEFAULT_TRACKED_COMPANIES } from './services/trackedCompanyConfig';
 admin.initializeApp();
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
   // Log critical error to firestore without blocking
   try {
     admin.firestore().collection('systemLogs').add({
@@ -51,7 +52,7 @@ process.on('unhandledRejection', (reason, promise) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     }).catch(() => {});
   } catch (e) {
-    console.error('Failed to log unhandledRejection to firestore:', e);
+    logger.error('Failed to log unhandledRejection to firestore:', e);
   }
 });
 
@@ -81,10 +82,10 @@ admin.firestore().settings({ ignoreUndefinedProperties: true });
 // Seeding (?꾩슂 ???섎룞 ?ㅽ뻾 ?먮뒗 蹂꾨룄 ?몃━嫄곕줈 ?대룞 沅뚯옣)
 // ensureCollectionsExist().catch(console.error);
 // seedPromptTemplates().catch(err => {
-//   console.warn('Failed to seed prompt templates:', err);
+//   logger.warn('Failed to seed prompt templates:', err);
 // });
 // seedGlobalSources().catch(err => {
-//   console.warn('Failed to seed global sources:', err);
+//   logger.warn('Failed to seed global sources:', err);
 // });
 // ?????????????????????????????????????????
 // Helpers
@@ -290,7 +291,7 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
 
   for (let round = 0; round < maxRounds; round++) {
     if (Date.now() - startTime > DRAIN_BUDGET_MS) {
-      console.log(`[drainQueue] 7분 시간 예산 초과 → round ${round}에서 정상 종료`);
+      logger.info(`[drainQueue] 7분 시간 예산 초과 → round ${round}에서 정상 종료`);
       break;
     }
 
@@ -304,7 +305,7 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
       invalidatePipelineCountsCache();
     }
     if (filteredThisRound > 0) {
-      console.log(`[drainQueue] round=${round} filtered=${filteredThisRound} passed=${Number(filteringResult?.passed || 0)} failed=${Number(filteringResult?.failed || 0)}`);
+      logger.info(`[drainQueue] round=${round} filtered=${filteredThisRound} passed=${Number(filteringResult?.passed || 0)} failed=${Number(filteringResult?.failed || 0)}`);
       recordMetric({
         stage: 'pipeline',
         action: 'continuous_filtering_round',
@@ -332,7 +333,7 @@ async function drainAiAnalysisQueue(aiConfig: RuntimeAiConfig, companyId?: strin
       invalidatePipelineCountsCache();
     }
     if (analyzedThisRound > 0) {
-      console.log(`[drainQueue] round=${round} analyzed=${analyzedThisRound} failed=${Number(analysisResult?.failed || 0)}`);
+      logger.info(`[drainQueue] round=${round} analyzed=${analyzedThisRound} failed=${Number(analysisResult?.failed || 0)}`);
       recordMetric({
         stage: 'pipeline',
         action: 'continuous_analysis_round',
@@ -413,7 +414,7 @@ async function withWorkerLease<T>(
         lastHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      console.error(`Heartbeat failed for worker ${workerId}:`, e);
+      logger.error(`Heartbeat failed for worker ${workerId}:`, e);
     }
   }, Math.min(leaseMs / 2, 60000)); // Every 1 minute or half lease time
 
@@ -470,9 +471,9 @@ async function runContinuousCollectionCycle(aiConfig: RuntimeAiConfig, companyId
     (apiResult.status === 'fulfilled' ? (apiResult.value as any)?.totalCollected || 0 : 0) +
     (scrapingResult.status === 'fulfilled' ? (scrapingResult.value as any)?.totalCollected || 0 : 0);
 
-  if (rssResult.status === 'rejected') console.error('[ContinuousCollection] RSS error:', rssResult.reason);
-  if (apiResult.status === 'rejected') console.error('[ContinuousCollection] API error:', apiResult.reason);
-  if (scrapingResult.status === 'rejected') console.error('[ContinuousCollection] Scraping error:', scrapingResult.reason);
+  if (rssResult.status === 'rejected') logger.error('[ContinuousCollection] RSS error:', rssResult.reason);
+  if (apiResult.status === 'rejected') logger.error('[ContinuousCollection] API error:', apiResult.reason);
+  if (scrapingResult.status === 'rejected') logger.error('[ContinuousCollection] Scraping error:', scrapingResult.reason);
 
   return { totalCollected };
 }
@@ -483,7 +484,7 @@ async function runContinuousPremiumCollectionCycle(aiConfig: RuntimeAiConfig, co
     const result = await processPuppeteerSources(context);
     return { totalCollected: Number(result?.totalCollected || 0) };
   } catch (error) {
-    console.error('[ContinuousPremiumCollection] Puppeteer error:', error);
+    logger.error('[ContinuousPremiumCollection] Puppeteer error:', error);
     throw error;
   }
 }
@@ -659,7 +660,7 @@ async function recoverStaleAiStageArticles(force = false) {
 
   if (recoveredFiltering > 0 || recoveredAnalyzing > 0) {
     await batch.commit();
-    console.log(`[RecoverStale] filtering→pending: ${recoveredFiltering}, analyzing→filtered: ${recoveredAnalyzing} (force=${force})`);
+    logger.info(`[RecoverStale] filtering→pending: ${recoveredFiltering}, analyzing→filtered: ${recoveredAnalyzing} (force=${force})`);
   }
 
   return { recoveredFiltering, recoveredAnalyzing };
@@ -751,10 +752,10 @@ async function collectArticlesOnce(options: {
     (puppeteerResult.status === 'fulfilled' ? (puppeteerResult.value as any)?.totalCollected || 0 : 0);
 
   const logPrefix = options.logPrefix || '[Pipeline]';
-  if (rssResult.status === 'rejected') console.error(`${logPrefix} RSS error:`, rssResult.reason);
-  if (apiResult.status === 'rejected') console.error(`${logPrefix} API error:`, apiResult.reason);
-  if (scrapingResult.status === 'rejected') console.error(`${logPrefix} Scraping error:`, scrapingResult.reason);
-  if (puppeteerResult.status === 'rejected') console.error(`${logPrefix} Puppeteer error:`, puppeteerResult.reason);
+  if (rssResult.status === 'rejected') logger.error(`${logPrefix} RSS error:`, rssResult.reason);
+  if (apiResult.status === 'rejected') logger.error(`${logPrefix} API error:`, apiResult.reason);
+  if (scrapingResult.status === 'rejected') logger.error(`${logPrefix} Scraping error:`, scrapingResult.reason);
+  if (puppeteerResult.status === 'rejected') logger.error(`${logPrefix} Puppeteer error:`, puppeteerResult.reason);
 
   return {
     totalCollected,
@@ -1177,7 +1178,7 @@ function triggerManagedReportProcessing(payload: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).catch((error) => {
-    console.error('Failed to trigger processManagedReportHttp:', error);
+    logger.error('Failed to trigger processManagedReportHttp:', error);
   });
 }
 
@@ -1454,7 +1455,7 @@ export const getGlobalSources = onCall({ region: 'us-central1', cors: true, invo
     const snap = await db.collection('globalSources').orderBy('relevanceScore', 'desc').get();
     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (err: any) {
-    console.error('getGlobalSources error:', err);
+    logger.error('getGlobalSources error:', err);
     throw new HttpsError('internal', err.message);
   }
 });
@@ -1468,17 +1469,17 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
   const { id, ...data } = request.data || {};
   
   // ??濡쒓퉭 異붽?
-  console.log('[upsertGlobalSource] ?쒖옉', { uid: request.auth.uid, id, dataName: data.name });
+  logger.info('[upsertGlobalSource] ?쒖옉', { uid: request.auth.uid, id, dataName: data.name });
   
   if (!data.name || !data.url || !data.type) {
-    console.error('[upsertGlobalSource] ?꾩닔 ?꾨뱶 ?꾨씫', { hasName: !!data.name, hasUrl: !!data.url, hasType: !!data.type });
+    logger.error('[upsertGlobalSource] ?꾩닔 ?꾨뱶 ?꾨씫', { hasName: !!data.name, hasUrl: !!data.url, hasType: !!data.type });
     throw new HttpsError('invalid-argument', 'name, url, type are required');
   }
   
   const db = admin.firestore();
   const docRef = id ? db.collection('globalSources').doc(id) : db.collection('globalSources').doc();
   
-  console.log('[upsertGlobalSource] 寃쎈줈', { 
+  logger.info('[upsertGlobalSource] 寃쎈줈', { 
     mode: id ? 'update' : 'create', 
     targetId: id || '(??ID)', 
     docRefId: docRef.id 
@@ -1495,12 +1496,12 @@ export const upsertGlobalSource = onCall({ region: 'us-central1', cors: true, in
       }),
     }, { merge: !!id });
     
-    console.log('[upsertGlobalSource] ????깃났', { docId: docRef.id, mode: id ? 'update' : 'create' });
+    logger.info('[upsertGlobalSource] ????깃났', { docId: docRef.id, mode: id ? 'update' : 'create' });
     
     invalidateSourceCache();
     return { success: true, id: docRef.id };
   } catch (error: any) {
-    console.error('[upsertGlobalSource] ????ㅽ뙣', { docId: docRef.id, error: error.message, stack: error.stack });
+    logger.error('[upsertGlobalSource] ????ㅽ뙣', { docId: docRef.id, error: error.message, stack: error.stack });
     throw new HttpsError('internal', `????ㅽ뙣: ${error.message}`);
   }
 });
@@ -1570,7 +1571,7 @@ export const getCompanies = onCall({ region: 'us-central1', cors: true, invoker:
     const snap = await db.collection('companies').orderBy('name').get();
     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (err: any) {
-    console.error('getCompanies error:', err);
+    logger.error('getCompanies error:', err);
     if (err instanceof HttpsError) {
       throw err;
     }
@@ -1739,24 +1740,24 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Authentication required');
     }
-    console.log('saveAiApiKey: Starting with data:', { ...request.data, apiKey: request.data?.apiKey ? '***' : undefined });
+    logger.info('saveAiApiKey: Starting with data:', { ...request.data, apiKey: request.data?.apiKey ? '***' : undefined });
     const { companyId: rawCompanyId, provider, apiKey, baseUrl, model, filteringModel, fallbackProvider, fallbackModel, setAsActive } = request.data || {};
 
     let companyId: string;
     try {
       companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
-      console.log('saveAiApiKey: companyId resolved:', companyId);
+      logger.info('saveAiApiKey: companyId resolved:', companyId);
     } catch (err: any) {
-      console.error('saveAiApiKey: getPrimaryCompanyId failed:', err.message);
+      logger.error('saveAiApiKey: getPrimaryCompanyId failed:', err.message);
       throw new HttpsError('invalid-argument', `Failed to get company ID: ${err.message}`);
     }
 
     let access: any;
     try {
       access = await assertCompanyAccess(request.auth.uid, companyId);
-      console.log('saveAiApiKey: access verified:', { role: access.role });
+      logger.info('saveAiApiKey: access verified:', { role: access.role });
     } catch (err: any) {
-      console.error('saveAiApiKey: assertCompanyAccess failed:', err.message);
+      logger.error('saveAiApiKey: assertCompanyAccess failed:', err.message);
       throw new HttpsError('permission-denied', `Access denied: ${err.message}`);
     }
 
@@ -1772,12 +1773,12 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
       if (typeof apiKey !== 'string' || apiKey.trim().length < 5) {
         throw new HttpsError('invalid-argument', 'Valid API key is required');
       }
-      console.log('saveAiApiKey: Saving API key for', provider, companyId);
+      logger.info('saveAiApiKey: Saving API key for', provider, companyId);
       try {
         await saveApiKeyForCompany(companyId, provider as AiProvider, apiKey.trim());
-        console.log('saveAiApiKey: API key saved successfully');
+        logger.info('saveAiApiKey: API key saved successfully');
       } catch (keyErr: any) {
-        console.error('saveAiApiKey: API key save failed, continuing anyway:', keyErr.message);
+        logger.error('saveAiApiKey: API key save failed, continuing anyway:', keyErr.message);
         // API ??????ㅽ뙣?대룄 怨꾩냽 吏꾪뻾 (?섏쨷???섍꼍 蹂?섎굹 ?ㅻⅨ 怨녹뿉??濡쒕뱶 媛??
       }
     }
@@ -1807,14 +1808,14 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
       if (baseUrl) updates['ai.baseUrl'] = baseUrl;
       if (filteringModel !== undefined) updates['ai.filteringModel'] = filteringModel || null;
     }
-    console.log('saveAiApiKey: Writing to companySettings:', { companyId, updates });
+    logger.info('saveAiApiKey: Writing to companySettings:', { companyId, updates });
     await db.collection('companySettings').doc(companyId).set(updates, { merge: true });
-    console.log('saveAiApiKey: Wrote to companySettings successfully');
+    logger.info('saveAiApiKey: Wrote to companySettings successfully');
 
     // Superadmin: also save to global systemSettings
     const userDoc = await db.collection('users').doc(request.auth.uid).get();
     if (userDoc.data()?.role === 'superadmin') {
-      console.log('saveAiApiKey: User is superadmin, also saving to systemSettings');
+      logger.info('saveAiApiKey: User is superadmin, also saving to systemSettings');
       const sysDocRef = db.collection('systemSettings').doc('aiConfig');
       // update()??dot-notation??nested path濡??댁꽍 (set+merge??literal ?꾨뱶紐낆쑝濡????
       const sysUpdates: any = { ...updates };
@@ -1838,12 +1839,12 @@ export const saveAiApiKey = onCall({ region: 'us-central1', cors: true, invoker:
         else { nested.ai = { provider }; }
         await sysDocRef.set(nested, { merge: true });
       }
-      console.log('saveAiApiKey: Superadmin updates complete');
+      logger.info('saveAiApiKey: Superadmin updates complete');
     }
-    console.log('saveAiApiKey: Success');
+    logger.info('saveAiApiKey: Success');
     return { success: true, message: `Settings for ${provider} saved` };
   } catch (err: any) {
-    console.error('saveAiApiKey: ERROR:', err.code, err.message, err.stack);
+    logger.error('saveAiApiKey: ERROR:', err.code, err.message, err.stack);
     // HttpsError??洹몃?濡?re-throw (Firebase媛 ?щ컮瑜닿쾶 泥섎━)
     if (typeof err.code === 'string' && err.code.startsWith('functions/')) throw err;
     // ?쇰컲 Error??紐낆떆?곸쑝濡?HttpsError濡?蹂??
@@ -2905,7 +2906,7 @@ export const scheduledAiAnalysis = onSchedule({ schedule: '*/5 * * * *', region:
     });
     logger.info('scheduledAiAnalysis completed', result);
   } catch (err: any) {
-    console.error('Scheduled AI analysis failed:', err.message);
+    logger.error('Scheduled AI analysis failed:', err.message);
   }
 });
 
@@ -2925,7 +2926,7 @@ export const scheduledContinuousCollection = onSchedule({ schedule: '0 * * * *',
     });
     logger.info('scheduledContinuousCollection completed', result);
   } catch (err: any) {
-    console.error('Scheduled continuous collection failed:', err.message);
+    logger.error('Scheduled continuous collection failed:', err.message);
   }
 });
 
@@ -2945,7 +2946,7 @@ export const scheduledPremiumCollection = onSchedule({ schedule: '0 * * * *', re
     });
     logger.info('scheduledPremiumCollection completed', result);
   } catch (err: any) {
-    console.error('Scheduled premium collection failed:', err.message);
+    logger.error('Scheduled premium collection failed:', err.message);
   }
 });
 
@@ -3086,7 +3087,7 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
     } catch (error) {
-      console.error(`scheduledDistributionDispatch failed for group ${group.id}:`, error);
+      logger.error(`scheduledDistributionDispatch failed for group ${group.id}:`, error);
     }
   }
 });
@@ -3106,7 +3107,7 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
         timezone: runtime.timezone,
       });
     } catch (err: any) {
-      console.error(`Scheduled briefing failed for company ${companyDoc.id}:`, err.message);
+      logger.error(`Scheduled briefing failed for company ${companyDoc.id}:`, err.message);
     }
   }
 });
@@ -3123,14 +3124,14 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
         const companiesSnap = await admin.firestore().collection('companies').where('active', '==', true).limit(1).get();
         if (!companiesSnap.empty) {
           targetCompanyId = companiesSnap.docs[0].id;
-          console.log('runFullPipeline: superadmin using companyId:', targetCompanyId);
+          logger.info('runFullPipeline: superadmin using companyId:', targetCompanyId);
         } else {
           throw new HttpsError('not-found', '?쒖꽦?붾맂 ?뚯궗媛 ?놁뒿?덈떎');
         }
       }
     }
 
-    console.log('runFullPipeline: resolveRuntime for', targetCompanyId);
+    logger.info('runFullPipeline: resolveRuntime for', targetCompanyId);
     const runtime = await resolveRuntime(request.auth.uid, targetCompanyId, request.data?.overrides);
     const db = admin.firestore();
     const pipelineRef = db.collection('pipelineRuns').doc();
@@ -3154,11 +3155,11 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pipelineId }),
-    }).catch(err => console.error('Failed to trigger executePipelineHttp:', err));
+    }).catch(err => logger.error('Failed to trigger executePipelineHttp:', err));
 
     return { pipelineId, success: true };
   } catch (err: any) {
-    console.error('runFullPipeline error:', err.code, err.message);
+    logger.error('runFullPipeline error:', err.code, err.message);
     if (typeof err.code === 'string' && err.code.startsWith('functions/')) throw err;
     throw new HttpsError('internal', err.message || 'Pipeline failed');
   }
@@ -3202,7 +3203,7 @@ export const executePipelineHttp = onRequest(
         includeOutput: true,
       });
     } catch (error: any) {
-      console.error('Pipeline execution error:', error.message);
+      logger.error('Pipeline execution error:', error.message);
     }
   },
 );
@@ -3264,7 +3265,7 @@ export const generateReportV2 = onCall(
         reportTitle: reportTitleResolved,
         requestedBy: request.auth.uid,
       }).catch((err: any) => {
-        console.error('Background report generation failed:', err.message);
+        logger.error('Background report generation failed:', err.message);
         admin.firestore().collection('outputs').doc(outputRef.id).set({
           status: 'failed',
           errorMessage: err.message || 'Report generation failed',
@@ -3282,7 +3283,7 @@ export const generateReportV2 = onCall(
       };
     } catch (err: any) {
       const errorMsg = err.message || (typeof err === 'string' ? err : 'Unknown error');
-      console.error('generateReportV2 FAILED:', {
+      logger.error('generateReportV2 FAILED:', {
         message: errorMsg,
         stack: err.stack,
         data: request.data
@@ -3338,7 +3339,7 @@ export const regenerateReportContent = onCall(
       reportTitle,
       requestedBy: request.auth.uid,
     }).catch((err: any) => {
-      console.error('[regenerateReportContent] Background failed:', err.message);
+      logger.error('[regenerateReportContent] Background failed:', err.message);
       db.collection('outputs').doc(outputId).set({
         status: 'failed',
         errorMessage: err.message || 'Regeneration failed',
@@ -3415,18 +3416,18 @@ export const generateReportContentHttp = onRequest(
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
 
-          console.log(`Report ${outputId} generated successfully`);
+          logger.info(`Report ${outputId} generated successfully`);
         } catch (err: any) {
-          console.error(`Report ${outputId} generation failed:`, err);
+          logger.error(`Report ${outputId} generation failed:`, err);
           await outputRef.update({
             status: 'failed',
             errorMessage: err.message || 'Unknown error',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }).catch(e => console.error('Failed to update status:', e));
+          }).catch(e => logger.error('Failed to update status:', e));
         }
       })();
     } catch (err: any) {
-      console.error('generateReportContentHttp error:', err);
+      logger.error('generateReportContentHttp error:', err);
       res.status(500).json({ error: err.message || 'Internal error' });
     }
   },
@@ -3549,7 +3550,7 @@ export const processManagedReportHttp = onRequest(
           }, { merge: true });
         }
       } catch (error: any) {
-        console.error('processManagedReportHttp error:', error);
+        logger.error('processManagedReportHttp error:', error);
         await outputRef.set({
           status: 'failed',
           errorMessage: error.message || 'Unknown error',
@@ -3557,7 +3558,7 @@ export const processManagedReportHttp = onRequest(
           failedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true }).catch(() => {});
       }
-    })().catch((error) => console.error('Managed report async task failed:', error));
+    })().catch((error) => logger.error('Managed report async task failed:', error));
   }
 );
 
@@ -3750,7 +3751,7 @@ export const searchArticles = onCall(
         scanned,
       };
     } catch (err: any) {
-      console.error('searchArticles error:', err);
+      logger.error('searchArticles error:', err);
       if (err instanceof HttpsError) throw err;
       throw new HttpsError('internal', err.message || 'Search failed');
     }
@@ -3771,7 +3772,7 @@ async function deleteArticlesByQuery(db: admin.firestore.Firestore, q: admin.fir
     });
     await batch.commit();
     deleted += snapshot.docs.length;
-    console.log(`Deleted ${deleted} articles...`);
+    logger.info(`Deleted ${deleted} articles...`);
 
     snapshot = await q.limit(500).get();
   }
@@ -3921,7 +3922,7 @@ export const resetAllArticlesHttp = onRequest(
         dedupDeleted,
       });
     } catch (err: any) {
-      console.error('resetAllArticles error:', err);
+      logger.error('resetAllArticles error:', err);
       response.status(500).json({ error: err.message });
     }
   }

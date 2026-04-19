@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import { isDuplicateArticle, hashTitle, hashUrl, batchFetchDedupEntries } from './duplicateService';
 import { recordArticleDedupEntry } from './articleDedupService';
@@ -58,7 +59,7 @@ export async function processApiSources(options?: {
   });
 
   if (filteredApiSources.length === 0) {
-    console.log('processApiSources: no active API sources found.');
+    logger.info('processApiSources: no active API sources found.');
     return { success: true, totalCollected: 0, sourceResults: [] };
   }
 
@@ -73,7 +74,7 @@ export async function processApiSources(options?: {
       if (isNaverApiSource(source)) {
         collected = await collectFromNaverNews(source, sourceId, options, startDate, endDate);
       } else {
-        console.log(`processApiSources: unsupported API source '${source.name}', skipping.`);
+        logger.info(`processApiSources: unsupported API source '${source.name}', skipping.`);
         return {
           sourceId,
           name: source.name || sourceId,
@@ -88,7 +89,7 @@ export async function processApiSources(options?: {
         errorMessage: null,
       });
 
-      console.log(`Processed ${collected} new API articles from ${source.name}`);
+      logger.info(`Processed ${collected} new API articles from ${source.name}`);
       return {
         sourceId,
         name: source.name || sourceId,
@@ -212,12 +213,12 @@ async function collectFromNaverNews(
         });
       }
     } catch (err: any) {
-      console.warn(`Naver search failed for keyword "${kw}": ${err.message}`);
+      logger.warn(`Naver search failed for keyword "${kw}": ${err.message}`);
     }
   }
 
   if (candidates.length === 0) {
-    console.log(`Naver News: 0 fresh candidates (startDate: ${effectiveStartDate.toISOString()})`);
+    logger.info(`Naver News: 0 fresh candidates (startDate: ${effectiveStartDate.toISOString()})`);
     return 0;
   }
 
@@ -226,7 +227,7 @@ async function collectFromNaverNews(
   const dedupEntries = await batchFetchDedupEntries(urlHashes);
   const freshCandidates = candidates.filter((c) => !dedupEntries.has(hashUrl(c.url)));
 
-  console.log(`Naver News: ${candidates.length} fresh → ${freshCandidates.length} after dedup filter`);
+  logger.info(`Naver News: ${candidates.length} fresh → ${freshCandidates.length} after dedup filter`);
 
   if (freshCandidates.length === 0) {
     return 0;
@@ -260,7 +261,7 @@ async function collectFromNaverNews(
   }
 
   if (finalCandidates.length === 0) {
-    console.log(`Naver News: saved 0 / ${candidates.length} articles`);
+    logger.info(`Naver News: saved 0 / ${candidates.length} articles`);
     return 0;
   }
 
@@ -314,7 +315,7 @@ async function collectFromNaverNews(
   await batch.commit();
   await Promise.all(dedupWrites);
 
-  console.log(`Naver News: saved ${collected} / ${candidates.length} articles`);
+  logger.info(`Naver News: saved ${collected} / ${candidates.length} articles`);
   return collected;
 }
 

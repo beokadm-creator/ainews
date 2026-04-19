@@ -1,3 +1,4 @@
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -103,7 +104,7 @@ async function scrapeSourceArticles(source: ScrapingSource): Promise<ScrapedArti
         content = extractTextFromHtml(articleHtml, url);
       }
     } catch (error: any) {
-      console.warn(`[Scraping] Failed to fetch article body for ${url}: ${error.message}`);
+      logger.warn(`[Scraping] Failed to fetch article body for ${url}: ${error.message}`);
     }
 
     return {
@@ -138,7 +139,7 @@ export async function processScrapingSources(options?: {
   })).filter((source) => requestedSourceIds.size === 0 || requestedSourceIds.has(source.id));
 
   if (allScrapingSources.length === 0) {
-    console.log('processScrapingSources: no active scraping sources found.');
+    logger.info('processScrapingSources: no active scraping sources found.');
     return { success: true, totalCollected: 0 };
   }
 
@@ -214,14 +215,14 @@ export async function processScrapingSources(options?: {
         errorMessage: null,
       });
 
-      console.log(`[Scraping] ${source.name}: +${sourceCollected} articles`);
+      logger.info(`[Scraping] ${source.name}: +${sourceCollected} articles`);
       return sourceCollected;
     } catch (error: any) {
       await docRef.update({
         lastStatus: 'error',
         errorMessage: error.message,
       }).catch(() => {});
-      console.error(`[Scraping] ${source.name} error: ${error.message}`);
+      logger.error(`[Scraping] ${source.name} error: ${error.message}`);
       return 0;
     }
   });
