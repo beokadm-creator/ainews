@@ -1,20 +1,15 @@
 import { handleError } from "@/utils/errorHandler";
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   ArrowLeft,
   Clock3,
   Copy,
-  Download,
-  Edit3,
   ExternalLink,
   Link2,
   Loader2,
   Mail,
   RefreshCw,
-  RotateCcw,
-  Save,
   Search,
-  Send,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -24,14 +19,11 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
 import { db, functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
-import { formatArticleContentParagraphs } from '@/lib/articleContent';
 import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
-import { resolveArticleIdByHeadline, resolveArticleIdByUrl } from '@/utils/articleResolution';
 import { ArticlePreviewModal } from '@/components/briefing/ArticlePreviewModal';
 import { ReportList } from '@/components/briefing/ReportList';
 import { ReportActionBar } from '@/components/briefing/ReportActionBar';
 import { useReportClickHandler } from '@/hooks/useReportClickHandler';
-
 import { useBriefingState } from '@/hooks/useBriefingState';
 
 export default function Briefing() {
