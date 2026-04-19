@@ -27,10 +27,12 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
 import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
 import { resolveArticleIdByHeadline, resolveArticleIdByUrl } from '@/utils/articleResolution';
-import { formatArticleDate } from '@/lib/articleContent';
 import { ArticlePreviewModal } from '@/components/briefing/ArticlePreviewModal';
 import { ReportList } from '@/components/briefing/ReportList';
+import { ReportActionBar } from '@/components/briefing/ReportActionBar';
 import { useReportClickHandler } from '@/hooks/useReportClickHandler';
+
+import { useBriefingState } from '@/hooks/useBriefingState';
 
 export default function Briefing() {
   const [searchParams] = useSearchParams();
@@ -39,31 +41,41 @@ export default function Briefing() {
   const companyId = (user as any)?.primaryCompanyId || null;
   const isAdmin = ['company_admin', 'superadmin'].includes((user as any)?.role);
 
-  const [outputs, setOutputs] = useState<any[]>([]);
-  const [selectedOutput, setSelectedOutput] = useState<any | null>(null);
-  const [articles, setArticles] = useState<any[]>([]);
-  const [previewArticle, setPreviewArticle] = useState<any | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'html' | null>(null);
-  const [sharing, setSharing] = useState(false);
-  const [shareUrl, setShareUrl] = useState('');
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [regenModalOpen, setRegenModalOpen] = useState(false);
-  const [regenPrompt, setRegenPrompt] = useState('');
-  const [regenerating, setRegenerating] = useState(false);
-  const [editMode, setEditMode] = useState(false);
-  const [savingEdit, setSavingEdit] = useState(false);
-  const editRef = useRef<HTMLDivElement>(null);
-  const [currentTemplates, setCurrentTemplates] = useState<{ internal?: string; external?: string }>({});
-  const [settingTemplate, setSettingTemplate] = useState(false);
+  const {
+    state: {
+      outputs,
+      selectedOutput,
+      articles,
+      previewArticle,
+      loading,
+      sending,
+      downloadingFormat,
+      sharing,
+      shareUrl,
+      actionMessage,
+      regenModalOpen,
+      regenPrompt,
+      regenerating,
+      editMode,
+      savingEdit,
+      currentTemplates,
+      settingTemplate,
+      emailModalOpen,
+      distGroups,
+      selectedGroupIds,
+      unsubscribes,
+      emailSendStatus
+    },
+    updateState,
+    setOutputs,
+    setSelectedOutput,
+    setArticles,
+    setPreviewArticle,
+    setLoading,
+    setActionMessage
+  } = useBriefingState();
 
-  // 이메일 발송 모달
-  const [emailModalOpen, setEmailModalOpen] = useState(false);
-  const [distGroups, setDistGroups] = useState<any[]>([]);
-  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
-  const [unsubscribes, setUnsubscribes] = useState<Set<string>>(new Set());
-  const [emailSendStatus, setEmailSendStatus] = useState<string>('');
+  const editRef = useRef<HTMLDivElement>(null);
 
   const loadOutputs = async () => {
     if (!companyId) return;
@@ -99,7 +111,7 @@ export default function Briefing() {
     }
 
     setSelectedOutput(output);
-    setShareUrl(output.generatedOutput?.shareUrl || output.shareUrl || '');
+    updateState({ shareUrl: output.generatedOutput?.shareUrl || output.shareUrl || '' });
 
     // orderedArticleIds: GLM에 전달된 실제 순서 (각주 [1],[2],... 와 1:1 대응)
     // articleIds는 원래 선택 순서라 각주 번호와 불일치 → orderedArticleIds 우선 사용
@@ -129,7 +141,7 @@ export default function Briefing() {
     if (!companyId) return;
     getDoc(doc(db, 'companySettings', companyId))
       .then((snap) => {
-        if (snap.exists()) setCurrentTemplates((snap.data() as any)?.styleTemplates || {});
+        if (snap.exists()) updateState({ currentTemplates: (snap.data() as any)?.styleTemplates || {} });
       })
       .catch(handleError);
   }, [companyId]);
@@ -137,12 +149,12 @@ export default function Briefing() {
   useEffect(() => {
     const outputId = searchParams.get('outputId');
     if (outputId) {
-      setEditMode(false);
+      updateState({ editMode: false });
       loadOutputDetail(outputId).catch(handleError);
     } else {
       setSelectedOutput(null);
       setArticles([]);
-      setEditMode(false);
+      updateState({ editMode: false });
     }
   }, [searchParams]);
 
@@ -202,64 +214,61 @@ export default function Briefing() {
       newHtml = editedBody;
     }
 
-    setSavingEdit(true);
+    updateState({ savingEdit: true });
     setActionMessage(null);
     try {
       await httpsCallable(functions, 'updateReportContent')({ outputId: targetId, htmlContent: newHtml });
-      setEditMode(false);
+      updateState({ editMode: false });
       setActionMessage('리포트 내용이 저장되었습니다. 공유 링크에도 즉시 반영됩니다.');
       await loadOutputDetail(selectedOutput.id);
     } catch (error: any) {
       setActionMessage(error.message || '저장에 실패했습니다.');
     } finally {
-      setSavingEdit(false);
+      updateState({ savingEdit: false });
     }
   };
 
   const openRegenModal = () => {
-    setRegenPrompt(selectedOutput?.analysisPrompt || '');
-    setRegenModalOpen(true);
+    updateState({ regenPrompt: selectedOutput?.analysisPrompt || '', regenModalOpen: true });
   };
 
   const regenerateReport = async () => {
     if (!selectedOutput) return;
-    setRegenerating(true);
+    updateState({ regenerating: true });
     setActionMessage(null);
     try {
       await httpsCallable(functions, 'regenerateReportContent')({
         outputId: selectedOutput.id,
         newPrompt: regenPrompt,
       });
-      setRegenModalOpen(false);
+      updateState({ regenModalOpen: false });
       setActionMessage('리포트 재생성을 시작했습니다. 완료되면 자동으로 업데이트됩니다.');
     } catch (error: any) {
       setActionMessage(error.message || '재발행에 실패했습니다.');
     } finally {
-      setRegenerating(false);
+      updateState({ regenerating: false });
     }
   };
 
   const openEmailModal = async () => {
     if (!companyId) return;
-    setEmailSendStatus('');
-    setSelectedGroupIds([]);
+    updateState({ emailSendStatus: '', selectedGroupIds: [] });
     // 배포 그룹 로드
     try {
       const snap = await getDocs(query(collection(db, 'distributionGroups'), where('companyId', '==', companyId)));
-      setDistGroups(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })));
-    } catch { setDistGroups([]); }
+      updateState({ distGroups: snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) });
+    } catch { updateState({ distGroups: [] }); }
     // 구독 취소 목록 로드
     try {
       const snap = await getDocs(collection(db, 'emailUnsubscribes', companyId, 'entries'));
-      setUnsubscribes(new Set(snap.docs.map((d) => ((d.data().email as string) || '').toLowerCase())));
-    } catch { setUnsubscribes(new Set()); }
-    setEmailModalOpen(true);
+      updateState({ unsubscribes: new Set(snap.docs.map((d) => ((d.data().email as string) || '').toLowerCase())) });
+    } catch { updateState({ unsubscribes: new Set() }); }
+    updateState({ emailModalOpen: true });
   };
 
   const sendEmail = async () => {
     if (!selectedOutput) return;
-    setSending(true);
-    setEmailSendStatus('발송 중...');
+    updateState({ sending: true, emailSendStatus: '발송 중...' });
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       // 선택된 그룹의 이메일 수집 (구독 취소 제외)
@@ -277,30 +286,30 @@ export default function Briefing() {
         companyId,
         recipients: allEmails.length > 0 ? allEmails : undefined,
       });
-      setEmailSendStatus(`발송 완료 (${allEmails.length > 0 ? allEmails.length + '명' : '기본 수신자'})`);
-      setTimeout(() => setEmailModalOpen(false), 1500);
+      updateState({ emailSendStatus: `발송 완료 (${allEmails.length > 0 ? allEmails.length + '명' : '기본 수신자'})` });
+      setTimeout(() => updateState({ emailModalOpen: false }), 1500);
     } catch (err: any) {
-      setEmailSendStatus(`발송 실패: ${err?.message || '오류 발생'}`);
+      updateState({ emailSendStatus: `발송 실패: ${err?.message || '오류 발생'}` });
     } finally {
-      setSending(false);
+      updateState({ sending: false });
     }
   };
 
   const sendTelegram = async () => {
     if (!selectedOutput) return;
-    setSending(true);
+    updateState({ sending: true });
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       await httpsCallable(functions, 'triggerTelegramSend')({ id: targetId, companyId });
     } finally {
-      setSending(false);
+      updateState({ sending: false });
     }
   };
 
   const downloadAsset = async (format: 'pdf' | 'html') => {
     if (!selectedOutput) return;
 
-    setDownloadingFormat(format);
+    updateState({ downloadingFormat: format });
     setActionMessage(null);
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
@@ -326,21 +335,21 @@ export default function Briefing() {
     } catch (error: any) {
       setActionMessage(error.message || `${format.toUpperCase()} 다운로드에 실패했습니다.`);
     } finally {
-      setDownloadingFormat(null);
+      updateState({ downloadingFormat: null });
     }
   };
 
   const createShareUrl = async (regenerate = false) => {
     if (!selectedOutput) return;
 
-    setSharing(true);
+    updateState({ sharing: true });
     setActionMessage(null);
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       const fn = httpsCallable(functions, 'createReportShareLink');
       const result = await fn({ id: targetId, companyId, regenerate }) as any;
       const nextUrl = result.data?.shareUrl || '';
-      setShareUrl(nextUrl);
+      updateState({ shareUrl: nextUrl });
       if (nextUrl) {
         await navigator.clipboard.writeText(nextUrl);
         setActionMessage('공유 링크를 생성하고 클립보드에 복사했습니다.');
@@ -348,20 +357,17 @@ export default function Briefing() {
     } catch (error: any) {
       setActionMessage(error.message || '공유 링크 생성에 실패했습니다.');
     } finally {
-      setSharing(false);
+      updateState({ sharing: false });
     }
   };
 
-  const copyShareUrl = async () => {
-    if (!shareUrl) return;
-    await navigator.clipboard.writeText(shareUrl);
-    setActionMessage('공유 링크를 클립보드에 복사했습니다.');
+  const copyShareUrl = () => {
+    navigator.clipboard.writeText(shareUrl).then(() => setActionMessage('링크가 복사되었습니다.'));
   };
 
   const setAsTemplate = async (mode: 'internal' | 'external', clear = false) => {
     if (!selectedOutput || !companyId) return;
-    setSettingTemplate(true);
-    setActionMessage(null);
+    updateState({ settingTemplate: true, actionMessage: null });
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       await httpsCallable(functions, 'saveCompanyStyleTemplate')({
@@ -370,12 +376,12 @@ export default function Briefing() {
         outputId: clear ? null : targetId,
       });
       const snap = await getDoc(doc(db, 'companySettings', companyId));
-      setCurrentTemplates(snap.exists() ? ((snap.data() as any)?.styleTemplates || {}) : {});
+      updateState({ currentTemplates: snap.exists() ? ((snap.data() as any)?.styleTemplates || {}) : {} });
       setActionMessage(clear ? '템플릿이 해제되었습니다.' : '이 리포트를 스타일 템플릿으로 설정했습니다.');
     } catch (error: any) {
       setActionMessage(error.message || '템플릿 설정에 실패했습니다.');
     } finally {
-      setSettingTemplate(false);
+      updateState({ settingTemplate: false });
     }
   };
 
@@ -464,111 +470,25 @@ export default function Briefing() {
                   <span>참고 기사 {articles.length}건</span>
                 </div>
 
-                {/* Action bar */}
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {/* Download group */}
-                  <div className="flex items-center divide-x divide-gray-200 overflow-hidden rounded-lg border border-gray-200 dark:divide-gray-700/40 dark:border-gray-700/60">
-                    <button
-                      onClick={() => downloadAsset('pdf')}
-                      disabled={downloadingFormat !== null}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
-                    >
-                      {downloadingFormat === 'pdf' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                      PDF
-                    </button>
-                    <button
-                      onClick={() => downloadAsset('html')}
-                      disabled={downloadingFormat !== null}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
-                    >
-                      {downloadingFormat === 'html' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                      HTML
-                    </button>
-                  </div>
-
-                  {selectedOutput.status === 'failed' && (
-                    <button
-                      onClick={retryOutput}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-400"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      다시 시도
-                    </button>
-                  )}
-
-                  {isAdmin && (
-                    <>
-                      <button
-                        onClick={openEmailModal}
-                        disabled={sending}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-medium text-white transition hover:bg-[#24456f] disabled:opacity-50"
-                      >
-                        {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
-                        이메일 발송
-                      </button>
-                      <button
-                        onClick={sendTelegram}
-                        disabled={sending}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-sky-600 disabled:opacity-50"
-                      >
-                        {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                        텔레그램
-                      </button>
-                      {(selectedOutput?.htmlContent || selectedOutput?.rawOutput || selectedOutput?.generatedOutput?.htmlContent) && (
-                        <button
-                          onClick={openRegenModal}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-[#1e3a5f]/30 bg-[#1e3a5f]/10 px-3 py-2 text-xs font-medium text-[#1e3a5f] transition hover:bg-[#1e3a5f]/20 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-blue-300"
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" />
-                          리포트 재발행
-                        </button>
-                      )}
-                    </>
-                  )}
-                  {renderHtml && !editMode && (
-                    <button
-                      onClick={() => setEditMode(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-400"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" />
-                      내용 편집
-                    </button>
-                  )}
-                  {isAdmin && renderHtml && !editMode && (() => {
-                    const mode = (selectedOutput?.serviceMode as 'internal' | 'external') || 'internal';
-                    const targetId = selectedOutput?.generatedOutputId || selectedOutput?.id;
-                    const isCurrentTemplate = currentTemplates[mode] === targetId;
-                    return (
-                      <button
-                        onClick={() => setAsTemplate(mode, isCurrentTemplate)}
-                        disabled={settingTemplate}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 dark:border-gray-700/60 dark:text-gray-400 dark:hover:border-amber-700/40 dark:hover:bg-amber-900/20 dark:hover:text-amber-400"
-                      >
-                        {settingTemplate ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                        {isCurrentTemplate ? '템플릿 해제' : '스타일 템플릿'}
-                      </button>
-                    );
-                  })()}
-                  {editMode && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={saveReportEdit}
-                        disabled={savingEdit}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#24456f] disabled:opacity-50"
-                      >
-                        {savingEdit ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                        저장
-                      </button>
-                      <button
-                        onClick={() => setEditMode(false)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:border-gray-700/60 dark:text-gray-300"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                        취소
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <ReportActionBar
+                  selectedOutput={selectedOutput}
+                  isAdmin={isAdmin}
+                  editMode={editMode}
+                  renderHtml={renderHtml}
+                  downloadingFormat={downloadingFormat}
+                  sending={sending}
+                  savingEdit={savingEdit}
+                  settingTemplate={settingTemplate}
+                  currentTemplates={currentTemplates}
+                  onDownload={downloadAsset}
+                  onRetry={retryOutput}
+                  onEmail={openEmailModal}
+                  onTelegram={sendTelegram}
+                  onRegen={openRegenModal}
+                  onEditToggle={(mode) => updateState({ editMode: mode })}
+                  onSaveEdit={saveReportEdit}
+                  onSetTemplate={setAsTemplate}
+                />
 
                 {selectedOutput.errorMessage && (
                   <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
@@ -814,14 +734,14 @@ export default function Briefing() {
 
       {/* 이메일 발송 모달 */}
       {emailModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onClick={() => !sending && setEmailModalOpen(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" onClick={() => !sending && updateState({ emailModalOpen: false })}>
           <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-gray-700/40">
               <div>
                 <h3 className="text-base font-bold text-gray-900 dark:text-white">이메일 발송</h3>
                 <p className="mt-0.5 text-xs text-gray-400">발송할 배포 그룹을 선택하세요</p>
               </div>
-              <button onClick={() => !sending && setEmailModalOpen(false)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700">
+              <button onClick={() => !sending && updateState({ emailModalOpen: false })} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -832,7 +752,7 @@ export default function Briefing() {
               ) : (
                 <div className="space-y-2">
                   <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 px-3 py-2.5 hover:bg-gray-50 dark:border-gray-700/40 dark:hover:bg-white/5">
-                    <input type="checkbox" checked={selectedGroupIds.length === distGroups.length} onChange={(e) => setSelectedGroupIds(e.target.checked ? distGroups.map((g) => g.id) : [])} className="rounded accent-[#1e3a5f]" />
+                    <input type="checkbox" checked={selectedGroupIds.length === distGroups.length} onChange={(e) => updateState({ selectedGroupIds: e.target.checked ? distGroups.map((g) => g.id) : [] })} className="rounded accent-[#1e3a5f]" />
                     <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">전체 그룹 선택</p>
                   </label>
                   <div className="border-t border-gray-100 pt-2 dark:border-gray-700/40" />
@@ -842,7 +762,7 @@ export default function Briefing() {
                     const unsubCount = groupEmails.length - activeCount;
                     return (
                       <label key={group.id} className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 px-3 py-2.5 hover:bg-gray-50 dark:border-gray-700/40 dark:hover:bg-white/5">
-                        <input type="checkbox" checked={selectedGroupIds.includes(group.id)} onChange={(e) => setSelectedGroupIds((prev) => e.target.checked ? [...prev, group.id] : prev.filter((id) => id !== group.id))} className="rounded accent-[#1e3a5f]" />
+                        <input type="checkbox" checked={selectedGroupIds.includes(group.id)} onChange={(e) => updateState({ selectedGroupIds: e.target.checked ? [...selectedGroupIds, group.id] : selectedGroupIds.filter((id) => id !== group.id) })} className="rounded accent-[#1e3a5f]" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{group.name}</p>
                           <p className="text-[11px] text-gray-400">
@@ -868,7 +788,7 @@ export default function Briefing() {
             </div>
 
             <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700/40">
-              <button onClick={() => !sending && setEmailModalOpen(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400">취소</button>
+              <button onClick={() => !sending && updateState({ emailModalOpen: false })} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400">취소</button>
               <button onClick={sendEmail} disabled={sending || distGroups.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50">
                 {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
                 {selectedGroupIds.length > 0 ? '선택 그룹 발송' : '기본 수신자 발송'}
@@ -882,7 +802,7 @@ export default function Briefing() {
       {regenModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
-          onClick={() => setRegenModalOpen(false)}
+          onClick={() => updateState({ regenModalOpen: false })}
         >
           <div
             className="flex w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900"
@@ -896,7 +816,7 @@ export default function Briefing() {
                 </p>
               </div>
               <button
-                onClick={() => setRegenModalOpen(false)}
+                onClick={() => updateState({ regenModalOpen: false })}
                 className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
               >
                 <X className="h-4 w-4" />
@@ -909,7 +829,7 @@ export default function Briefing() {
               </label>
               <textarea
                 value={regenPrompt}
-                onChange={(e) => setRegenPrompt(e.target.value)}
+                onChange={(e) => updateState({ regenPrompt: e.target.value })}
                 rows={5}
                 className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:border-[#1e3a5f] focus:outline-none focus:ring-1 focus:ring-[#1e3a5f] dark:border-gray-700/60 dark:bg-gray-800/60 dark:text-white"
                 placeholder="분석 방향을 입력하세요. 예: 섹터별 PE 참여 현황과 밸류에이션 트렌드에 집중해서 분석해 주세요."
@@ -918,7 +838,7 @@ export default function Briefing() {
 
             <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-700/40">
               <button
-                onClick={() => setRegenModalOpen(false)}
+                onClick={() => updateState({ regenModalOpen: false })}
                 className="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400"
               >
                 취소
