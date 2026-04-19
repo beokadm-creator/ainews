@@ -28,6 +28,9 @@ import { formatArticleContentParagraphs } from '@/lib/articleContent';
 import { sanitizeReportHtml } from '@/utils/sanitizeHtml';
 import { resolveArticleIdByHeadline, resolveArticleIdByUrl } from '@/utils/articleResolution';
 import { formatArticleDate } from '@/lib/articleContent';
+import { ArticlePreviewModal } from '@/components/briefing/ArticlePreviewModal';
+import { ReportList } from '@/components/briefing/ReportList';
+import { useReportClickHandler } from '@/hooks/useReportClickHandler';
 
 export default function Briefing() {
   const [searchParams] = useSearchParams();
@@ -382,30 +385,7 @@ export default function Briefing() {
     );
   }, [selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput]);
 
-  const previewContentParagraphs = formatArticleContentParagraphs(previewArticle?.content || '');
-
-  function StatusBadge({ status }: { status: string }) {
-    if (status === 'failed') {
-      return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-          실패
-        </span>
-      );
-    }
-    if (status === 'pending' || status === 'processing') {
-      return (
-        <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-          <Loader2 className="h-2.5 w-2.5 animate-spin" />
-          생성중
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-        완료
-      </span>
-    );
-  }
+  const handleReportClick = useReportClickHandler(articles, setPreviewArticle);
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-12">
@@ -422,75 +402,14 @@ export default function Briefing() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
-        {/* Left: report list */}
-        <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
-          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
-            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">최근 리포트</span>
-            <button
-              onClick={loadOutputs}
-              className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-700/40">
-              {outputs.map((output) => {
-                const isSelected = selectedOutput?.id === output.id;
-                return (
-                  <button
-                    key={output.id}
-                    onClick={() => navigate(`/briefing?outputId=${output.id}`)}
-                    className={`group w-full px-4 py-3.5 text-left transition ${
-                      isSelected
-                        ? 'bg-[#1e3a5f]/5 dark:bg-[#1e3a5f]/20'
-                        : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'
-                    }`}
-                  >
-                    {isSelected && (
-                      <div className="absolute left-0 top-0 h-full w-0.5 rounded-full bg-[#1e3a5f] dark:bg-blue-400" style={{ position: 'relative', display: 'none' }} />
-                    )}
-                    <div className="flex items-start justify-between gap-2">
-                      <p className={`text-sm font-medium leading-snug ${isSelected ? 'text-[#1e3a5f] dark:text-blue-300' : 'text-gray-900 dark:text-white'}`}>
-                        {output.title || '리포트'}
-                      </p>
-                      <StatusBadge status={output.status || 'completed'} />
-                    </div>
-                    <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
-                      <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                        output.serviceMode === 'external'
-                          ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
-                          : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
-                      }`}>
-                        {output.serviceMode === 'external' ? '외부' : '내부'}
-                      </span>
-                      {currentTemplates[output.serviceMode as 'internal' | 'external'] === output.id && (
-                        <span className="rounded px-1 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                          TEMPLATE
-                        </span>
-                      )}
-                      {output.createdAt?.toDate && (
-                        <span className="inline-flex items-center gap-1">
-                          <Clock3 className="h-3 w-3" />
-                          {format(output.createdAt.toDate(), 'MM.dd HH:mm')}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-              {outputs.length === 0 && (
-                <div className="px-4 py-12 text-center text-sm text-gray-400">
-                  아직 생성된 리포트가 없습니다.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        <ReportList
+          outputs={outputs}
+          selectedOutputId={selectedOutput?.id || null}
+          loading={loading}
+          currentTemplates={currentTemplates}
+          onSelect={(id) => navigate(`/briefing?outputId=${id}`)}
+          onRefresh={loadOutputs}
+        />
 
         {/* Right: detail panel */}
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
@@ -517,7 +436,15 @@ export default function Briefing() {
                   <h2 className="flex-1 text-xl font-bold leading-tight text-gray-900 dark:text-white">
                     {selectedOutput.title || '리포트'}
                   </h2>
-                  <StatusBadge status={selectedOutput.status || 'completed'} />
+                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                    selectedOutput.status === 'failed'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                      : (selectedOutput.status === 'pending' || selectedOutput.status === 'processing')
+                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                        : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                  }`}>
+                    {selectedOutput.status === 'failed' ? '실패' : (selectedOutput.status === 'pending' || selectedOutput.status === 'processing') ? '생성중' : '완료'}
+                  </span>
                   <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
                     selectedOutput.serviceMode === 'external'
                       ? 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
@@ -855,136 +782,7 @@ export default function Briefing() {
                       <div
                         className="report-html-body prose max-w-none overflow-x-auto"
                         dangerouslySetInnerHTML={{ __html: renderHtml }}
-                        onClick={(e) => {
-                          const target = e.target as HTMLElement;
-                          if (!articles.length) return;
-
-                          // 공통 헬퍼: data-article-id → 직접 ID 조회 (배열 순서 무관)
-                          const findByDataId = (el: HTMLElement): any | null => {
-                            const id = el.getAttribute('data-article-id');
-                            if (!id) return null;
-                            // 만약 AI가 UUID 대신 "1", "2" 와 같이 번호만 넣은 경우를 완벽하게 처리합니다.
-                            const numId = parseInt(id, 10);
-                            if (!isNaN(numId) && String(numId) === id) {
-                              // AI가 준 번호는 1-based index (e.g. 1, 2, 3...)
-                              if (numId >= 1 && numId <= articles.length) {
-                                return articles[numId - 1];
-                              }
-                            }
-                            return articles.find((a) => a.id === id) || null;
-                          };
-
-                          // 1. ref-table 헤드라인 버튼: data-article-id 우선
-                          const refEl = target.closest('[data-article-ref]') as HTMLElement | null;
-                          if (refEl) {
-                            e.preventDefault();
-                            const byId = findByDataId(refEl);
-                            if (byId) { setPreviewArticle(byId); return; }
-                            
-                            // 폴백: 텍스트 매칭
-                            const linkText = (refEl.textContent || '').trim();
-                            if (linkText.length > 1) {
-                              const resolvedId = resolveArticleIdByHeadline(linkText, articles);
-                              if (resolvedId) {
-                                const byTitle = articles.find(a => a.id === resolvedId);
-                                if (byTitle) { setPreviewArticle(byTitle); return; }
-                              }
-                            }
-                            return;
-                          }
-
-                          // 1-b. table interactive-ref-row (from sanitizeHtml)
-                          const refRow = target.closest('.interactive-ref-row') as HTMLElement | null;
-                          if (refRow) {
-                            e.preventDefault();
-                            // 우선 data-article-id (서버에서 심은 경우)
-                            const byId = findByDataId(refRow);
-                            if (byId) { setPreviewArticle(byId); return; }
-                            
-                            // 폴백: sanitizeHtml이 추가한 data-headline 매칭
-                            const headline = refRow.getAttribute('data-headline');
-                            if (headline && headline.length > 1) {
-                              const resolvedId = resolveArticleIdByHeadline(headline, articles);
-                              if (resolvedId) {
-                                const byTitle = articles.find(a => a.id === resolvedId);
-                                if (byTitle) { setPreviewArticle(byTitle); return; }
-                              }
-                            }
-                            
-                            // 폴백: data-href 매칭
-                            const href = refRow.getAttribute('data-href');
-                            if (href) {
-                              const urlResolvedId = resolveArticleIdByUrl(href, articles);
-                              if (urlResolvedId) {
-                                const byUrl = articles.find(a => a.id === urlResolvedId);
-                                if (byUrl) { setPreviewArticle(byUrl); return; }
-                              }
-                              // 다 실패하면 href로 이동
-                              if (!href.startsWith('javascript')) {
-                                window.open(href, '_blank');
-                              }
-                            }
-                            return;
-                          }
-
-                           // 2. <a> 링크 (원문 보기 버튼 포함)
-                          const anchor = (target.tagName === 'A' ? target : target.closest('a')) as HTMLAnchorElement | null;
-                          if (anchor) {
-                            e.preventDefault();
-                            
-                            const isModalTrigger = anchor.classList.contains('article-source-btn') || anchor.classList.contains('ref-headline-btn');
-                            
-                            // 이음 M&A 뉴스 양식에서는 링크가 .article-title 내부에 있고 부모 .article-block에 ID가 있음
-                            const eumArticleBlock = anchor.closest('.article-block');
-                            const hasParentId = eumArticleBlock && eumArticleBlock.getAttribute('data-article-id');
-
-                            if (isModalTrigger || hasParentId) {
-                              
-                              // 2-a. data-article-id (자신 또는 부모에서 탐색)
-                              const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);
-                              if (byId) { setPreviewArticle(byId); return; }
-                              
-                              // 2-c. 폴백: URL 매칭
-                              const href = anchor.href || '';
-                              const urlResolvedId = resolveArticleIdByUrl(href, articles);
-                              if (urlResolvedId) {
-                                const byUrl = articles.find((a) => a.id === urlResolvedId);
-                                if (byUrl) { setPreviewArticle(byUrl); return; }
-                              }
-                              
-                              // 2-d. 폴백: 제목 텍스트 매칭
-                              const linkText = (anchor.textContent || '').trim();
-                              if (linkText.length > 1) {
-                                const resolvedId = resolveArticleIdByHeadline(linkText, articles);
-                                if (resolvedId) {
-                                  const byTitle = articles.find(a => a.id === resolvedId);
-                                  if (byTitle) { setPreviewArticle(byTitle); return; }
-                                }
-                              }
-                            }
-                            
-                            // 모달 트리거가 아니거나 매칭에 실패한 일반 링크는 새 창에서 열기
-                            const href = anchor.href || '';
-                            if (href && !href.startsWith('javascript')) {
-                              window.open(href, '_blank');
-                            }
-                            return;
-                          }
-
-                          // 3. <sup>[N]</sup> 각주 (1-based, AI 생성 패턴)
-                          const sup = (target.tagName === 'SUP' ? target : target.closest('sup')) as HTMLElement | null;
-                          if (sup) {
-                            const text = (sup.textContent || '').trim();
-                            const match = text.match(/\[?(\d+)\]?/);
-                            if (match) {
-                              const num = parseInt(match[1], 10);
-                              if (num >= 1 && num <= articles.length) {
-                                e.preventDefault();
-                                setPreviewArticle(articles[num - 1]);
-                              }
-                            }
-                          }
-                        }}
+                        onClick={handleReportClick}
                       />
                     )}
                   </>
@@ -1009,97 +807,10 @@ export default function Briefing() {
         </div>
       </div>
 
-      {/* Article preview modal */}
-      {previewArticle && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
-          onClick={() => setPreviewArticle(null)}
-        >
-          <div
-            className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700/60 dark:bg-gray-900"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-700/40">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                    {previewArticle.source}
-                  </span>
-                  {formatArticleDate(previewArticle.publishedAt) && (
-                    <span className="text-[11px] text-gray-400">
-                      {formatArticleDate(previewArticle.publishedAt)}
-                    </span>
-                  )}
-                </div>
-                <h3 className="mt-2 text-base font-bold leading-snug text-gray-900 dark:text-white">
-                  {previewArticle.title}
-                </h3>
-              </div>
-              <button
-                onClick={() => setPreviewArticle(null)}
-                className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Modal body */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-              {previewArticle.summary?.length > 0 && (
-                <div className="rounded-xl border border-[#1e3a5f]/15 bg-[#1e3a5f]/[0.04] px-4 py-4 dark:border-[#1e3a5f]/30 dark:bg-[#1e3a5f]/10">
-                  <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#1e3a5f]/70 dark:text-blue-400">
-                    AI 요약
-                  </p>
-                  <div className="space-y-1.5">
-                    {previewArticle.summary.map((line: string, index: number) => (
-                      <p key={index} className="flex gap-2 text-sm leading-relaxed text-gray-700 dark:text-gray-300">
-                        <span className="mt-0.5 shrink-0 text-[#1e3a5f]/40 dark:text-blue-400/60">—</span>
-                        {line}
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div>
-                <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-gray-400">기사 원문</p>
-                <div className="space-y-4">
-                  {previewContentParagraphs.length > 0 ? (
-                    previewContentParagraphs.map((paragraph: string, index: number) => (
-                      <p key={`${previewArticle.id}-paragraph-${index}`} className="text-sm leading-7 text-gray-700 dark:text-gray-300">
-                        {paragraph}
-                      </p>
-                    ))
-                  ) : (
-                    <p className="text-sm leading-7 text-gray-400">원문 전문이 저장되지 않은 기사입니다.</p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Modal footer */}
-            {previewArticle.url && (
-              <div className="border-t border-gray-100 px-6 py-3 dark:border-gray-700/40">
-                <a
-                  href={previewArticle.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-xs font-medium text-[#1e3a5f] transition hover:underline dark:text-blue-300"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // 명시적 window.open — 이벤트 인터셉트 우회
-                    e.preventDefault();
-                    window.open(previewArticle.url, '_blank', 'noopener,noreferrer');
-                  }}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  원문 링크 열기
-                </a>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <ArticlePreviewModal
+        article={previewArticle}
+        onClose={() => setPreviewArticle(null)}
+      />
 
       {/* 이메일 발송 모달 */}
       {emailModalOpen && (
