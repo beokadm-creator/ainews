@@ -185,8 +185,6 @@ export default function Briefing() {
     if (!selectedOutput) return;
     updateState({ actionMessage: null });
     try {
-      const { httpsCallable } = await import('firebase/functions');
-      const { functions } = await import('@/lib/firebase');
       await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
       updateState({ actionMessage: '리포트 재실행 요청을 보냈습니다.' });
       await loadOutputs();

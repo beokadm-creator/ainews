@@ -48,7 +48,6 @@ export default function ReportNew() {
   const [done, setDone] = useState<{ outputId: string } | null>(null);
   const [availableTemplate, setAvailableTemplate] = useState<{ id: string; title: string } | null>(null);
   const [useTemplate, setUseTemplate] = useState(false);
-  const [reportMode, setReportMode] = useState<'internal' | 'eum_daily'>('internal');
 
   useEffect(() => {
     const loadArticles = async () => {
@@ -132,7 +131,7 @@ export default function ReportNew() {
       const fn = httpsCallable(functions, 'requestManagedReport');
       const result = await fn({
         companyId,
-        mode: reportMode,
+        mode: 'internal',
         articleIds: resolvedArticleIds,
         filters: articleIds.length > 0
           ? undefined
@@ -262,35 +261,6 @@ export default function ReportNew() {
         </div>
 
         <div className="space-y-4 p-4">
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
-              리포트 양식 선택
-            </label>
-            <div className="mt-2 flex gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input 
-                  type="radio" 
-                  name="reportMode" 
-                  value="internal" 
-                  checked={reportMode === 'internal'} 
-                  onChange={() => setReportMode('internal')}
-                  className="accent-[#1e3a5f]"
-                />
-                <span className="text-sm text-gray-700 dark:text-gray-300">기본 분석 리포트 (기존 방식)</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input 
-                  type="radio" 
-                  name="reportMode" 
-                  value="eum_daily" 
-                  checked={reportMode === 'eum_daily'} 
-                  onChange={() => setReportMode('eum_daily')}
-                  className="accent-[#1e3a5f]"
-                />
-                <span className="text-sm text-gray-700 dark:text-gray-300">이음 M&A 뉴스 양식</span>
-              </label>
-            </div>
-          </div>
 
           <div>
             <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">리포트 제목</label>

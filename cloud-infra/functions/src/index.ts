@@ -1043,6 +1043,10 @@ function buildManagedReportPrompt(
 
   // When user has provided a specific prompt, it takes highest priority
   if (basePrompt) {
+    // 사용자 프롬프트에 CSS/HTML 템플릿이 포함된 경우, 추가 감싸기 없이 그대로 전달
+    if (basePrompt.includes('<style>')) {
+      return basePrompt;
+    }
     const parts = [
       '[PRIMARY INSTRUCTION — FOLLOW STRICTLY]',
       basePrompt,
@@ -1253,54 +1257,28 @@ async function executeManagedReport({
   const volNumber = existingOutputsCount.data().count + 1;
 
   let result;
-  if (output.serviceMode === 'eum_daily') {
-    const { generateEumDailyReport } = require('./services/briefingService');
-    result = await generateEumDailyReport({
-      companyId,
-      articleIds: reportArticles.map((article) => article.id),
-      keywords: keywordList,
-      analysisPrompt: prompt,
-      savedPrompt: basePrompt,
-      reportTitle,
-      volNumber,
-      requestedBy: requestedBy || output.requestedBy || '__system__',
-      aiConfig: runtime.ai,
-      outputId,
-      outputMetadata: {
-        type: 'managed_report',
-        serviceMode: 'eum_daily',
-        distributionGroupId: output.distributionGroupId || null,
-        distributionGroupName: output.distributionGroupName || null,
-        scheduledAt: output.scheduledAt || null,
-        selectedSourceNames: sourceNames,
-        matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
-        sourceCoverage,
-      },
-    });
-  } else {
-    result = await generateCustomReport({
-      companyId,
-      articleIds: reportArticles.map((article) => article.id),
-      keywords: keywordList,
-      analysisPrompt: prompt,
-      savedPrompt: basePrompt,
-      reportTitle,
-      volNumber,
-      requestedBy: requestedBy || output.requestedBy || '__system__',
-      aiConfig: runtime.ai,
-      outputId,
-      outputMetadata: {
-        type: 'managed_report',
-        serviceMode: output.serviceMode || 'internal',
-        distributionGroupId: output.distributionGroupId || null,
-        distributionGroupName: output.distributionGroupName || null,
-        scheduledAt: output.scheduledAt || null,
-        selectedSourceNames: sourceNames,
-        matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
-        sourceCoverage,
-      },
-    });
-  }
+  result = await generateCustomReport({
+    companyId,
+    articleIds: reportArticles.map((article) => article.id),
+    keywords: keywordList,
+    analysisPrompt: prompt,
+    savedPrompt: basePrompt,
+    reportTitle,
+    volNumber,
+    requestedBy: requestedBy || output.requestedBy || '__system__',
+    aiConfig: runtime.ai,
+    outputId,
+    outputMetadata: {
+      type: 'managed_report',
+      serviceMode: output.serviceMode || 'internal',
+      distributionGroupId: output.distributionGroupId || null,
+      distributionGroupName: output.distributionGroupName || null,
+      scheduledAt: output.scheduledAt || null,
+      selectedSourceNames: sourceNames,
+      matchedSourceNames: matchedSourceNames.length > 0 ? matchedSourceNames : sourceNames,
+      sourceCoverage,
+    },
+  });
 
   await outputRef.set({
     status: 'completed',
@@ -1576,68 +1554,50 @@ export const testGlobalSource = onCall({ region: 'us-central1', cors: true, invo
   return result;
 });
 
-export const deleteAllArticlesHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+export const deleteAllArticlesHttp = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    await requireSuperadminUid(request.auth.uid);
     try {
       const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
       const deleted = await deleteArticlesByQuery(db, db.collection('articles'));
-      response.json({ success: true, message: `전체 기사 삭제 완료: ${deleted}건`, deletedCount: deleted });
+      return { success: true, message: `전체 기사 삭제 완료: ${deleted}건`, deletedCount: deleted };
     } catch (err: any) {
       logger.error('deleteAllArticles error:', err);
-      response.status(500).json({ error: err.message });
+      throw new HttpsError('internal', err.message);
     }
   }
 );
 
-export const deleteExcludedArticlesHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+export const deleteExcludedArticlesHttp = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    await requireSuperadminUid(request.auth.uid);
     try {
       const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
       const deleted = await purgeRejectedArticlesByQuery(db, db.collection('articles').where('status', '==', 'rejected'));
-      response.json({ success: true, message: `제외된 기사 삭제 완료: ${deleted}건`, deletedCount: deleted });
+      return { success: true, message: `제외된 기사 삭제 완료: ${deleted}건`, deletedCount: deleted };
     } catch (err: any) {
       logger.error('deleteExcludedArticles error:', err);
-      response.status(500).json({ error: err.message });
+      throw new HttpsError('internal', err.message);
     }
   }
 );
 
-export const deleteAllOutputsHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
-  async (request, response) => {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+export const deleteAllOutputsHttp = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    await requireSuperadminUid(request.auth.uid);
     try {
       const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
       const deleted = await deleteArticlesByQuery(db, db.collection('outputs'));
-      response.json({ success: true, message: `모든 보고서 삭제 완료: ${deleted}건`, deletedCount: deleted });
+      return { success: true, message: `모든 보고서 삭제 완료: ${deleted}건`, deletedCount: deleted };
     } catch (err: any) {
       logger.error('deleteAllOutputs error:', err);
-      response.status(500).json({ error: err.message });
+      throw new HttpsError('internal', err.message);
     }
   }
 );

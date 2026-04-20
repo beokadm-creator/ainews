@@ -336,7 +336,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
       `CATEGORY: ${article.category || 'uncategorized'}`,
       `SUMMARY: ${safeSummary || 'No summary available'}`,
       'BODY:',
-      safeBody, // 2200자 제한 해제
+      safeBody.substring(0, 1500), // 기사당 1500자 제한 — 입력 토큰 과다 방지
     ].join('\n');
   }).join('\n\n---\n\n');
 
@@ -684,6 +684,271 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const safeReportTitle = escapeHtml(reportTitle);
   const volNumber = options.volNumber || 1;
 
+  // 사용자가 회사 설정에서 지정한 CSS+HTML 템플릿이 있으면 하드코딩 skeleton 대신 직접 사용
+  const hasUserTemplate = !!(options.analysisPrompt && options.analysisPrompt.includes('<style>'));
+
+  if (hasUserTemplate) {
+    const userTemplatePrompt = `${options.analysisPrompt}
+
+기사 목록:
+${articleDigest}
+
+위 지시사항에 명시된 CSS 스타일과 HTML 구조를 한 글자도 바꾸지 말고 정확히 따라 리포트를 작성하세요.
+리포트 제목: ${reportTitle}
+호수: Vol. ${volNumber}
+모든 기사를 빠짐없이 처리하세요. 중간에 멈추지 마세요.`;
+
+    const response = await callAiProvider(
+      userTemplatePrompt,
+      reportAiConfig,
+      resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
+      options.companyId
+    );
+    await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
+
+    const rawHtmlContent = ensureHtmlDocument(response.content, reportTitle);
+    const $check = cheerioLoad(rawHtmlContent);
+    const actualBlockCount = $check('.article-block').length;
+    if (actualBlockCount < orderedArticles.length) {
+      console.warn(`[custom-report] User template path: AI output truncated — expected ${orderedArticles.length} articles but got ${actualBlockCount}. Saving partial report.`);
+    }
+    const htmlContent = embedArticleIdsInHtml(rawHtmlContent, orderedArticles);
+
+    const outputRef = options.outputId
+      ? db.collection('outputs').doc(options.outputId)
+      : db.collection('outputs').doc();
+    await outputRef.set({
+      id: outputRef.id,
+      companyId: options.companyId,
+      type: 'custom_report',
+      title: reportTitle,
+      volNumber,
+      keywords: options.keywords,
+      analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
+      articleIds: options.articleIds,
+      orderedArticleIds: orderedArticles.map((a: any) => a.id),
+      articleCount: articles.length,
+      digestArticleCount: orderedArticles.length,
+      htmlContent,
+      rawOutput: htmlContent,
+      structuredOutput: null,
+      requestedBy: options.requestedBy,
+      status: 'completed',
+      generatedOutputId: null,
+      parentRequestId: null,
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(options.outputMetadata || {}),
+      ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+    }, { merge: true });
+
+    await logPromptExecution(
+      'custom-output',
+      { articleCount: articles.length, keywords: options.keywords },
+      htmlContent,
+      response.model,
+      { companyId: options.companyId, prompt: userTemplatePrompt }
+    );
+
+    return {
+      success: true,
+      outputId: outputRef.id,
+      articleCount: articles.length,
+    };
+  }
+
+  // ────────── Batch processing for large article counts ──────────
+  // GLM-4.7 cannot reliably generate analysis for >20 articles in a single call.
+  // When article count exceeds BATCH_SIZE, we split into batches, call AI per batch,
+  // extract the article-block divs from each response, and merge into a single HTML report.
+  const BATCH_SIZE = 20;
+
+  if (orderedArticles.length > BATCH_SIZE) {
+    const batches: any[][] = [];
+    for (let i = 0; i < orderedArticles.length; i += BATCH_SIZE) {
+      batches.push(orderedArticles.slice(i, i + BATCH_SIZE));
+    }
+
+    console.info(`[batch-report] Splitting ${orderedArticles.length} articles into ${batches.length} batches`);
+
+    const batchCss = `
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; background: #ffffff; line-height: 1.6; padding: 20px; max-width: 1000px; margin: 0 auto; }
+    h1 { font-size: 24px; font-weight: bold; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+    .article-block { margin-bottom: 40px; padding-bottom: 20px; border-bottom: 1px solid #f3f4f6; }
+    .article-sector { display: inline-block; padding: 4px 10px; background: #f3f4f6; border-radius: 4px; font-size: 12px; font-weight: bold; color: #4b5563; margin-bottom: 10px; }
+    .article-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; }
+    .article-title a { color: #2563eb; text-decoration: none; }
+    .article-title a:hover { text-decoration: underline; }
+    .article-analysis { font-size: 15px; color: #374151; }
+    .article-analysis p { margin-bottom: 12px; }
+    .ref-table { width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 13px; }
+    .ref-table th, .ref-table td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+    .ref-table th { background: #f9fafb; font-weight: bold; }
+    .ref-table td a { color: #2563eb; text-decoration: none; }`;
+
+    const batchSystemPromptBase = `You are a senior private equity analyst.
+Output a complete HTML report in Korean for investment professionals.
+
+Universal Requirements (always apply):
+1. Output a COMPLETE HTML document: <!DOCTYPE html> through </html>, with <head> containing <meta charset="UTF-8"> and embedded <style>.
+2. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white or light-colored text. Do NOT include dark mode CSS or @media (prefers-color-scheme: dark).
+3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
+4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
+5. Section numbers must be strictly sequential.
+
+[CRITICAL INSTRUCTION: FILL IN THE BLANKS]
+You MUST use the exact HTML skeleton provided in the user prompt below.
+Your ONLY job is to replace the "[AI_FILL: ...]" placeholders with your actual expert analysis.
+DO NOT alter any existing HTML tags, class names, href attributes, or data-article-id attributes.
+DO NOT remove or modify any article blocks.
+
+[ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
+Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope.
+${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and seller implications, and PE relevance.'}${options.structureGuide ? `\n\n${options.structureGuide}` : ''}`;
+
+    const allArticleBlocksHtml: string[] = [];
+
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batchArticles = batches[batchIdx];
+      const { digest: batchDigest } = buildCustomReportArticleDigest(batchArticles);
+
+      const batchArticleSkeleton = batchArticles.map((a: any, index: number) => `
+    <div class="article-block" data-article-id="${a.id}">
+      <div class="article-sector">[AI_FILL: 섹터/카테고리 태그 (예: M&A, IPO 등)]</div>
+      <div class="article-title"><a href="${escapeHtml(a.url || '#')}">${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.title || '')))}</a></div>
+      <div class="article-analysis">
+        [AI_FILL: 기사 ${index + 1}에 대한 심층 분석 내용 작성 (단락별로 <p> 태그 사용)]
+      </div>
+    </div>`).join('\n');
+
+      const batchUserPrompt = `Report title: ${reportTitle}
+Company: ${companyDisplayName}
+Priority keywords: ${keywordSummary}
+Batch ${batchIdx + 1} of ${batches.length} — articles ${batchIdx * BATCH_SIZE + 1}–${batchIdx * BATCH_SIZE + batchArticles.length} of ${orderedArticles.length} total.
+
+Article digest:
+${batchDigest}
+
+<HTML_SKELETON>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${safeReportTitle}</title>
+  <style>${batchCss}
+  </style>
+</head>
+<body>
+  <div class="report-content">
+${batchArticleSkeleton}
+  </div>
+</body>
+</html>
+</HTML_SKELETON>
+
+Fill in ALL [AI_FILL] placeholders. You MUST process every article in this batch. Do not skip any.`;
+
+      console.info(`[batch-report] Batch ${batchIdx + 1}/${batches.length}: ${batchArticles.length} articles`);
+
+      const batchResponse = await callAiProvider(
+        `${batchSystemPromptBase}\n\n${batchUserPrompt}`,
+        reportAiConfig,
+        resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
+        options.companyId
+      );
+      await trackAiCost('custom-output', batchResponse.usage, batchResponse.model, batchResponse.provider, options.companyId);
+
+      // Extract article-block divs from AI response
+      const batchRawHtml = ensureHtmlDocument(batchResponse.content, reportTitle);
+      const $batch = cheerioLoad(batchRawHtml);
+      const extractedBlocks = $batch('.article-block');
+
+      if (extractedBlocks.length < batchArticles.length) {
+        throw new Error(`AI output truncated in batch ${batchIdx + 1}/${batches.length}: expected ${batchArticles.length} articles but got ${extractedBlocks.length}.`);
+      }
+
+      extractedBlocks.each(function () {
+        allArticleBlocksHtml.push($batch(this).prop('outerHTML') || '');
+      });
+
+      await logPromptExecution(
+        'custom-output',
+        { batchIndex: batchIdx, totalBatches: batches.length, articleCount: batchArticles.length, keywords: options.keywords },
+        batchRawHtml,
+        batchResponse.model,
+        { companyId: options.companyId, prompt: batchUserPrompt }
+      );
+    }
+
+    // Build full reference table for ALL orderedArticles
+    const fullRefTableRows = orderedArticles.map((a: any, index: number) => {
+      const dateStr = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
+      return `      <tr data-article-id="${a.id}"><td>${index + 1}</td><td>${dateStr}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.title || '')))}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.source || '')))}</td></tr>`;
+    }).join('\n');
+
+    // Assemble final merged HTML document
+    const mergedHtml = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${safeReportTitle}</title>
+  <style>${batchCss}
+  </style>
+</head>
+<body>
+  <h1>${safeReportTitle}</h1>
+
+  <div class="report-content">
+${allArticleBlocksHtml.join('\n')}
+  </div>
+
+  <table class="ref-table">
+    <thead><tr><th>번호</th><th>날짜</th><th>헤드라인</th><th>매체</th></tr></thead>
+    <tbody>
+${fullRefTableRows}
+    </tbody>
+  </table>
+</body>
+</html>`;
+
+    const htmlContent = embedArticleIdsInHtml(mergedHtml, orderedArticles);
+
+    const outputRef = options.outputId
+      ? db.collection('outputs').doc(options.outputId)
+      : db.collection('outputs').doc();
+    await outputRef.set({
+      id: outputRef.id,
+      companyId: options.companyId,
+      type: 'custom_report',
+      title: reportTitle,
+      volNumber,
+      keywords: options.keywords,
+      analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
+      articleIds: options.articleIds,
+      orderedArticleIds: orderedArticles.map((a: any) => a.id),
+      articleCount: articles.length,
+      digestArticleCount: orderedArticles.length,
+      htmlContent,
+      rawOutput: htmlContent,
+      structuredOutput: null,
+      requestedBy: options.requestedBy,
+      status: 'completed',
+      generatedOutputId: null,
+      parentRequestId: null,
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(options.outputMetadata || {}),
+      ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+    }, { merge: true });
+
+    return {
+      success: true,
+      outputId: outputRef.id,
+      articleCount: articles.length,
+    };
+  }
+  // ────────── End batch processing ──────────
+
   // 서버에서 완벽한 HTML 뼈대(Skeleton)를 사전 생성하여 AI에게 전달 (Fill-in-the-blank 방식)
   const articleBlocksSkeleton = orderedArticles.map((a: any, index: number) => `
     <div class="article-block" data-article-id="${a.id}">
@@ -831,237 +1096,6 @@ ${refTableSkeleton}
     response.model,
     { companyId: options.companyId, prompt: userPrompt }
   );
-
-  return {
-    success: true,
-    outputId: outputRef.id,
-    articleCount: articles.length,
-  };
-}
-
-export async function generateEumDailyReport(options: CustomReportOptions) {
-  const db = admin.firestore();
-
-  const articleDocs = await Promise.all(
-    options.articleIds.map((id) => db.collection('articles').doc(id).get())
-  );
-  const articles = articleDocs
-    .filter((doc) => doc.exists)
-    .map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
-
-  if (articles.length === 0) throw new Error('No selected articles were found.');
-
-  const { digest: articleDigest, orderedArticles } = buildCustomReportArticleDigest(articles);
-  const reportAiConfig = resolveCustomReportAiConfig(options.aiConfig);
-  const reportTitle = options.reportTitle || '이음M&A뉴스';
-  const safeReportTitle = escapeHtml(reportTitle);
-  const volNumber = options.volNumber || 1;
-
-  const today = new Date();
-  const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
-
-  const articleBlocksSkeleton = orderedArticles.map((a: any, index: number) => `
-<!-- [기사 ${index + 1}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
-<div class="article-block" data-article-id="${a.id}">
-  <span class="article-title"><a href="${a.url || '#'}">(${index + 1}) ${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></span>
-  <span class="article-sector">[AI_FILL: 업종/섹터 (예: 반도체, 바이오, IT 등)]</span>
-  
-  <div class="article-meta-block">
-    <span class="label">분류:</span> <span class="meta-category">[AI_FILL: M&A / PE / 기타 중 택1]</span><br>
-    <span class="label">당사자:</span> [AI_FILL: 인수자 / 피인수자 / 관련 기업]<br>
-    <span class="label">딜 규모:</span> [AI_FILL: 금액 (기사에 언급된 경우만, 없으면 빈칸)]<br>
-    <span class="label">딜 구조:</span> [AI_FILL: 인수 / 합병 / 지분투자 / 매각 등 (기사에 언급된 경우만, 없으면 빈칸)]
-  </div>
-  
-  <ul style="font-size:10pt; color:#333; margin-top:10px; line-height:1.8; padding-left:20px;">
-    <li>[AI_FILL: 핵심 사실 1 (bullet 형태, 한 문장으로 요약)]</li>
-    <li>[AI_FILL: 핵심 사실 2 (bullet 형태, 한 문장으로 요약)]</li>
-    <li>[AI_FILL: 핵심 사실 3 (bullet 형태, 한 문장으로 요약)]</li>
-  </ul>
-</div>
-`).join('\n\n');
-
-  const refTableSkeleton = orderedArticles.map((a: any, index: number) => {
-    const pubDate = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
-    return `    <tr data-article-id="${a.id}">
-      <td>${index + 1}</td><td>[AI_FILL: M&A/PE/기타]</td><td>${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</td><td>${fixEncodingIssues(cleanHtmlContent(a.source || ''))}</td><td>${pubDate}</td><td></td>
-    </tr>`;
-  }).join('\n');
-
-  const systemPrompt = `당신은 PE(Private Equity) 하우스의 시니어 애널리스트입니다.
-
-[작성 원칙]
-1. 기사 원문의 내용만 충실히 전달합니다. 추측·전망·제언을 추가하지 않습니다.
-2. 딜 규모가 기사에 미언급이면 해당 줄 자체를 생략합니다 (빈 칸으로 두지 말 것).
-3. 출처 번호([1][2] 등)는 제목·본문 어디에도 표시하지 않습니다.
-4. 분류 우선순위: M&A > PE 동향 > 기타 시장 동향 (PE가 수행한 M&A → M&A로 분류).
-
-[출력 방식]
-아래 <HTML_SKELETON>의 [AI_FILL: ...] 부분만 채우세요.
-HTML 태그·클래스명·data-article-id 속성은 절대 변경하지 마세요.
-모든 기사 블록을 빠짐없이 유지하세요 (임의 병합·삭제 금지).
-
-<HTML_SKELETON>
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <title>${safeReportTitle}</title>
-  <style>
-    body { font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #333; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; }
-    .report-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2a4a; padding-bottom: 12px; margin-bottom: 30px; }
-    .report-title { font-size: 28px; font-weight: 800; color: #1a2a4a; }
-    .report-subtitle { font-size: 13px; color: #666; margin-top: 2px; }
-    .report-date-block { text-align: right; font-size: 13px; color: #2b3a5c; background: #fff; padding: 10px 16px; border-radius: 2px; }
-    .report-date-block .date { font-size: 15px; font-weight: 700; color: #5bb5e0; }
-    .part-title { border-left: 4px solid #c75a3b; padding: 8px 14px; font-size: 12pt; font-weight: 700; color: #1a2a4a; background: #f5f7fa; margin: 36px 0 20px 0; }
-    .article-block { margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #e8e8e8; }
-    .article-title { font-size: 12pt; font-weight: 700; color: #111; }
-    .article-title a { color: #111; text-decoration: none; }
-    .article-title a:hover { text-decoration: underline; }
-    .article-sector { float: right; background: #e8f0f8; color: #1a6fa8; font-size: 9pt; font-weight: 600; padding: 2px 10px; border-radius: 3px; }
-    .article-meta-block { font-size: 9pt; color: #555; background: #F8FAFC; padding: 8px 12px; margin: 8px 0; line-height: 1.8; }
-    .article-meta-block .label { font-weight: 700; color: #333; }
-    .ref-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 12px; }
-    .ref-table th { background: #1a2a4a; color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; }
-    .ref-table td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; color: #333; }
-    .ref-table tr:nth-child(even) td { background: #f9f9f9; }
-    .ref-summary { font-size: 9pt; color: #888; margin-top: 8px; text-align: right; }
-  </style>
-</head>
-<body>
-  <!-- ■ 헤더 -->
-  <div class="report-header">
-    <div>
-      <div class="report-title">이음M&A뉴스</div>
-      <div class="report-subtitle">EUM Daily Report</div>
-    </div>
-    <div class="report-date-block">
-      <div class="date">${dateStr}</div>
-      <div>이음프라이빗에쿼티</div>
-      <div>Vol. ${volNumber}</div>
-    </div>
-  </div>
-
-  <div id="ai-raw-blocks">
-    ${articleBlocksSkeleton}
-  </div>
-
-  <!-- ■ 참고 기사 목록 -->
-  <div class="part-title">참고 기사 목록</div>
-  <table class="ref-table">
-    <tr>
-      <th>#</th><th>카테고리</th><th>헤드라인</th><th>출처</th><th>날짜</th><th>비고</th>
-    </tr>
-${refTableSkeleton}
-  </table>
-  <div class="ref-summary">총 입력 기사: ${orderedArticles.length}건</div>
-</body>
-</html>
-</HTML_SKELETON>
-`;
-
-  const userPrompt = `기사 목록:
-${articleDigest}
-
-위 <HTML_SKELETON>의 [AI_FILL: ...] 영역을 채워서 완성된 HTML을 반환하세요.
-중요: 기사 목록에 있는 모든 기사를 빠짐없이 처리하세요. 중간에 멈추지 마세요.`;
-
-  const response = await callAiProvider(
-    `${systemPrompt}\n\n${userPrompt}`,
-    reportAiConfig,
-    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
-    options.companyId
-  );
-  await trackAiCost('eum-daily-output', response.usage, response.model, response.provider, options.companyId);
-
-  // --- Cheerio Post-processing (Part 1, 2, 3 분류 재배치) ---
-  const rawHtml = ensureHtmlDocument(response.content, reportTitle);
-  const $ = cheerioLoad(rawHtml);
-  
-  // Truncation Check: AI가 반환한 실제 기사 블록 수 검증
-  const expectedArticleCount = orderedArticles.length;
-  const actualArticleCount = $('.article-block').length;
-  if (actualArticleCount < expectedArticleCount) {
-    throw new Error(`AI output truncated: expected ${expectedArticleCount} articles but got ${actualArticleCount}. Prompt may have exceeded context window or generation stopped prematurely.`);
-  }
-
-  const categoryById = new Map<string, string>(
-    orderedArticles.map((a: any) => [a.id, `${a.category || ''}`.toUpperCase()])
-  );
-
-  // 파트 컨테이너 생성
-  const part1 = $('<div class="report-part" id="part-1-ma"><div class="part-title">PART 1. M&A</div><div class="part-body"></div></div>');
-  const part2 = $('<div class="report-part" id="part-2-pe"><div class="part-title">PART 2. PE 동향</div><div class="part-body"></div></div>');
-  const part3 = $('<div class="report-part" id="part-3-others"><div class="part-title">PART 3. 기타 시장 동향</div><div class="part-body"></div></div>');
-
-  // AI가 작성한 기사 블록들을 카테고리에 맞게 이동
-  $('#ai-raw-blocks .article-block').each(function () {
-    const block = $(this);
-    const categoryEl = block.find('.meta-category').first();
-    const rawCategoryText = categoryEl.text().toUpperCase();
-    const blockId = (block.attr('data-article-id') || '').trim();
-    const fallbackCategory = (blockId ? (categoryById.get(blockId) || '') : '');
-    const categoryText = rawCategoryText.includes('[AI_FILL') || rawCategoryText.trim().length === 0
-      ? fallbackCategory
-      : rawCategoryText;
-
-    const metaBlock = block.find('.article-meta-block').first();
-    if (metaBlock.length && categoryEl.length) {
-      const label = metaBlock.find('.label').filter((_, el) => $(el).text().trim().startsWith('분류')).first();
-      if (label.length) label.remove();
-      categoryEl.remove();
-      const br = metaBlock.find('br').first();
-      if (br.length) br.remove();
-      metaBlock.contents().each(function () {
-        if (this.type === 'text' && !($(this).text() || '').trim()) {
-          $(this).remove();
-        }
-      });
-    }
-
-    if (categoryText.includes('M&A') || categoryText.includes('인수합병')) {
-      part1.find('.part-body').append(this);
-    } else if (categoryText.includes('PE') || categoryText.includes('VC') || categoryText.includes('사모펀드') || categoryText.includes('펀드')) {
-      part2.find('.part-body').append(this);
-    } else {
-      part3.find('.part-body').append(this);
-    }
-  });
-
-  // 기존 ai-raw-blocks 자리에 파트들 삽입
-  const partHtml = [
-    part1.find('.article-block').length > 0 ? (part1.prop('outerHTML') || '') : '',
-    part2.find('.article-block').length > 0 ? (part2.prop('outerHTML') || '') : '',
-    part3.find('.article-block').length > 0 ? (part3.prop('outerHTML') || '') : '',
-  ].join('');
-  $('#ai-raw-blocks').replaceWith(partHtml);
-
-  const finalHtmlContent = embedArticleIdsInHtml($.html(), orderedArticles);
-
-  const outputRef = options.outputId ? db.collection('outputs').doc(options.outputId) : db.collection('outputs').doc();
-  await outputRef.set({
-    id: outputRef.id,
-    companyId: options.companyId,
-    type: 'eum_daily_report',
-    title: reportTitle,
-    volNumber,
-    keywords: options.keywords,
-    analysisPrompt: options.savedPrompt !== undefined ? options.savedPrompt : options.analysisPrompt,
-    articleIds: options.articleIds,
-    orderedArticleIds: orderedArticles.map((a: any) => a.id),
-    articleCount: articles.length,
-    digestArticleCount: orderedArticles.length,
-    htmlContent: finalHtmlContent,
-    rawOutput: finalHtmlContent,
-    structuredOutput: null,
-    requestedBy: options.requestedBy,
-    status: 'completed',
-    completedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    ...(options.outputMetadata || {}),
-    ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-  }, { merge: true });
 
   return {
     success: true,
