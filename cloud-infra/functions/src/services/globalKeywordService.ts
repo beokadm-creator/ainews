@@ -257,7 +257,10 @@ export async function checkKeywordFilter(
     return { passes: false, matchedKeyword: null };
   }
 
-  const keywords = Array.from(new Set([...(cachedTitleKeywords || []), ...(cachedTrackedCompanies || [])]));
+  const effectiveTitleKeywords = (cachedTitleKeywords && cachedTitleKeywords.length > 0)
+    ? cachedTitleKeywords
+    : SEED_TITLE_KEYWORDS;
+  const keywords = Array.from(new Set([...effectiveTitleKeywords, ...(cachedTrackedCompanies || [])]));
   if (keywords.length === 0) {
     return { passes: true, matchedKeyword: null };
   }

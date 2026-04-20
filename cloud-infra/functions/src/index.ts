@@ -3529,43 +3529,41 @@ export const generateReportContentHttp = onRequest(
       const db = admin.firestore();
       const outputRef = db.collection('outputs').doc(outputId);
 
-      res.json({ accepted: true, outputId, status: 'processing' });
+      try {
+        await outputRef.update({
+          status: 'processing',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
 
-      (async () => {
-        try {
-          await outputRef.update({
-            status: 'processing',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
+        const runtime = await getCompanyRuntimeConfig(companyId);
 
-          const runtime = await getCompanyRuntimeConfig(companyId);
+        await generateCustomReport({
+          companyId,
+          articleIds,
+          keywords,
+          analysisPrompt,
+          reportTitle,
+          requestedBy: requestedBy || decodedToken.uid,
+          aiConfig: runtime.ai,
+          outputId,
+        });
 
-          const result = await generateCustomReport({
-            companyId,
-            articleIds,
-            keywords,
-            analysisPrompt,
-            reportTitle,
-            requestedBy: requestedBy || decodedToken.uid,
-            aiConfig: runtime.ai,
-            outputId,
-          });
+        await outputRef.update({
+          status: 'completed',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
 
-          await outputRef.update({
-            status: 'completed',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-
-          logger.info(`Report ${outputId} generated successfully`);
-        } catch (err: any) {
-          logger.error(`Report ${outputId} generation failed:`, err);
-          await outputRef.update({
-            status: 'failed',
-            errorMessage: err.message || 'Unknown error',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }).catch(e => logger.error('Failed to update status:', e));
-        }
-      })();
+        logger.info(`Report ${outputId} generated successfully`);
+        res.json({ success: true, outputId, status: 'completed' });
+      } catch (err: any) {
+        logger.error(`Report ${outputId} generation failed:`, err);
+        await outputRef.update({
+          status: 'failed',
+          errorMessage: err.message || 'Unknown error',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }).catch(e => logger.error('Failed to update status:', e));
+        res.status(500).json({ error: err.message || 'Internal error' });
+      }
     } catch (err: any) {
       logger.error('generateReportContentHttp error:', err);
       res.status(500).json({ error: err.message || 'Internal error' });
@@ -3583,13 +3581,10 @@ export const processManagedReportHttp = onRequest(
       return;
     }
 
-    res.json({ accepted: true, outputId, status: 'processing' });
+    const db = admin.firestore();
+    const outputRef = db.collection('outputs').doc(outputId);
 
-    (async () => {
-      const db = admin.firestore();
-      const outputRef = db.collection('outputs').doc(outputId);
-
-      try {
+    try {
         const outputDoc = await outputRef.get();
         if (!outputDoc.exists) {
           throw new Error('Managed report document not found');
@@ -3689,6 +3684,8 @@ export const processManagedReportHttp = onRequest(
             externalSendCount: sendResult.sentCount || resolvedRecipients.length,
           }, { merge: true });
         }
+
+        res.json({ success: true, outputId, status: 'completed' });
       } catch (error: any) {
         logger.error('processManagedReportHttp error:', error);
         await outputRef.set({
@@ -3697,8 +3694,8 @@ export const processManagedReportHttp = onRequest(
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           failedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true }).catch(() => {});
+        res.status(500).json({ error: error.message || 'Unknown error' });
       }
-    })().catch((error) => logger.error('Managed report async task failed:', error));
   }
 );
 
