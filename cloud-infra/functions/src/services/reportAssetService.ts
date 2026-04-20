@@ -1502,22 +1502,24 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       });
 
       // Add 원문 보기 button — AI가 block에 심은 data-article-id 보다 URL/Headline 매칭 우선
+      const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
+      const titleText = titleEl.text().trim();
+      let articleId: string | null = null;
+
       if (href && !href.startsWith('javascript')) {
-        const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
-        const titleText = titleEl.text().trim();
-        
         const urlResolvedId = resolveArticleIdByUrl(href, articles);
         const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
-        
-        let isBlockArticleIdUuid = blockArticleId && blockArticleId.length > 5 && isNaN(Number(blockArticleId));
-        const articleId = (isBlockArticleIdUuid ? blockArticleId : null) || textResolvedId || urlResolvedId || null;
-        
+        const isBlockArticleIdUuid = blockArticleId && blockArticleId.length > 5 && isNaN(Number(blockArticleId));
+        articleId = (isBlockArticleIdUuid ? blockArticleId : null) || textResolvedId || urlResolvedId || null;
+
         const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
         bodyParts.push(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
       }
 
+      // data-article-id를 <details>에도 전달해야 제목 링크 클릭 시 모달로 연결됨
+      const detailsIdAttr = articleId ? ` data-article-id="${articleId}"` : '';
       block.replaceWith(
-        `<details class="article-block"><summary class="article-summary-row">${summaryHtml}</summary><div class="article-body">${bodyParts.join('')}</div></details>`,
+        `<details class="article-block"${detailsIdAttr}><summary class="article-summary-row">${summaryHtml}</summary><div class="article-body">${bodyParts.join('')}</div></details>`,
       );
     });
 
@@ -1542,6 +1544,7 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
       const isDetailsIdUuid = detailsArticleId && detailsArticleId.length > 5 && isNaN(Number(detailsArticleId));
       const articleId = (isDetailsIdUuid ? detailsArticleId : null) || resolveArticleIdByUrl(href, articles);
+      if (articleId && !isDetailsIdUuid) details.attr('data-article-id', articleId);
       const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
       bodyDiv.append(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
     });
