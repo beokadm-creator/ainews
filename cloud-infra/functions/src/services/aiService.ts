@@ -796,9 +796,7 @@ export function resolveAiCallOptions(
     },
     'custom-report': {
       temperature: 0.2,
-      // thinking 모드를 비활성화하여 max_tokens를 온전히 출력에 사용
-      // thinking 활성 시 reasoning 토큰이 max_tokens 예산을 소비해 38개 기사 중 ~17개에서 중단됨
-      maxTokens: 32000,
+      maxTokens: 128000,
       maxRetries: 8,
       requestTimeoutMs: 480000,
       thinkingType: 'disabled',

@@ -712,7 +712,6 @@ ${options.analysisPrompt || 'Focus on market structure, deal meaning, buyer and 
 Company: ${companyDisplayName}
 Priority keywords: ${keywordSummary}
 Selected article count: ${articles.length}
-Use at most the strongest 100 articles already curated below.
 
 Article digest:
 ${articleDigest}
@@ -720,6 +719,7 @@ ${articleDigest}
 Below is the HTML skeleton you MUST use and fill in.
 Replace all "[AI_FILL: ...]" placeholders with your analysis based on the instructions.
 Do not change the structure or IDs.
+You MUST process ALL articles provided in the digest. Do not stop halfway.
 
 <HTML_SKELETON>
 <!DOCTYPE html>
@@ -945,7 +945,8 @@ ${refTableSkeleton}
   const userPrompt = `기사 목록:
 ${articleDigest}
 
-위 <HTML_SKELETON>의 [AI_FILL: ...] 영역을 채워서 완성된 HTML을 반환하세요.`;
+위 <HTML_SKELETON>의 [AI_FILL: ...] 영역을 채워서 완성된 HTML을 반환하세요.
+중요: 기사 목록에 있는 모든 기사를 빠짐없이 처리하세요. 중간에 멈추지 마세요.`;
 
   const response = await callAiProvider(
     `${systemPrompt}\n\n${userPrompt}`,
