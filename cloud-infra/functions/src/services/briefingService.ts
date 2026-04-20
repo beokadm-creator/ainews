@@ -951,7 +951,7 @@ ${articleDigest}
   const response = await callAiProvider(
     `${systemPrompt}\n\n${userPrompt}`,
     reportAiConfig,
-    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 32000, temperature: 0.4 }),
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
     options.companyId
   );
   await trackAiCost('eum-daily-output', response.usage, response.model, response.provider, options.companyId);
@@ -959,6 +959,11 @@ ${articleDigest}
   // --- Cheerio Post-processing (Part 1, 2, 3 분류 재배치) ---
   const rawHtml = ensureHtmlDocument(response.content, reportTitle);
   const $ = cheerioLoad(rawHtml);
+  const expectedArticleCount = orderedArticles.length;
+  const actualArticleCount = $('#ai-raw-blocks .article-block').length;
+  if (actualArticleCount < expectedArticleCount) {
+    throw new Error(`AI output truncated: expected ${expectedArticleCount} article blocks, got ${actualArticleCount}`);
+  }
   const categoryById = new Map<string, string>(
     orderedArticles.map((a: any) => [a.id, `${a.category || ''}`.toUpperCase()])
   );
