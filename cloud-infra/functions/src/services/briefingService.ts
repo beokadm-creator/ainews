@@ -684,35 +684,254 @@ export async function generateCustomReport(options: CustomReportOptions) {
   const safeReportTitle = escapeHtml(reportTitle);
   const volNumber = options.volNumber || 1;
 
-  // 사용자가 회사 설정에서 지정한 CSS+HTML 템플릿이 있으면 하드코딩 skeleton 대신 직접 사용
+  // 사용자가 회사 설정에서 지정한 CSS+HTML 템플릿이 있으면 스켈레톤 + 배치 방식으로 처리
   const hasUserTemplate = !!(options.analysisPrompt && options.analysisPrompt.includes('<style>'));
 
   if (hasUserTemplate) {
-    const userTemplatePrompt = `${options.analysisPrompt}
+    // 1) 사용자 프롬프트에서 CSS 추출
+    const userPrompt = options.analysisPrompt!;
+    const cssMatch = userPrompt.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+    const userCss = cssMatch ? cssMatch[1].trim() : '';
 
-기사 목록:
-${articleDigest}
+    // 2) 사용자 프롬프트에서 지시사항(비 HTML 부분) 추출
+    const instructionsOnly = userPrompt
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<div[\s\S]*?<\/div>/gi, '')
+      .replace(/<table[\s\S]*?<\/table>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 3000);
 
-위 지시사항에 명시된 CSS 스타일과 HTML 구조를 한 글자도 바꾸지 말고 정확히 따라 리포트를 작성하세요.
-리포트 제목: ${reportTitle}
-호수: Vol. ${volNumber}
+    // 3) 배치 설정
+    const USER_BATCH_SIZE = 20;
+    const batches: any[][] = [];
+    for (let i = 0; i < orderedArticles.length; i += USER_BATCH_SIZE) {
+      batches.push(orderedArticles.slice(i, i + USER_BATCH_SIZE));
+    }
+
+    console.info(`[user-template-report] ${orderedArticles.length} articles → ${batches.length} batches`);
+
+    // 4) 각 배치마다 skeleton + AI 호출
+    const allArticleBlocksHtml: string[] = [];
+    const articleCategoryMap = new Map<string, string>(); // articleId → category
+
+    const batchSystemPrompt = `당신은 PE(Private Equity) 하우스의 시니어 애널리스트입니다.
+
+[작성 원칙]
+1. 기사 원문의 내용을 충실히 전달합니다. 추측·전망·제언을 추가하지 않습니다.
+2. 딜 규모가 기사에 미언급이면 해당 줄 자체를 생략합니다 (빈 칸으로 두지 말 것).
+3. 출처 번호([1][2] 등)는 제목·본문 어디에도 표시하지 않습니다.
+4. 분류 우선순위: M&A > PE 동향 > 기타 시장 동향 (PE가 수행한 M&A → M&A로 분류).
+5. 모든 텍스트를 한국어로 작성합니다. 고유명사·약어(M&A, PE, IPO 등)는 예외.
+
+[출력 방식]
+아래 <HTML_SKELETON>의 [AI_FILL: ...] 부분만 채우세요.
+HTML 태그·클래스명·data-article-id 속성은 절대 변경하지 마세요.
+모든 기사 블록을 빠짐없이 유지하세요 (임의 병합·삭제 금지).
+
+${instructionsOnly}`;
+
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batchArticles = batches[batchIdx];
+      const { digest: batchDigest } = buildCustomReportArticleDigest(batchArticles);
+
+      const batchSkeleton = batchArticles.map((a: any, index: number) => `
+<!-- [기사 ${index + 1}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
+<div class="article-block" data-article-id="${a.id}">
+  <span class="article-title"><a href="${a.url || '#'}">(${index + 1}) ${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></span>
+  <span class="article-sector">[AI_FILL: 업종/섹터 (예: 반도체, 바이오, IT 등)]</span>
+
+  <div class="article-meta-block">
+    <span class="label">분류:</span> <span class="meta-category">[AI_FILL: M&A / PE / 기타 중 택1]</span><br>
+    <span class="label">당사자:</span> [AI_FILL: 인수자 / 피인수자 / 관련 기업]<br>
+    <span class="label">딜 규모:</span> [AI_FILL: 금액 (기사에 언급된 경우만, 없으면 빈칸)]<br>
+    <span class="label">딜 구조:</span> [AI_FILL: 인수 / 합병 / 지분투자 / 매각 등 (기사에 언급된 경우만, 없으면 빈칸)]
+  </div>
+
+  <ul style="font-size:10pt; color:#333; margin-top:10px; line-height:1.8; padding-left:20px;">
+    <li>[AI_FILL: 핵심 사실 1 (bullet 형태, 한 문장으로 요약)]</li>
+    <li>[AI_FILL: 핵심 사실 2 (bullet 형태, 한 문장으로 요약)]</li>
+    <li>[AI_FILL: 핵심 사실 3 (bullet 형태, 한 문장으로 요약)]</li>
+  </ul>
+</div>
+`).join('\n\n');
+
+      const batchUserPrompt = `기사 목록 (Batch ${batchIdx + 1}/${batches.length}, ${batchArticles.length}건):
+
+${batchDigest}
+
+<HTML_SKELETON>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${safeReportTitle}</title>
+  <style>
+  body { font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #333; line-height: 1.3; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; }
+  .article-block { margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #e8e8e8; }
+  .article-title { font-size: 12pt; font-weight: 700; color: #111; }
+  .article-title a { color: #111; text-decoration: none; }
+  .article-title a:hover { text-decoration: underline; }
+  .article-sector { float: right; background: #e8f0f8; color: #1a6fa8; font-size: 9pt; font-weight: 600; padding: 2px 10px; border-radius: 3px; }
+  .article-meta-block { font-size: 9pt; color: #555; background: #F8FAFC; padding: 8px 12px; margin: 8px 0; line-height: 1.8; }
+  .article-meta-block .label { font-weight: 700; color: #333; }
+  </style>
+</head>
+<body>
+  ${batchSkeleton}
+</body>
+</html>
+</HTML_SKELETON>
+
+위 스켈레톤의 [AI_FILL: ...] 영역을 채워 완성된 HTML을 반환하세요.
 모든 기사를 빠짐없이 처리하세요. 중간에 멈추지 마세요.`;
 
-    const response = await callAiProvider(
-      userTemplatePrompt,
-      reportAiConfig,
-      resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
-      options.companyId
-    );
-    await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
+      console.info(`[user-template-report] Batch ${batchIdx + 1}/${batches.length}: ${batchArticles.length} articles`);
 
-    const rawHtmlContent = ensureHtmlDocument(response.content, reportTitle);
-    const $check = cheerioLoad(rawHtmlContent);
-    const actualBlockCount = $check('.article-block').length;
-    if (actualBlockCount < orderedArticles.length) {
-      console.warn(`[custom-report] User template path: AI output truncated — expected ${orderedArticles.length} articles but got ${actualBlockCount}. Saving partial report.`);
+      const batchResponse = await callAiProvider(
+        `${batchSystemPrompt}\n\n${batchUserPrompt}`,
+        reportAiConfig,
+        resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
+        options.companyId
+      );
+      await trackAiCost('custom-output', batchResponse.usage, batchResponse.model, batchResponse.provider, options.companyId);
+
+      const batchRawHtml = ensureHtmlDocument(batchResponse.content, reportTitle);
+      const $batch = cheerioLoad(batchRawHtml);
+      const extractedBlocks = $batch('.article-block');
+
+      if (extractedBlocks.length < batchArticles.length) {
+        throw new Error(`AI output truncated in batch ${batchIdx + 1}/${batches.length}: expected ${batchArticles.length} articles but got ${extractedBlocks.length}.`);
+      }
+
+      // Extract category from each block and store
+      extractedBlocks.each(function () {
+        const block = $batch(this);
+        const articleId = (block.attr('data-article-id') || '').trim();
+        const categoryText = block.find('.meta-category').first().text().toUpperCase();
+        if (articleId) articleCategoryMap.set(articleId, categoryText);
+        allArticleBlocksHtml.push(block.prop('outerHTML') || '');
+      });
+
+      await logPromptExecution(
+        'custom-output',
+        { batchIndex: batchIdx, totalBatches: batches.length, articleCount: batchArticles.length, keywords: options.keywords },
+        batchRawHtml,
+        batchResponse.model,
+        { companyId: options.companyId, prompt: batchUserPrompt }
+      );
     }
-    const htmlContent = embedArticleIdsInHtml(rawHtmlContent, orderedArticles);
+
+    // 5) M&A / PE / 기타 분류로 article blocks 분리
+    const categoryById = new Map<string, string>(
+      orderedArticles.map((a: any) => [a.id, `${a.category || ''}`.toUpperCase()])
+    );
+
+    const categorizedBlocks = { ma: [] as string[], pe: [] as string[], etc: [] as string[] };
+    const categorizedIds = { ma: [] as string[], pe: [] as string[], etc: [] as string[] };
+
+    const $all = cheerioLoad(`<div>${allArticleBlocksHtml.join('')}</div>`);
+    $all('.article-block').each(function () {
+      const block = $all(this);
+      const articleId = (block.attr('data-article-id') || '').trim();
+      const aiCategory = articleCategoryMap.get(articleId) || '';
+      const fallbackCategory = categoryById.get(articleId) || '';
+      const categoryText = (!aiCategory.includes('[AI_FILL') && aiCategory.trim()) ? aiCategory : fallbackCategory;
+
+      const html = block.prop('outerHTML') || '';
+      if (categoryText.includes('M&A') || categoryText.includes('인수합병')) {
+        categorizedBlocks.ma.push(html);
+        categorizedIds.ma.push(articleId);
+      } else if (categoryText.includes('PE') || categoryText.includes('VC') || categoryText.includes('사모펀드') || categoryText.includes('펀드')) {
+        categorizedBlocks.pe.push(html);
+        categorizedIds.pe.push(articleId);
+      } else {
+        categorizedBlocks.etc.push(html);
+        categorizedIds.etc.push(articleId);
+      }
+    });
+
+    // 6) 참고 기사 목록 (전체)
+    const fullRefTableRows = orderedArticles.map((a: any, index: number) => {
+      const pubDate = a.publishedAt?.toDate ? a.publishedAt.toDate().toLocaleDateString('ko-KR') : (a.publishedAt || '');
+      const aiCat = articleCategoryMap.get(a.id) || '';
+      const fallbackCat = categoryById.get(a.id) || '';
+      const cat = (!aiCat.includes('[AI_FILL') && aiCat.trim()) ? aiCat : fallbackCat;
+      const catLabel = cat.includes('M&A') ? 'M&A' : (cat.includes('PE') || cat.includes('사모')) ? 'PE' : '기타';
+      return `    <tr data-article-id="${a.id}"><td>${index + 1}</td><td>${catLabel}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.title || '')))}</td><td>${escapeHtml(fixEncodingIssues(cleanHtmlContent(a.source || '')))}</td><td>${pubDate}</td><td></td></tr>`;
+    }).join('\n');
+
+    // 7) 최종 HTML 조립 (사용자 CSS 사용)
+    const today = new Date();
+    const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+    const dedupCount = articles.length - orderedArticles.length;
+
+    const partSections: string[] = [];
+    if (categorizedBlocks.ma.length > 0) {
+      partSections.push(`<div class="part-title">PART 1. M&A</div>\n${categorizedBlocks.ma.join('\n')}`);
+    }
+    if (categorizedBlocks.pe.length > 0) {
+      partSections.push(`<div class="part-title">PART 2. PE 동향</div>\n${categorizedBlocks.pe.join('\n')}`);
+    }
+    if (categorizedBlocks.etc.length > 0) {
+      partSections.push(`<div class="part-title">PART 3. 기타 시장 동향</div>\n${categorizedBlocks.etc.join('\n')}`);
+    }
+
+    const mergedHtml = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>${safeReportTitle}</title>
+  <style>
+  ${userCss || `  body { font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #333; line-height: 1.3; max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; }
+  .report-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2a4a; padding-bottom: 12px; margin-bottom: 30px; }
+  .report-title { font-size: 28px; font-weight: 800; color: #1a2a4a; }
+  .report-subtitle { font-size: 13px; color: #666; margin-top: 2px; }
+  .report-date-block { text-align: right; font-size: 13px; color: #2b3a5c; background: #fff; padding: 10px 16px; border-radius: 2px; }
+  .report-date-block .date { font-size: 15px; font-weight: 700; color: #5bb5e0; }
+  .part-title { border-left: 4px solid #c75a3b; padding: 8px 14px; font-size: 12pt; font-weight: 700; color: #1a2a4a; background: #f5f7fa; margin: 36px 0 20px 0; }
+  .article-block { margin-bottom: 28px; padding-bottom: 20px; border-bottom: 1px solid #e8e8e8; }
+  .article-title { font-size: 12pt; font-weight: 700; color: #111; }
+  .article-title a { color: #111; text-decoration: none; }
+  .article-title a:hover { text-decoration: underline; }
+  .article-sector { float: right; background: #e8f0f8; color: #1a6fa8; font-size: 9pt; font-weight: 600; padding: 2px 10px; border-radius: 3px; }
+  .article-meta-block { font-size: 9pt; color: #555; background: #F8FAFC; padding: 8px 12px; margin: 8px 0; line-height: 1.3; }
+  .article-meta-block .label { font-weight: 700; color: #333; }
+  .ref-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 12px; }
+  .ref-table th { background: #1a2a4a; color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; }
+  .ref-table td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; color: #333; }
+  .ref-table tr:nth-child(even) td { background: #f9f9f9; }
+  .ref-summary { font-size: 9pt; color: #888; margin-top: 8px; text-align: right; }`}
+  </style>
+</head>
+<body>
+  <div class="report-header">
+    <div>
+      <div class="report-title">이음M&A뉴스</div>
+      <div class="report-subtitle">EUM Daily Report</div>
+    </div>
+    <div class="report-date-block">
+      <div class="date">${dateStr}</div>
+      <div>${companyDisplayName}</div>
+      <div>Vol. ${volNumber}</div>
+    </div>
+  </div>
+
+${partSections.join('\n\n')}
+
+  <div class="part-title">참고 기사 목록</div>
+  <table class="ref-table">
+    <tr>
+      <th>#</th><th>카테고리</th><th>헤드라인</th><th>출처</th><th>날짜</th><th>비고</th>
+    </tr>
+${fullRefTableRows}
+  </table>
+  <div class="ref-summary">총 입력 기사: ${articles.length}건 → 통합 후: ${orderedArticles.length}건 (중복 ${dedupCount}건 통합)</div>
+</body>
+</html>`;
+
+    const htmlContent = embedArticleIdsInHtml(mergedHtml, orderedArticles);
 
     const outputRef = options.outputId
       ? db.collection('outputs').doc(options.outputId)
@@ -741,14 +960,6 @@ ${articleDigest}
       ...(options.outputMetadata || {}),
       ...(!options.outputId ? { createdAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
     }, { merge: true });
-
-    await logPromptExecution(
-      'custom-output',
-      { articleCount: articles.length, keywords: options.keywords },
-      htmlContent,
-      response.model,
-      { companyId: options.companyId, prompt: userTemplatePrompt }
-    );
 
     return {
       success: true,
