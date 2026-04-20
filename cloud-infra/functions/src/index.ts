@@ -1197,36 +1197,38 @@ async function executeManagedReport({
 }: ManagedReportExecutionOptions) {
   const db = admin.firestore();
   const outputRef = db.collection('outputs').doc(outputId);
-  const outputDoc = await outputRef.get();
+  
+  try {
+    const outputDoc = await outputRef.get();
 
-  if (!outputDoc.exists) {
-    throw new Error('Managed report document not found');
-  }
+    if (!outputDoc.exists) {
+      throw new Error('Managed report document not found');
+    }
 
-  const output = outputDoc.data() as any;
-  await outputRef.set({
-    status: 'processing',
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    startedAt: admin.firestore.FieldValue.serverTimestamp(),
-    errorMessage: null,
-    failedAt: null,
-    attempts: admin.firestore.FieldValue.increment(1),
-  }, { merge: true });
+    const output = outputDoc.data() as any;
+    await outputRef.set({
+      status: 'processing',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      errorMessage: null,
+      failedAt: null,
+      attempts: admin.firestore.FieldValue.increment(1),
+    }, { merge: true });
 
-  let reportArticles: any[] = [];
-  let matchedSourceNames: string[] = [];
-  let sourceCoverage: ManagedReportArticleLoadResult['sourceCoverage'] = [];
-  if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
-    const articleDocs = await Promise.all(
-      output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
-    );
-    reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
-  } else {
-    const reportLoad = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
-    reportArticles = reportLoad.articles;
-    matchedSourceNames = reportLoad.matchedSourceNames;
-    sourceCoverage = reportLoad.sourceCoverage;
-  }
+    let reportArticles: any[] = [];
+    let matchedSourceNames: string[] = [];
+    let sourceCoverage: ManagedReportArticleLoadResult['sourceCoverage'] = [];
+    if (Array.isArray(output.articleIds) && output.articleIds.length > 0) {
+      const articleDocs = await Promise.all(
+        output.articleIds.map((articleId: string) => db.collection('articles').doc(articleId).get())
+      );
+      reportArticles = articleDocs.filter((doc) => doc.exists).map((doc) => ({ id: doc.id, ...doc.data() }));
+    } else {
+      const reportLoad = await loadAccessibleArticlesForManagedReport(companyId, output.filters || {});
+      reportArticles = reportLoad.articles;
+      matchedSourceNames = reportLoad.matchedSourceNames;
+      sourceCoverage = reportLoad.sourceCoverage;
+    }
 
   if (reportArticles.length === 0) {
     throw new Error('No analyzed articles found for the selected window and sources');
@@ -1337,10 +1339,20 @@ async function executeManagedReport({
   }
 
   return {
-    outputId,
-    generatedOutputId: null,
-    articleCount: reportArticles.length,
-  };
+      outputId,
+      generatedOutputId: null,
+      articleCount: reportArticles.length,
+    };
+  } catch (err: any) {
+    logger.error(`executeManagedReport failed for ${outputId}:`, err);
+    await outputRef.set({
+      status: 'failed',
+      errorMessage: err.message || 'Unknown error during managed report execution',
+      failedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }).catch(() => {});
+    throw err;
+  }
 }
 
 interface StandaloneCustomReportExecutionOptions {

@@ -311,7 +311,7 @@ function prioritizeArticlesForDigest(articles: any[]): any[] {
     );
     if (!isDup) deduped.push(article);
   }
-  return deduped.slice(0, 100);
+  return deduped; // 제거된 100건 제한
 }
 
 function buildCustomReportArticleDigest(articles: any[]): { digest: string; orderedArticles: any[] } {
@@ -324,7 +324,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
     const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
     const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
     const safeBody = fixEncodingIssues(cleanHtmlContent(article.content || (article.summary || []).join(' ')));
-    const safeSummary = Array.isArray(article.summary) ? article.summary.slice(0, 3).join(' / ') : '';
+    const safeSummary = Array.isArray(article.summary) ? article.summary.join(' / ') : ''; // 3줄 제한 해제
     return [
       `[ARTICLE ${index + 1}]`,
       `ID: ${article.id}`,
@@ -336,7 +336,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
       `CATEGORY: ${article.category || 'uncategorized'}`,
       `SUMMARY: ${safeSummary || 'No summary available'}`,
       'BODY:',
-      safeBody.substring(0, 2200),
+      safeBody, // 2200자 제한 해제
     ].join('\n');
   }).join('\n\n---\n\n');
 
@@ -362,7 +362,7 @@ function buildArticleDigest(articles: any[], includeArticleBody: boolean): strin
     ];
 
     if (includeArticleBody) {
-      parts.push(`Body: ${safeContent.substring(0, 4000)}`);
+      parts.push(`Body: ${safeContent}`); // 4000자 제한 해제
     }
 
     return parts.join('\n');
