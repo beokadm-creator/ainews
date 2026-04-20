@@ -786,9 +786,9 @@ export function resolveAiCallOptions(
     },
     'daily-briefing': {
       temperature: 0.2,
-      maxTokens: 6000,
+      maxTokens: 128000,
       maxRetries: 8,
-      requestTimeoutMs: 480000,
+      requestTimeoutMs: 3600000,
       doSample: false,
       thinkingType: 'enabled',
       clearThinking: true,
@@ -798,7 +798,7 @@ export function resolveAiCallOptions(
       temperature: 0.2,
       maxTokens: 128000,
       maxRetries: 8,
-      requestTimeoutMs: 480000,
+      requestTimeoutMs: 3600000, // 1시간 (최대 대기)
       thinkingType: 'disabled',
       clearThinking: true,
     },

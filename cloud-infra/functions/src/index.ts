@@ -2827,7 +2827,7 @@ export const sharedReportPage = onRequest(
 );
 
 export const requestManagedReport = onCall(
-  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 3600, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -2922,7 +2922,7 @@ export const updateReportContent = onCall(
 );
 
 export const retryManagedReport = onCall(
-  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 3600, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
     const { outputId } = request.data || {};
@@ -3233,7 +3233,7 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
 // ?????????????????????????????????????????
 export const scheduledBriefingGeneration = onSchedule({
   schedule: '0 22 * * *',
-  timeoutSeconds: 540,
+  timeoutSeconds: 3600,
 }, async () => {
   const db = admin.firestore();
   const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
@@ -3254,7 +3254,7 @@ export const scheduledBriefingGeneration = onSchedule({
 // ?????????????????????????????????????????
 // runFullPipeline: ?뚯씠?꾨씪???쒖옉 (利됱떆 pipelineId 諛섑솚, ?ㅼ젣 ?ㅽ뻾? background HTTP)
 // ?????????????????????????????????????????
-export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 540 }, async (request) => {
+export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 3600 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
     let targetCompanyId = request.data?.companyId;
@@ -3306,7 +3306,7 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 5
 });
 
 export const executePipelineHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true },
+  { region: 'us-central1', timeoutSeconds: 3600, memory: '1GiB', cors: true },
   async (req, res) => {
     const { pipelineId } = req.body || {};
     if (!pipelineId) {
@@ -3352,7 +3352,7 @@ export const executePipelineHttp = onRequest(
 // [FAST] generateReportV2: 蹂닿퀬??臾몄꽌 ?앹꽦 ??利됱떆 ID 諛섑솚
 // ?ㅼ젣 ?앹꽦? generateReportContentHttp?먯꽌 諛깃렇?쇱슫?쒕줈 ?섑뻾
 export const generateReportV2 = onCall(
-  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 3600, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -3439,7 +3439,7 @@ export const generateReport = generateReportV2;
 // regenerateReportContent: 기존 기사는 유지한 채 새 프롬프트로 리포트 재생성
 // ─────────────────────────────────────────────────────────────────────────────
 export const regenerateReportContent = onCall(
-  { region: 'us-central1', timeoutSeconds: 540, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 3600, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -3493,7 +3493,7 @@ export const regenerateReportContent = onCall(
 
 // [NEW] generateReportContentHttp: 蹂닿퀬???댁슜 ?앹꽦 (諛깃렇?쇱슫?? 理쒕? 540珥?
 export const generateReportContentHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
+  { region: 'us-central1', timeoutSeconds: 3600, memory: '1GiB' },
   async (req, res) => {
     // CORS
     res.set('Access-Control-Allow-Origin', '*');
@@ -3574,7 +3574,7 @@ export const generateReportContentHttp = onRequest(
 );
 
 export const processManagedReportHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true },
+  { region: 'us-central1', timeoutSeconds: 3600, memory: '1GiB', cors: true },
   async (req, res) => {
     const { outputId, companyId, requestedBy, recipients = [] } = req.body || {};
 
