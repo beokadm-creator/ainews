@@ -3233,7 +3233,7 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
 // ?????????????????????????????????????????
 export const scheduledBriefingGeneration = onSchedule({
   schedule: '0 22 * * *',
-  timeoutSeconds: 3600,
+  timeoutSeconds: 1800,
 }, async () => {
   const db = admin.firestore();
   const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
