@@ -579,11 +579,13 @@ ${digest}`;
     pipelineRunId: options.pipelineRunId || null,
     type: outputType,
     title: options.outputConfig.title || normalized.structured?.title || 'AI News Output',
+    status: 'completed',
     articleIds: limitedArticles.map(article => article.id),
     articleCount: limitedArticles.length,
     rawOutput: normalized.text,
     structuredOutput: normalized.structured,
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
   const batch = db.batch();

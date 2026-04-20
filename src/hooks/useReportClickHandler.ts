@@ -78,40 +78,35 @@ export function useReportClickHandler(articles: any[], setPreviewArticle: (artic
     if (anchor) {
       e.preventDefault();
       
-      const isModalTrigger = anchor.classList.contains('article-source-btn') || anchor.classList.contains('ref-headline-btn');
-      
-      // 이음 M&A 뉴스 양식에서는 링크가 .article-title 내부에 있고 부모 .article-block에 ID가 있음
+      const href = anchor.getAttribute('href') || anchor.href || '';
       const eumArticleBlock = anchor.closest('.article-block');
       const hasParentId = eumArticleBlock && eumArticleBlock.getAttribute('data-article-id');
-
-      if (isModalTrigger || hasParentId) {
-        
-        // 2-a. data-article-id (자신 또는 부모에서 탐색)
-        const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);
-        if (byId) { setPreviewArticle(byId); return; }
-        
-        // 2-c. 폴백: URL 매칭
-        const href = anchor.href || '';
+      
+      // 2-a. data-article-id (자신 또는 부모에서 탐색)
+      const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);
+      if (byId) { setPreviewArticle(byId); return; }
+      
+      // 2-c. 폴백: URL 매칭 (href가 기사 원문 링크일 경우)
+      if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
         const urlResolvedId = resolveArticleIdByUrl(href, articles);
         if (urlResolvedId) {
           const byUrl = articles.find((a) => a.id === urlResolvedId);
           if (byUrl) { setPreviewArticle(byUrl); return; }
         }
-        
-        // 2-d. 폴백: 제목 텍스트 매칭
-        const linkText = (anchor.textContent || '').trim();
-        if (linkText.length > 1) {
-          const resolvedId = resolveArticleIdByHeadline(linkText, articles);
-          if (resolvedId) {
-            const byTitle = articles.find(a => a.id === resolvedId);
-            if (byTitle) { setPreviewArticle(byTitle); return; }
-          }
+      }
+      
+      // 2-d. 폴백: 제목 텍스트 매칭
+      const linkText = (anchor.textContent || '').trim();
+      if (linkText.length > 1) {
+        const resolvedId = resolveArticleIdByHeadline(linkText, articles);
+        if (resolvedId) {
+          const byTitle = articles.find(a => a.id === resolvedId);
+          if (byTitle) { setPreviewArticle(byTitle); return; }
         }
       }
       
       // 모달 트리거가 아니거나 매칭에 실패한 일반 링크는 새 창에서 열기
-      const href = anchor.href || '';
-      if (href && !href.startsWith('javascript')) {
+      if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
         window.open(href, '_blank');
       }
       return;

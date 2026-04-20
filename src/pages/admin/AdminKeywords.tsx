@@ -98,22 +98,15 @@ export default function AdminKeywords() {
     setResetting(true);
     setMessage(null);
     try {
-      const { getAuth } = await import('firebase/auth');
-      const auth = getAuth();
-      const uid = auth.currentUser?.uid;
-      if (!uid) throw new Error('로그인이 필요합니다');
-
-      // Cloud Function 베이스 URL 가져오기 (us-central1)
-      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-      const url = `https://us-central1-${projectId}.cloudfunctions.net/resetAllArticlesHttp`;
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-uid': uid },
-        body: JSON.stringify({ confirm: 'RESET_ALL_CONFIRMED' }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || '초기화 실패');
-      setMessage({ type: 'success', text: data.message });
+      const { httpsCallable } = await import('firebase/functions');
+      const { functions } = await import('@/lib/firebase');
+      
+      const resetAllArticles = httpsCallable(functions, 'resetAllArticles');
+      const { data } = await resetAllArticles({ confirm: 'RESET_ALL_CONFIRMED' });
+      const result = data as { success: boolean; message: string };
+      
+      if (!result.success) throw new Error('초기화 실패');
+      setMessage({ type: 'success', text: result.message });
     } catch (err: any) {
       setMessage({ type: 'error', text: `초기화 실패: ${err.message}` });
     } finally {

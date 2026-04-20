@@ -1365,40 +1365,51 @@ async function executeStandaloneCustomReport({
   const db = admin.firestore();
   const outputRef = db.collection('outputs').doc(outputId);
 
-  await outputRef.set({
-    status: 'processing',
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    startedAt: admin.firestore.FieldValue.serverTimestamp(),
-    errorMessage: null,
-    failedAt: null,
-  }, { merge: true });
+  try {
+    await outputRef.set({
+      status: 'processing',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      errorMessage: null,
+      failedAt: null,
+    }, { merge: true });
 
-  const runtime = await getCompanyRuntimeConfig(companyId);
-  const result = await generateCustomReport({
-    companyId,
-    articleIds,
-    keywords,
-    analysisPrompt,
-    reportTitle,
-    requestedBy,
-    aiConfig: runtime.ai,
-    outputId,
-  });
+    const runtime = await getCompanyRuntimeConfig(companyId);
+    const result = await generateCustomReport({
+      companyId,
+      articleIds,
+      keywords,
+      analysisPrompt,
+      reportTitle,
+      requestedBy,
+      aiConfig: runtime.ai,
+      outputId,
+    });
 
-  await outputRef.set({
-    status: 'completed',
-    completedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    generatedOutputId: null,
-    parentRequestId: null,
-    articleIds,
-    articleCount: articleIds.length,
-  }, { merge: true });
+    await outputRef.set({
+      status: 'completed',
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      generatedOutputId: null,
+      parentRequestId: null,
+      articleIds,
+      articleCount: articleIds.length,
+    }, { merge: true });
 
-  return {
-    outputId,
-    generatedOutputId: null,
-  };
+    return {
+      outputId,
+      generatedOutputId: null,
+    };
+  } catch (err: any) {
+    logger.error(`executeStandaloneCustomReport failed for ${outputId}:`, err);
+    await outputRef.set({
+      status: 'failed',
+      errorMessage: err.message || 'Unknown error',
+      failedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // superadmin?? systemSettings/aiConfig + systemSettings/promptConfig?먯꽌 AI ?ㅼ젙 濡쒕뱶
@@ -3220,7 +3231,10 @@ export const scheduledDistributionDispatch = onSchedule('*/15 * * * *', async ()
 // ?????????????????????????????????????????
 // Scheduled: Briefing generation (daily 22:00)
 // ?????????????????????????????????????????
-export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => {
+export const scheduledBriefingGeneration = onSchedule({
+  schedule: '0 22 * * *',
+  timeoutSeconds: 540,
+}, async () => {
   const db = admin.firestore();
   const companiesSnapshot = await db.collection('companies').where('active', '==', true).get();
   for (const companyDoc of companiesSnapshot.docs) {
@@ -3240,7 +3254,7 @@ export const scheduledBriefingGeneration = onSchedule('0 22 * * *', async () => 
 // ?????????????????????????????????????????
 // runFullPipeline: ?뚯씠?꾨씪???쒖옉 (利됱떆 pipelineId 諛섑솚, ?ㅼ젣 ?ㅽ뻾? background HTTP)
 // ?????????????????????????????????????????
-export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 60 }, async (request) => {
+export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 540 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   try {
     let targetCompanyId = request.data?.companyId;
@@ -3292,7 +3306,7 @@ export const runFullPipeline = onCall({ region: 'us-central1', timeoutSeconds: 6
 });
 
 export const executePipelineHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
+  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true },
   async (req, res) => {
     const { pipelineId } = req.body || {};
     if (!pipelineId) {
@@ -3560,7 +3574,7 @@ export const generateReportContentHttp = onRequest(
 );
 
 export const processManagedReportHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
+  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB', cors: true },
   async (req, res) => {
     const { outputId, companyId, requestedBy, recipients = [] } = req.body || {};
 
@@ -3992,64 +4006,40 @@ export const seedGlobalKeywords = onCall({ region: 'us-central1' }, async (reque
 // - 키워드 필터 테스트 완료 후 클린 스타트용
 // ?????????????????????????????????????????
 
-export const resetAllArticlesHttp = onRequest(
-  { region: 'us-central1', timeoutSeconds: 540, memory: '1GiB' },
-  async (request, response) => {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
-    if (request.method === 'OPTIONS') {
-      response.status(200).send('OK');
-      return;
+export const resetAllArticles = onCall(
+  { region: 'us-central1', timeoutSeconds: 540 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    
+    const db = admin.firestore();
+    const userDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
+      throw new HttpsError('permission-denied', 'Superadmin only');
     }
 
-    try {
-      const db = admin.firestore();
-      const uid = request.headers['x-uid'] as string;
-      if (!uid) {
-        response.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') {
-        response.status(403).json({ error: 'Forbidden - Superadmin only' });
-        return;
-      }
-
-      const confirmToken = request.body?.confirm;
-      if (confirmToken !== 'RESET_ALL_CONFIRMED') {
-        response.status(400).json({ error: 'confirm 필드에 "RESET_ALL_CONFIRMED" 값이 필요합니다' });
-        return;
-      }
-
-      // 1. articles 전체 삭제
-      const articlesDeleted = await deleteArticlesByQuery(db, db.collection('articles'));
-
-      // 2. articleDedup 전체 삭제
-      let dedupDeleted = 0;
-      const dedupSnap = await db.collection('articleDedup').limit(500).get();
-      while (true) {
-        const snap = await db.collection('articleDedup').limit(400).get();
-        if (snap.empty) break;
-        const batch = db.batch();
-        snap.docs.forEach((doc) => batch.delete(doc.ref));
-        await batch.commit();
-        dedupDeleted += snap.docs.length;
-      }
-
-      // 3. 키워드 캐시 초기화
-      invalidateKeywordCache();
-
-      logger.info(`[ResetAll] articles: ${articlesDeleted}, dedup: ${dedupDeleted}`);
-      response.json({
-        success: true,
-        message: `초기화 완료 — 기사 ${articlesDeleted}건, 중복원장 ${dedupDeleted}건 삭제`,
-        articlesDeleted,
-        dedupDeleted,
-      });
-    } catch (err: any) {
-      logger.error('resetAllArticles error:', err);
-      response.status(500).json({ error: err.message });
+    const confirmToken = request.data?.confirm;
+    if (confirmToken !== 'RESET_ALL_CONFIRMED') {
+      throw new HttpsError('invalid-argument', 'confirm 필드에 "RESET_ALL_CONFIRMED" 값이 필요합니다');
     }
+
+    const articlesDeleted = await deleteArticlesByQuery(db, db.collection('articles'));
+    let dedupDeleted = 0;
+    while (true) {
+      const snap = await db.collection('articleDedup').limit(400).get();
+      if (snap.empty) break;
+      const batch = db.batch();
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      dedupDeleted += snap.docs.length;
+    }
+    invalidateKeywordCache();
+
+    logger.info(`[ResetAll] articles: ${articlesDeleted}, dedup: ${dedupDeleted}`);
+    return {
+      success: true,
+      message: `초기화 완료 — 기사 ${articlesDeleted}건, 중복원장 ${dedupDeleted}건 삭제`,
+      articlesDeleted,
+      dedupDeleted,
+    };
   }
 );
