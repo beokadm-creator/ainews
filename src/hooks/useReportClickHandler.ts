@@ -79,29 +79,45 @@ export function useReportClickHandler(articles: any[], setPreviewArticle: (artic
       e.preventDefault();
       
       const href = anchor.getAttribute('href') || anchor.href || '';
+      const isArticleTitle = anchor.closest('.article-title') !== null;
+      const isSourceBtn = anchor.classList.contains('article-source-btn');
+      const isRefHeadline = anchor.classList.contains('ref-headline-btn') || anchor.closest('.ref-table') !== null;
+      
       const eumArticleBlock = anchor.closest('.article-block');
       const hasParentId = eumArticleBlock && eumArticleBlock.getAttribute('data-article-id');
       
-      // 2-a. data-article-id (자신 또는 부모에서 탐색)
-      const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);
-      if (byId) { setPreviewArticle(byId); return; }
-      
-      // 2-c. 폴백: URL 매칭 (href가 기사 원문 링크일 경우)
-      if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
-        const urlResolvedId = resolveArticleIdByUrl(href, articles);
-        if (urlResolvedId) {
-          const byUrl = articles.find((a) => a.id === urlResolvedId);
-          if (byUrl) { setPreviewArticle(byUrl); return; }
+      // 제목, 원문 보기 버튼, 참조 테이블 링크인 경우 모달 우선 탐색
+      if (isArticleTitle || isSourceBtn || isRefHeadline) {
+        // 2-a. data-article-id (자신 또는 부모에서 탐색)
+        const byId = findByDataId(anchor as HTMLElement) || (hasParentId ? findByDataId(eumArticleBlock as HTMLElement) : null);
+        if (byId) { setPreviewArticle(byId); return; }
+        
+        // 2-c. 폴백: URL 매칭
+        if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
+          const urlResolvedId = resolveArticleIdByUrl(href, articles);
+          if (urlResolvedId) {
+            const byUrl = articles.find((a) => a.id === urlResolvedId);
+            if (byUrl) { setPreviewArticle(byUrl); return; }
+          }
         }
-      }
-      
-      // 2-d. 폴백: 제목 텍스트 매칭
-      const linkText = (anchor.textContent || '').trim();
-      if (linkText.length > 1) {
-        const resolvedId = resolveArticleIdByHeadline(linkText, articles);
-        if (resolvedId) {
-          const byTitle = articles.find(a => a.id === resolvedId);
-          if (byTitle) { setPreviewArticle(byTitle); return; }
+        
+        // 2-d. 폴백: 제목 텍스트 매칭
+        const linkText = (anchor.textContent || '').trim();
+        if (linkText.length > 1) {
+          const resolvedId = resolveArticleIdByHeadline(linkText, articles);
+          if (resolvedId) {
+            const byTitle = articles.find(a => a.id === resolvedId);
+            if (byTitle) { setPreviewArticle(byTitle); return; }
+          }
+        }
+      } else {
+        // 일반 본문 링크인 경우에도 혹시 기사 URL과 일치하면 모달을 띄워줌
+        if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
+          const urlResolvedId = resolveArticleIdByUrl(href, articles);
+          if (urlResolvedId) {
+            const byUrl = articles.find((a) => a.id === urlResolvedId);
+            if (byUrl) { setPreviewArticle(byUrl); return; }
+          }
         }
       }
       

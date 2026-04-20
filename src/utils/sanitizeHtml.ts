@@ -86,6 +86,10 @@ export function sanitizeReportHtml(raw: string) {
   tmpDoc.querySelectorAll('div.article-block').forEach((block) => {
     const details = tmpDoc.createElement('details');
     details.className = 'article-block';
+    const blockArticleId = (block as HTMLElement).getAttribute('data-article-id');
+    if (blockArticleId) {
+      details.setAttribute('data-article-id', blockArticleId);
+    }
 
     const summary = tmpDoc.createElement('summary');
     summary.className = 'article-summary-row';
