@@ -1,7 +1,7 @@
 import * as logger from 'firebase-functions/logger';
 export const INSTRUCTION_DELIMITER = '===USER_CONTENT_BELOW===';
 
-export function sanitizeForPrompt(text: string, maxLength: number = 5000): string {
+export function sanitizeForPrompt(text: string, maxLength: number = 200000): string {
   if (!text) return '';
   return text
     .replace(/IGNORE\s+ALL/gi, '[FILTERED]')

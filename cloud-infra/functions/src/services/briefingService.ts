@@ -543,10 +543,7 @@ ${digest}`;
 보고서의 모든 내용(제목, 요약, 트렌드, 태그 포함)을 반드시 자연스러운 한국어로 작성하세요.
 영어 문장은 절대 출력하지 마세요. 고유명사(기업명, 펀드명)는 한국어 표기 후 필요 시 영문 병기.`;
 
-    const prompt = buildSafePrompt(
-      `${systemPrompt}\n\nCompany: ${options.companyId}\nOutput title: ${options.outputConfig.title || 'AI News Output'}\nArticle digest:`,
-      digest
-    );
+    const prompt = `${systemPrompt}\n\nCompany: ${options.companyId}\nOutput title: ${options.outputConfig.title || 'AI News Output'}\nArticle digest:\n\n${digest}`;
 
     const response = await callAiProvider(
       prompt,
@@ -761,18 +758,25 @@ ${refTableSkeleton}
 </HTML_SKELETON>
 `;
 
-  const finalPrompt = buildSafePrompt(systemPrompt, userPrompt);
+  const finalPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   const response = await callAiProvider(
     finalPrompt,
     reportAiConfig,
-    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { maxTokens: 32000, temperature: 0.4 }),
+    resolveAiCallOptions(reportAiConfig.provider, 'custom-report', { temperature: 0.4 }),
     options.companyId
   );
   await trackAiCost('custom-output', response.usage, response.model, response.provider, options.companyId);
 
-  // AI 생성 HTML 검증 (ID가 이미 템플릿으로 주어졌으므로 embedArticleIdsInHtml의 의존도가 낮아짐)
+  // AI 생성 HTML 검증
   const rawHtmlContent = ensureHtmlDocument(response.content, reportTitle);
+  const $ = cheerioLoad(rawHtmlContent);
+  const expectedArticleCount = orderedArticles.length;
+  const actualArticleCount = $('.article-block').length;
+  if (actualArticleCount < expectedArticleCount) {
+    throw new Error(`AI output truncated: expected ${expectedArticleCount} articles but got ${actualArticleCount}. Prompt may have exceeded context window or generation stopped prematurely.`);
+  }
+
   const htmlContent = embedArticleIdsInHtml(rawHtmlContent, orderedArticles);
 
   const outputRef = options.outputId
@@ -959,11 +963,14 @@ ${articleDigest}
   // --- Cheerio Post-processing (Part 1, 2, 3 분류 재배치) ---
   const rawHtml = ensureHtmlDocument(response.content, reportTitle);
   const $ = cheerioLoad(rawHtml);
+  
+  // Truncation Check: AI가 반환한 실제 기사 블록 수 검증
   const expectedArticleCount = orderedArticles.length;
-  const actualArticleCount = $('#ai-raw-blocks .article-block').length;
+  const actualArticleCount = $('.article-block').length;
   if (actualArticleCount < expectedArticleCount) {
-    throw new Error(`AI output truncated: expected ${expectedArticleCount} article blocks, got ${actualArticleCount}`);
+    throw new Error(`AI output truncated: expected ${expectedArticleCount} articles but got ${actualArticleCount}. Prompt may have exceeded context window or generation stopped prematurely.`);
   }
+
   const categoryById = new Map<string, string>(
     orderedArticles.map((a: any) => [a.id, `${a.category || ''}`.toUpperCase()])
   );
