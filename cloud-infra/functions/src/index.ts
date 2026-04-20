@@ -1658,7 +1658,10 @@ export const findAndRemoveDuplicates = onCall(
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(article);
     }
-    const batch = db.batch();
+    const chunkedWrites: Promise<any>[] = [];
+    let currentBatch = db.batch();
+    let currentBatchSize = 0;
+
     let removedCount = 0;
     let groupsFound = 0;
     for (const [, group] of groups) {
@@ -1675,11 +1678,22 @@ export const findAndRemoveDuplicates = onCall(
       if (duplicates.length === 0) continue;
       groupsFound++;
       for (const dup of duplicates) {
-        batch.set(db.collection('articles').doc(dup.id), { status: 'rejected', filterReason: 'duplicate_detected', duplicateOf: keep.id, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        currentBatch.set(db.collection('articles').doc(dup.id), { status: 'rejected', filterReason: 'duplicate_detected', duplicateOf: keep.id, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
         removedCount++;
+        currentBatchSize++;
+
+        if (currentBatchSize === 400) {
+          chunkedWrites.push(currentBatch.commit());
+          currentBatch = db.batch();
+          currentBatchSize = 0;
+        }
       }
     }
-    if (removedCount > 0) await batch.commit();
+    if (currentBatchSize > 0) {
+      chunkedWrites.push(currentBatch.commit());
+    }
+    
+    await Promise.all(chunkedWrites);
     return { success: true, removedCount, groupsFound };
   }
 );

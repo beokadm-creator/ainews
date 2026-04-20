@@ -262,6 +262,9 @@ export default function Articles() {
       if (!append) {
         setSelectedIds(new Set());
       }
+    } catch (err: any) {
+      console.error('runSearch failed:', err);
+      handleError(err);
     } finally {
       setLoading(false);
       setLoadingMore(false);

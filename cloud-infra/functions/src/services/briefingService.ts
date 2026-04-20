@@ -585,14 +585,29 @@ ${digest}`;
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
-  const batch = db.batch();
+  const chunkedWrites: Promise<any>[] = [];
+  let currentBatch = db.batch();
+  let currentBatchSize = 0;
+
   limitedArticles.forEach(article => {
-    batch.update(db.collection('articles').doc(article.id), {
+    currentBatch.update(db.collection('articles').doc(article.id), {
       status: 'published',
       publishedInOutputId: outputRef.id
     });
+    currentBatchSize++;
+
+    if (currentBatchSize === 400) {
+      chunkedWrites.push(currentBatch.commit());
+      currentBatch = db.batch();
+      currentBatchSize = 0;
+    }
   });
-  await batch.commit();
+
+  if (currentBatchSize > 0) {
+    chunkedWrites.push(currentBatch.commit());
+  }
+  
+  await Promise.all(chunkedWrites);
 
   return {
     success: true,

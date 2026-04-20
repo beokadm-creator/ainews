@@ -183,9 +183,17 @@ export default function Briefing() {
 
   const retryOutput = async () => {
     if (!selectedOutput) return;
-    await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
-    await loadOutputs();
-    await loadOutputDetail(selectedOutput.id);
+    updateState({ actionMessage: null });
+    try {
+      const { httpsCallable } = await import('firebase/functions');
+      const { functions } = await import('@/lib/firebase');
+      await httpsCallable(functions, 'retryManagedReport')({ outputId: selectedOutput.id });
+      updateState({ actionMessage: '리포트 재실행 요청을 보냈습니다.' });
+      await loadOutputs();
+      await loadOutputDetail(selectedOutput.id);
+    } catch (error: any) {
+      updateState({ actionMessage: `재실행 실패: ${error.message || '알 수 없는 오류'}` });
+    }
   };
 
   const saveReportEdit = async () => {
@@ -293,6 +301,9 @@ export default function Briefing() {
     try {
       const targetId = selectedOutput.generatedOutputId || selectedOutput.id;
       await httpsCallable(functions, 'triggerTelegramSend')({ id: targetId, companyId });
+      updateState({ actionMessage: '텔레그램 발송을 완료했습니다.' });
+    } catch (error: any) {
+      updateState({ actionMessage: `텔레그램 발송 실패: ${error.message || '알 수 없는 오류'}` });
     } finally {
       updateState({ sending: false });
     }
