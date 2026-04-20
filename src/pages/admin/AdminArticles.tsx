@@ -467,11 +467,9 @@ export default function AdminArticles() {
 
     setDeleting(true);
     try {
-      const response = await fetch('https://deleteallarticleshttp-mp66iufeia-uc.a.run.app', {
-        method: 'POST',
-        headers: { 'x-uid': (user as any)?.uid },
-      });
-      const data = await response.json();
+      const fn = httpsCallable(functions, 'deleteAllArticlesHttp');
+      const result = await fn() as any;
+      const data = result.data;
       if (data.success) {
         alert(`${data.deletedCount}건의 기사를 삭제했습니다.`);
         void loadArticles(true);
@@ -490,11 +488,9 @@ export default function AdminArticles() {
 
     setDeleting(true);
     try {
-      const response = await fetch('https://deleteexcludedarticleshttp-mp66iufeia-uc.a.run.app', {
-        method: 'POST',
-        headers: { 'x-uid': (user as any)?.uid },
-      });
-      const data = await response.json();
+      const fn = httpsCallable(functions, 'deleteExcludedArticlesHttp');
+      const result = await fn() as any;
+      const data = result.data;
       if (data.success) {
         alert(`${data.deletedCount}건의 제외 기사를 삭제했습니다.`);
         void loadArticles(true);
@@ -513,11 +509,9 @@ export default function AdminArticles() {
 
     setDeleting(true);
     try {
-      const response = await fetch('https://deletealloutputshttp-mp66iufeia-uc.a.run.app', {
-        method: 'POST',
-        headers: { 'x-uid': (user as any)?.uid },
-      });
-      const data = await response.json();
+      const fn = httpsCallable(functions, 'deleteAllOutputsHttp');
+      const result = await fn() as any;
+      const data = result.data;
       if (data.success) {
         alert(`${data.deletedCount}건의 분석 결과를 삭제했습니다.`);
       } else {
