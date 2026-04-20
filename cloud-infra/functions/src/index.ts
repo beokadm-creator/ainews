@@ -1535,6 +1535,132 @@ export const deleteGlobalSource = onCall({ region: 'us-central1', cors: true, in
   return { success: true };
 });
 /** ?뚯궗媛 援щ룆 ?뚯뒪 ?좏깮 ???*/
+
+export const testGlobalSource = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+  const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  if (userDoc.data()?.role !== 'superadmin') throw new HttpsError('permission-denied', 'Superadmin required');
+  const { sourceId } = request.data || {};
+  if (!sourceId) throw new HttpsError('invalid-argument', 'sourceId required');
+  const result = await runGlobalSourceTest(sourceId);
+  await admin.firestore().collection('globalSources').doc(sourceId).update({
+    lastTestedAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastTestResult: result,
+    ...(result.success ? { status: 'active' } : { status: 'error' }),
+    lastStatus: result.success ? 'success' : 'error',
+    errorMessage: result.success ? null : result.message,
+  });
+  return result;
+});
+
+export const deleteAllArticlesHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
+  async (request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
+    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+    try {
+      const db = admin.firestore();
+      const uid = request.headers['x-uid'] as string;
+      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
+      const userDoc = await db.collection('users').doc(uid).get();
+      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
+      const deleted = await deleteArticlesByQuery(db, db.collection('articles'));
+      response.json({ success: true, message: `전체 기사 삭제 완료: ${deleted}건`, deletedCount: deleted });
+    } catch (err: any) {
+      logger.error('deleteAllArticles error:', err);
+      response.status(500).json({ error: err.message });
+    }
+  }
+);
+
+export const deleteExcludedArticlesHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
+  async (request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
+    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+    try {
+      const db = admin.firestore();
+      const uid = request.headers['x-uid'] as string;
+      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
+      const userDoc = await db.collection('users').doc(uid).get();
+      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
+      const deleted = await purgeRejectedArticlesByQuery(db, db.collection('articles').where('status', '==', 'rejected'));
+      response.json({ success: true, message: `제외된 기사 삭제 완료: ${deleted}건`, deletedCount: deleted });
+    } catch (err: any) {
+      logger.error('deleteExcludedArticles error:', err);
+      response.status(500).json({ error: err.message });
+    }
+  }
+);
+
+export const deleteAllOutputsHttp = onRequest(
+  { region: 'us-central1', timeoutSeconds: 300, memory: '512MiB' },
+  async (request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uid');
+    if (request.method === 'OPTIONS') { response.status(200).send('OK'); return; }
+    try {
+      const db = admin.firestore();
+      const uid = request.headers['x-uid'] as string;
+      if (!uid) { response.status(401).json({ error: 'Unauthorized' }); return; }
+      const userDoc = await db.collection('users').doc(uid).get();
+      if (!userDoc.exists || (userDoc.data() as any)?.role !== 'superadmin') { response.status(403).json({ error: 'Forbidden - Superadmin only' }); return; }
+      const deleted = await deleteArticlesByQuery(db, db.collection('outputs'));
+      response.json({ success: true, message: `모든 보고서 삭제 완료: ${deleted}건`, deletedCount: deleted });
+    } catch (err: any) {
+      logger.error('deleteAllOutputs error:', err);
+      response.status(500).json({ error: err.message });
+    }
+  }
+);
+
+export const findAndRemoveDuplicates = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 120, memory: '512MiB' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    await requireSuperadminUid(request.auth.uid);
+    const db = admin.firestore();
+    const statuses = ['pending', 'filtered', 'analyzed'];
+    const snaps = await Promise.all(statuses.map((s) => db.collection('articles').where('status', '==', s).limit(500).get()));
+    const all: any[] = [];
+    for (const snap of snaps) for (const d of snap.docs) all.push({ id: d.id, ...d.data() });
+    const groups = new Map<string, any[]>();
+    for (const article of all) {
+      const key: string = article.titleHash || hashTitle(article.title || '');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(article);
+    }
+    const batch = db.batch();
+    let removedCount = 0;
+    let groupsFound = 0;
+    for (const [, group] of groups) {
+      if (group.length < 2) continue;
+      const sorted = [...group].sort((a, b) => {
+        const scoreDiff = (b.relevanceScore || 0) - (a.relevanceScore || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        const timeA = a.publishedAt?.toDate ? a.publishedAt.toDate().getTime() : 0;
+        const timeB = b.publishedAt?.toDate ? b.publishedAt.toDate().getTime() : 0;
+        return timeB - timeA;
+      });
+      const keep = sorted[0];
+      const duplicates = sorted.slice(1).filter((c) => calculateTokenSimilarity(keep.title || '', c.title || '') > 0.85);
+      if (duplicates.length === 0) continue;
+      groupsFound++;
+      for (const dup of duplicates) {
+        batch.set(db.collection('articles').doc(dup.id), { status: 'rejected', filterReason: 'duplicate_detected', duplicateOf: keep.id, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        removedCount++;
+      }
+    }
+    if (removedCount > 0) await batch.commit();
+    return { success: true, removedCount, groupsFound };
+  }
+);
+
 export const updateCompanySourceSubscriptions = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const { companyId: rawCompanyId, subscribedSourceIds } = request.data || {};
