@@ -265,54 +265,60 @@ async function collectFromNaverNews(
     return 0;
   }
 
-  // STEP 5: 배치 저장
+  // STEP 5: 배치 저장 (500개 한도 방지 청크 처리)
   let collected = 0;
-  const batch = db.batch();
+  const chunkedWrites: Promise<any>[] = [];
   const dedupWrites: Promise<any>[] = [];
 
-  for (const { article, kw } of finalCandidates) {
-    const relevanceFields = {
-      filteredAt: admin.firestore.FieldValue.serverTimestamp(),
-      relevanceBasis: 'keyword_prefilter',
-      relevanceScore: 80,
-      relevanceConfidence: 0.9,
-      relevanceReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
-      keywordMatched: kw.matchedKeyword || null,
-      keywordPrefilterReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
-      collectedByKeywordFilter: true,
-    };
+  for (let i = 0; i < finalCandidates.length; i += 400) {
+    const chunk = finalCandidates.slice(i, i + 400);
+    const batch = db.batch();
 
-    const articleRef = db.collection('articles').doc();
-    batch.set(articleRef, {
-      id: articleRef.id,
-      ...article,
-      companyId: options?.companyId || null,
-      pipelineRunId: options?.pipelineRunId || null,
-      source: source.name || '네이버 뉴스',
-      sourceId,
-      globalSourceId: sourceId,
-      sourceCategory: source.category || 'domestic',
-      sourcePricingTier: source.pricingTier || 'free',
-      collectedAt: admin.firestore.FieldValue.serverTimestamp(),
-      status: 'pending',
-      urlHash: hashUrl(article.url),
-      titleHash: hashTitle(article.title),
-      ...relevanceFields,
-    });
-    dedupWrites.push(recordArticleDedupEntry({
-      id: articleRef.id,
-      ...article,
-      companyId: options?.companyId || null,
-      sourceId,
-      globalSourceId: sourceId,
-      source: source.name || '네이버 뉴스',
-      status: 'pending',
-      collectedAt: new Date(),
-    }));
-    collected++;
+    for (const { article, kw } of chunk) {
+      const relevanceFields = {
+        filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+        relevanceBasis: 'keyword_prefilter',
+        relevanceScore: 80,
+        relevanceConfidence: 0.9,
+        relevanceReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+        keywordMatched: kw.matchedKeyword || null,
+        keywordPrefilterReason: `제목 키워드 매칭: "${kw.matchedKeyword}"`,
+        collectedByKeywordFilter: true,
+      };
+
+      const articleRef = db.collection('articles').doc();
+      batch.set(articleRef, {
+        id: articleRef.id,
+        ...article,
+        companyId: options?.companyId || null,
+        pipelineRunId: options?.pipelineRunId || null,
+        source: source.name || '네이버 뉴스',
+        sourceId,
+        globalSourceId: sourceId,
+        sourceCategory: source.category || 'domestic',
+        sourcePricingTier: source.pricingTier || 'free',
+        collectedAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'pending',
+        urlHash: hashUrl(article.url),
+        titleHash: hashTitle(article.title),
+        ...relevanceFields,
+      });
+      dedupWrites.push(recordArticleDedupEntry({
+        id: articleRef.id,
+        ...article,
+        companyId: options?.companyId || null,
+        sourceId,
+        globalSourceId: sourceId,
+        source: source.name || '네이버 뉴스',
+        status: 'pending',
+        collectedAt: new Date(),
+      }));
+      collected++;
+    }
+    chunkedWrites.push(batch.commit());
   }
 
-  await batch.commit();
+  await Promise.all(chunkedWrites);
   await Promise.all(dedupWrites);
 
   logger.info(`Naver News: saved ${collected} / ${candidates.length} articles`);
