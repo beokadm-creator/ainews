@@ -121,6 +121,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /emailUnsubscribes/{companyId}/entries/{entryId} {
+      allow read: if isSuperadmin() || belongsToCompany(companyId);
+      allow write: if false;
+    }
+
     match /sessions/{sessionId} {
       allow read, write: if isSuperadmin();
     }

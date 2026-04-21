@@ -736,9 +736,8 @@ ${instructionsOnly}`;
       const batchArticles = batches[batchIdx];
       const { digest: batchDigest } = buildCustomReportArticleDigest(batchArticles);
 
-      const globalOffset = batchIdx * USER_BATCH_SIZE;
       const batchSkeleton = batchArticles.map((a: any, index: number) => {
-        const articleNum = globalOffset + index + 1;
+        const articleNum = index + 1;
         return `
 <!-- [기사 ${articleNum}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
 <div class="article-block" data-article-id="${a.id}">
@@ -871,15 +870,33 @@ ${batchDigest}
     const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
     const dedupCount = articles.length - orderedArticles.length;
 
+    // PART별로 기사 번호를 (1)부터 재번호
+    const renumberPart = (blocks: string[]): string[] => {
+      return blocks.map((html, idx) => {
+        const $b = cheerioLoad(html);
+        const titleEl = $b('.article-title a');
+        if (titleEl.length) {
+          const text = titleEl.text().replace(/^\(\d+\)\s*/, `(${idx + 1}) `);
+          titleEl.text(text);
+          // href 복원 (cheerio text() 는 children 제거하므로 attr만 업데이트)
+          const href = $b('.article-title a').attr('href') || '';
+          titleEl.text(text);
+          // 원본 html 교체: (N) 패턴만 치환
+          return html.replace(/\((\d+)\)\s/, `(${idx + 1}) `);
+        }
+        return html.replace(/\((\d+)\)\s/, `(${idx + 1}) `);
+      });
+    };
+
     const partSections: string[] = [];
     if (categorizedBlocks.ma.length > 0) {
-      partSections.push(`<div class="part-title">PART 1. M&A</div>\n${categorizedBlocks.ma.join('\n')}`);
+      partSections.push(`<div class="part-title">PART 1. M&A</div>\n${renumberPart(categorizedBlocks.ma).join('\n')}`);
     }
     if (categorizedBlocks.pe.length > 0) {
-      partSections.push(`<div class="part-title">PART 2. PE 동향</div>\n${categorizedBlocks.pe.join('\n')}`);
+      partSections.push(`<div class="part-title">PART 2. PE 동향</div>\n${renumberPart(categorizedBlocks.pe).join('\n')}`);
     }
     if (categorizedBlocks.etc.length > 0) {
-      partSections.push(`<div class="part-title">PART 3. 기타 시장 동향</div>\n${categorizedBlocks.etc.join('\n')}`);
+      partSections.push(`<div class="part-title">PART 3. 기타 시장 동향</div>\n${renumberPart(categorizedBlocks.etc).join('\n')}`);
     }
 
     const mergedHtml = `<!DOCTYPE html>
