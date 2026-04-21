@@ -736,10 +736,13 @@ ${instructionsOnly}`;
       const batchArticles = batches[batchIdx];
       const { digest: batchDigest } = buildCustomReportArticleDigest(batchArticles);
 
-      const batchSkeleton = batchArticles.map((a: any, index: number) => `
-<!-- [기사 ${index + 1}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
+      const globalOffset = batchIdx * USER_BATCH_SIZE;
+      const batchSkeleton = batchArticles.map((a: any, index: number) => {
+        const articleNum = globalOffset + index + 1;
+        return `
+<!-- [기사 ${articleNum}] ${fixEncodingIssues(cleanHtmlContent(a.title || ''))} -->
 <div class="article-block" data-article-id="${a.id}">
-  <span class="article-title"><a href="${a.url || '#'}">(${index + 1}) ${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></span>
+  <span class="article-title"><a href="${a.url || '#'}">(${articleNum}) ${fixEncodingIssues(cleanHtmlContent(a.title || ''))}</a></span>
   <span class="article-sector">[AI_FILL: 업종/섹터 (예: 반도체, 바이오, IT 등)]</span>
 
   <div class="article-meta-block">
@@ -755,7 +758,8 @@ ${instructionsOnly}`;
     <li>[AI_FILL: 핵심 사실 3 (bullet 형태, 한 문장으로 요약)]</li>
   </ul>
 </div>
-`).join('\n\n');
+`;
+      }).join('\n\n');
 
       const batchUserPrompt = `기사 목록 (Batch ${batchIdx + 1}/${batches.length}, ${batchArticles.length}건):
 
