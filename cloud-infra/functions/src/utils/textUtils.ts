@@ -129,6 +129,15 @@ const REMOVE_SELECTORS = [
   '[role="navigation"]',
   '[aria-label*="share" i]',
   '[aria-label*="menu" i]',
+  // mt.co.kr 관련기사/광고 섹션
+  '.article_relate',
+  '.relate_news',
+  '#article_relate',
+  '.news_relate',
+  '.relatedNews',
+  '.related_article',
+  '[class*="relate"]',
+  '[id*="relate"]',
 ];
 
 const NOISE_LINE_PATTERNS = [
@@ -277,7 +286,13 @@ function stripKnownTrailingNoise(lines: string[], hostname: string): string[] {
         && isSectionLabelLine(next)
         && next2.length >= 20;
 
-      if (repeatedLine || upcomingClusterScore >= 2 || sedailyFooterStart) {
+      // mt.co.kr: 연속 중복 줄 = 관련기사/광고 섹션 시작 → 현재 줄 포함 전에 차단
+      const mtConsecutiveDup = hostname.includes('mt.co.kr')
+        && bodyChars >= 200
+        && line.length >= 15
+        && line === next;
+
+      if (repeatedLine || upcomingClusterScore >= 2 || sedailyFooterStart || mtConsecutiveDup) {
         break;
       }
     }
