@@ -224,6 +224,33 @@ function resolveArticleIdByHeadline(text: string, articles: any[]): string | nul
   return null;
 }
 
+function findArticleById(articleId: string | null | undefined, articles: any[]) {
+  if (!articleId || !articles.length) return null;
+  return articles.find((article: any) => String(article.id) === String(articleId)) || null;
+}
+
+function resolveCanonicalArticleLink(
+  href: string,
+  articles: any[],
+  opts: { titleText?: string; preferredArticleId?: string | null } = {},
+) {
+  const titleText = opts.titleText || '';
+  const preferredArticleId = opts.preferredArticleId || null;
+  const isUuidLike = (value: string | null) => !!value && value.length > 5 && isNaN(Number(value));
+
+  const articleId = (isUuidLike(preferredArticleId) ? preferredArticleId : null)
+    || resolveArticleIdByHeadline(titleText, articles)
+    || resolveArticleIdByUrl(href, articles)
+    || null;
+
+  const article = findArticleById(articleId, articles);
+
+  return {
+    articleId,
+    canonicalHref: article?.url || href,
+  };
+}
+
 function buildArticleModalPayload(article: any, index: number) {
   return {
     index: index + 1,
@@ -1268,6 +1295,65 @@ export async function getOutputHtmlDocument(output: any, articles?: any[]) {
   sourceHtml = sanitizeSecurityHtml(sourceHtml);
 
   const $ = load(sourceHtml);
+  $('div.article-block').each(function () {
+    const block = $(this);
+    const titleLink = block.find('.article-title a').first();
+    if (!titleLink.length) return;
+
+    const href = (titleLink.attr('href') || '').trim();
+    const titleText = titleLink.text().trim();
+    const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
+    const resolvedLink = href && !href.startsWith('javascript')
+      ? resolveCanonicalArticleLink(href, loadedArticles, { titleText, preferredArticleId: blockArticleId })
+      : { articleId: null, canonicalHref: href };
+    const articleId = resolvedLink.articleId;
+
+    if (resolvedLink.canonicalHref && !resolvedLink.canonicalHref.startsWith('javascript')) {
+      titleLink.attr('href', resolvedLink.canonicalHref);
+    }
+    if (articleId) {
+      titleLink.attr('data-article-id', articleId);
+      block.attr('data-article-id', articleId);
+    }
+
+    block.find('.article-source-btn').each(function () {
+      if (resolvedLink.canonicalHref && !resolvedLink.canonicalHref.startsWith('javascript')) {
+        $(this).attr('href', resolvedLink.canonicalHref);
+      }
+      if (articleId) $(this).attr('data-article-id', articleId);
+    });
+  });
+
+  $('details.article-block').each(function () {
+    const details = $(this);
+    const summary = details.find('summary').first();
+    const titleLink = summary.find('a').first();
+    if (!titleLink.length) return;
+
+    const href = (titleLink.attr('href') || '').trim();
+    const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
+    const titleText = summary.text().trim();
+    const resolvedLink = href && !href.startsWith('javascript')
+      ? resolveCanonicalArticleLink(href, loadedArticles, { titleText, preferredArticleId: detailsArticleId })
+      : { articleId: null, canonicalHref: href };
+    const articleId = resolvedLink.articleId;
+
+    if (resolvedLink.canonicalHref && !resolvedLink.canonicalHref.startsWith('javascript')) {
+      titleLink.attr('href', resolvedLink.canonicalHref);
+    }
+    if (articleId) {
+      titleLink.attr('data-article-id', articleId);
+      details.attr('data-article-id', articleId);
+    }
+
+    details.find('.article-source-btn').each(function () {
+      if (resolvedLink.canonicalHref && !resolvedLink.canonicalHref.startsWith('javascript')) {
+        $(this).attr('href', resolvedLink.canonicalHref);
+      }
+      if (articleId) $(this).attr('data-article-id', articleId);
+    });
+  });
+
   const bodyHtml = $('body').length > 0 ? $('body').html() || '' : sourceHtml;
   // No sanitization: serve the HTML exactly as stored so shared links match the main app view
   const linkedBodyHtml = injectReferenceLinks(bodyHtml, loadedArticles.length);
@@ -1486,7 +1572,19 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       const block = $(this);
       const titleEl = block.find('.article-title').first();
       const sectorEl = block.find('.article-sector').first();
-      const href = (titleEl.find('a').first().attr('href') || '').trim();
+      const titleLink = titleEl.find('a').first();
+      const href = (titleLink.attr('href') || '').trim();
+      const titleText = titleEl.text().trim();
+      const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
+      const resolvedLink = href && !href.startsWith('javascript')
+        ? resolveCanonicalArticleLink(href, articles, { titleText, preferredArticleId: blockArticleId })
+        : { articleId: null, canonicalHref: href };
+      const articleId = resolvedLink.articleId;
+      const canonicalHref = resolvedLink.canonicalHref;
+
+      if (titleLink.length && canonicalHref && !canonicalHref.startsWith('javascript')) {
+        titleLink.attr('href', canonicalHref);
+      }
 
       const summaryHtml =
         (titleEl.length ? titleEl.prop('outerHTML') || '' : '') +
@@ -1502,18 +1600,11 @@ export async function buildSharedReportPage(output: any): Promise<string> {
       });
 
       // Add 원문 보기 button — AI가 block에 심은 data-article-id 보다 URL/Headline 매칭 우선
-      const blockArticleId = (block.attr('data-article-id') || '').trim() || null;
-      const titleText = titleEl.text().trim();
-      let articleId: string | null = null;
-
       if (href && !href.startsWith('javascript')) {
-        const urlResolvedId = resolveArticleIdByUrl(href, articles);
-        const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
         const isBlockArticleIdUuid = blockArticleId && blockArticleId.length > 5 && isNaN(Number(blockArticleId));
-        articleId = (isBlockArticleIdUuid ? blockArticleId : null) || textResolvedId || urlResolvedId || null;
-
-        const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
-        bodyParts.push(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
+        const matchedArticleId = (isBlockArticleIdUuid ? blockArticleId : null) || resolvedLink.articleId || null;
+        const idAttr = matchedArticleId ? ` data-article-id="${matchedArticleId}"` : '';
+        bodyParts.push(`<a href="${canonicalHref}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
       }
 
       // data-article-id를 <details>에도 전달해야 제목 링크 클릭 시 모달로 연결됨
@@ -1526,8 +1617,20 @@ export async function buildSharedReportPage(output: any): Promise<string> {
     // 3. For <details class="article-block"> already generated by AI — add 원문 보기 if missing
     $('details.article-block').each(function () {
       const details = $(this);
-      if (details.find('.article-source-btn').length) return;
-      const href = (details.find('summary a').first().attr('href') || '').trim();
+      const summary = details.find('summary').first();
+      const titleLink = summary.find('a').first();
+      const href = (titleLink.attr('href') || '').trim();
+      const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
+      const titleText = summary.text().trim();
+      const resolvedLink = href && !href.startsWith('javascript')
+        ? resolveCanonicalArticleLink(href, articles, { titleText, preferredArticleId: detailsArticleId })
+        : { articleId: null, canonicalHref: href };
+      const canonicalHref = resolvedLink.canonicalHref;
+
+      if (titleLink.length && canonicalHref && !canonicalHref.startsWith('javascript')) {
+        titleLink.attr('href', canonicalHref);
+      }
+
       if (!href || href.startsWith('javascript')) return;
       let bodyDiv = details.find('.article-body').first();
       if (!bodyDiv.length) {
@@ -1541,12 +1644,23 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         bodyDiv = details.find('.article-body').first();
       }
       // 서버가 details.article-block에 심은 data-article-id 우선 (UUID만 신뢰), URL 매칭 폴백
-      const detailsArticleId = (details.attr('data-article-id') || '').trim() || null;
       const isDetailsIdUuid = detailsArticleId && detailsArticleId.length > 5 && isNaN(Number(detailsArticleId));
-      const articleId = (isDetailsIdUuid ? detailsArticleId : null) || resolveArticleIdByUrl(href, articles);
+      const articleId = (isDetailsIdUuid ? detailsArticleId : null) || resolvedLink.articleId;
       if (articleId && !isDetailsIdUuid) details.attr('data-article-id', articleId);
-      const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
-      bodyDiv.append(`<a href="${href}" class="article-source-btn"${idAttr}>원문 보기 →</a>`);
+
+      const sourceButtons = details.find('.article-source-btn');
+      if (sourceButtons.length) {
+        sourceButtons.each(function () {
+          $(this).attr('href', canonicalHref || href);
+          $(this).attr('target', '_blank');
+          $(this).attr('rel', 'noopener noreferrer');
+          if (articleId) $(this).attr('data-article-id', articleId);
+          else $(this).removeAttr('data-article-id');
+        });
+      } else {
+        const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
+        bodyDiv.append(`<a href="${canonicalHref || href}" class="article-source-btn" target="_blank" rel="noopener noreferrer"${idAttr}>원문 보기 →</a>`);
+      }
     });
   }
 
@@ -1562,14 +1676,17 @@ export async function buildSharedReportPage(output: any): Promise<string> {
 
       const href = (titleLink.attr('href') || '').trim();
       const titleText = titleLink.text().trim();
-
-      const urlResolvedId = resolveArticleIdByUrl(href, articles);
-      const textResolvedId = resolveArticleIdByHeadline(titleText, articles);
-      const articleId = (isBlockIdUuid ? blockId : null) || urlResolvedId || textResolvedId || null;
+      const resolvedLink = href && !href.startsWith('javascript')
+        ? resolveCanonicalArticleLink(href, articles, { titleText, preferredArticleId: blockId })
+        : { articleId: null, canonicalHref: href };
+      const articleId = (isBlockIdUuid ? blockId : null) || resolvedLink.articleId || null;
 
       if (articleId) {
         titleLink.attr('data-article-id', articleId);
         block.attr('data-article-id', articleId); // 블록에도 보정
+      }
+      if (resolvedLink.canonicalHref && !resolvedLink.canonicalHref.startsWith('javascript')) {
+        titleLink.attr('href', resolvedLink.canonicalHref);
       }
     });
   }

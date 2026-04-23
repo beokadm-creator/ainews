@@ -388,9 +388,10 @@ export default function Briefing() {
 
   const renderHtml = useMemo(() => {
     return sanitizeReportHtml(
-      selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || ''
+      selectedOutput?.generatedOutput?.htmlContent || selectedOutput?.htmlContent || selectedOutput?.rawOutput || '',
+      articles,
     );
-  }, [selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput]);
+  }, [articles, selectedOutput?.generatedOutput?.htmlContent, selectedOutput?.htmlContent, selectedOutput?.rawOutput]);
 
   const handleReportClick = useReportClickHandler(articles, setPreviewArticle);
 

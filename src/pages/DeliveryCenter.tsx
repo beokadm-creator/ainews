@@ -114,8 +114,8 @@ export default function DeliveryCenter() {
   );
 
   const previewHtml = useMemo(
-    () => sanitizeReportHtml(previewOutput?.generatedOutput?.htmlContent || previewOutput?.htmlContent || previewOutput?.rawOutput || ''),
-    [previewOutput],
+    () => sanitizeReportHtml(previewOutput?.generatedOutput?.htmlContent || previewOutput?.htmlContent || previewOutput?.rawOutput || '', previewArticles),
+    [previewArticles, previewOutput],
   );
 
   const loadUnsubscribes = async () => {

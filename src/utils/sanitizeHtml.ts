@@ -1,3 +1,5 @@
+import { resolveArticleIdByHeadline, resolveArticleIdByUrl } from './articleResolution';
+
 /**
  * Strips all [N] footnote references from the text
  */
@@ -9,7 +11,7 @@ export function stripFootnotes(text: string): string {
  * Client-side HTML sanitization that mimics the server-side logic
  * but uses DOMParser to safely handle and scope CSS/JS in the browser.
  */
-export function sanitizeReportHtml(raw: string) {
+export function sanitizeReportHtml(raw: string, articles: any[] = []) {
   const trimmed = (raw || '').trim();
   let cleaned = trimmed;
 
@@ -55,6 +57,35 @@ export function sanitizeReportHtml(raw: string) {
     return scopedStyles.join('\n') + securedBody;
   }
 
+  const articleMap = new Map<string, any>();
+  articles.forEach((article) => {
+    if (article?.id) articleMap.set(String(article.id), article);
+  });
+
+  const findArticleById = (id?: string | null) => (id ? articleMap.get(String(id)) || null : null);
+  const resolveCanonicalHref = (href?: string | null, text?: string | null, articleId?: string | null) => {
+    if (!href || href.startsWith('javascript') || href.startsWith('#')) return href || null;
+
+    const directArticle = findArticleById(articleId);
+    if (directArticle?.url) return directArticle.url;
+
+    const urlMatchId = resolveArticleIdByUrl(href, articles);
+    if (urlMatchId) {
+      const matchedArticle = findArticleById(urlMatchId);
+      if (matchedArticle?.url) return matchedArticle.url;
+    }
+
+    if (text) {
+      const headlineMatchId = resolveArticleIdByHeadline(text, articles);
+      if (headlineMatchId) {
+        const matchedArticle = findArticleById(headlineMatchId);
+        if (matchedArticle?.url) return matchedArticle.url;
+      }
+    }
+
+    return href;
+  };
+
   const parser = new DOMParser();
   const tmpDoc = parser.parseFromString(`<html><body>${securedBody}</body></html>`, 'text/html');
 
@@ -96,6 +127,13 @@ export function sanitizeReportHtml(raw: string) {
 
     const titleEl = block.querySelector('.article-title');
     const sectorEl = block.querySelector('.article-sector');
+    const titleLink = titleEl?.querySelector('a') as HTMLAnchorElement | null;
+    const titleText = (titleLink?.textContent || titleEl?.textContent || '').trim();
+    const normalizedTitleHref = resolveCanonicalHref(titleLink?.getAttribute('href'), titleText, blockArticleId);
+    if (titleLink && normalizedTitleHref) {
+      titleLink.setAttribute('href', normalizedTitleHref);
+      if (blockArticleId) titleLink.setAttribute('data-article-id', blockArticleId);
+    }
     if (titleEl) summary.appendChild(titleEl.cloneNode(true));
     if (sectorEl) summary.appendChild(sectorEl.cloneNode(true));
     details.appendChild(summary);
@@ -110,15 +148,13 @@ export function sanitizeReportHtml(raw: string) {
     });
 
     // 원문 보기 button (uses article URL from title link; onClick interceptor opens modal)
-    const articleLink = titleEl?.querySelector('a') as HTMLAnchorElement | null;
-    const href = articleLink?.getAttribute('href');
+    const href = normalizedTitleHref;
     if (href && !href.startsWith('javascript')) {
       const btn = tmpDoc.createElement('a');
       btn.setAttribute('href', href);
       btn.className = 'article-source-btn';
       btn.textContent = '원문 보기 →';
       // 서버가 div.article-block에 심은 data-article-id를 새 버튼으로 복사
-      const blockArticleId = (block as HTMLElement).getAttribute('data-article-id');
       if (blockArticleId) btn.setAttribute('data-article-id', blockArticleId);
       bodyDiv.appendChild(btn);
     }
@@ -132,8 +168,18 @@ export function sanitizeReportHtml(raw: string) {
     if (details.querySelector('.article-source-btn')) return;
     const summaryEl = details.querySelector('summary');
     const articleLink = summaryEl?.querySelector('a') as HTMLAnchorElement | null;
-    const href = articleLink?.getAttribute('href');
+    const href = resolveCanonicalHref(
+      articleLink?.getAttribute('href'),
+      (articleLink?.textContent || summaryEl?.textContent || '').trim(),
+      details.getAttribute('data-article-id'),
+    );
     if (!href || href.startsWith('javascript')) return;
+
+    if (articleLink) {
+      articleLink.setAttribute('href', href);
+      const articleId = details.getAttribute('data-article-id');
+      if (articleId) articleLink.setAttribute('data-article-id', articleId);
+    }
 
     let bodyDiv = details.querySelector('.article-body') as HTMLElement | null;
     if (!bodyDiv) {
@@ -157,7 +203,17 @@ export function sanitizeReportHtml(raw: string) {
     bodyDiv.appendChild(btn);
   });
 
-  // 4. Ensure all article links have target="_blank"
+  // 4. Normalize known article links while preserving non-matching originals
+  tmpDoc.querySelectorAll('a').forEach((a) => {
+    const href = a.getAttribute('href');
+    const articleId = a.getAttribute('data-article-id');
+    const normalizedHref = resolveCanonicalHref(href, (a.textContent || '').trim(), articleId);
+    if (normalizedHref && href !== normalizedHref) {
+      a.setAttribute('href', normalizedHref);
+    }
+  });
+
+  // 5. Ensure all article links have target="_blank"
   tmpDoc.querySelectorAll('a').forEach((a) => {
     if (a.getAttribute('href') && !a.getAttribute('href')?.startsWith('#')) {
       a.setAttribute('target', '_blank');
@@ -165,21 +221,30 @@ export function sanitizeReportHtml(raw: string) {
     }
   });
 
-  // 5. Enhance Reference Table with interactivity
+  // 6. Enhance Reference Table with interactivity
   tmpDoc.querySelectorAll('table.ref-table').forEach((table) => {
     table.querySelectorAll('tr').forEach((tr, rowIndex) => {
       if (rowIndex === 0) return; // Skip header
 
-      const href = tr.querySelector('a')?.getAttribute('href') || '';
+      const link = tr.querySelector('a') as HTMLAnchorElement | null;
+      const headlineCell = tr.querySelector('td:nth-child(3)') || tr.querySelector('td:nth-child(2)');
+      const headline = (headlineCell?.textContent || '').trim();
+      const href = resolveCanonicalHref(link?.getAttribute('href'), headline, link?.getAttribute('data-article-id')) || '';
       if (!href) return;
+
+      if (link) {
+        link.setAttribute('href', href);
+      }
 
       tr.style.cursor = 'pointer';
       tr.classList.add('interactive-ref-row');
       tr.setAttribute('data-href', href);
+      const linkArticleId = link?.getAttribute('data-article-id');
+      if (linkArticleId) {
+        tr.setAttribute('data-article-id', linkArticleId);
+      }
 
       // Set the headline so onClick can match it
-      const headlineCell = tr.querySelector('td:nth-child(3)') || tr.querySelector('td:nth-child(2)');
-      const headline = (headlineCell?.textContent || '').trim();
       if (headline) {
         tr.setAttribute('data-headline', headline);
       }
