@@ -77,7 +77,7 @@ export default function Layout({ children }: LayoutProps) {
     { name: NAV_LABELS.media, href: '/media', icon: Library, show: role === 'company_admin' },
     { name: NAV_LABELS.team, href: '/team', icon: Users, show: role === 'company_admin' },
     { name: NAV_LABELS.settings, href: '/settings', icon: Settings, show: role === 'company_admin' },
-    { name: NAV_LABELS.admin, href: '#', icon: ShieldCheck, show: isSuperadmin },
+    { name: NAV_LABELS.admin, href: '/admin', icon: ShieldCheck, show: isSuperadmin },
     { name: NAV_LABELS.sources, href: '/admin/sources', icon: Database, show: isSuperadmin },
     { name: NAV_LABELS.companies, href: '/admin/companies', icon: Users, show: isSuperadmin },
   ];
