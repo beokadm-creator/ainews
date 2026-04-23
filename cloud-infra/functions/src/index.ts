@@ -30,7 +30,6 @@ import { processPuppeteerSources } from './services/puppeteerSourceService';
 import { purgeRejectedArticlesPreservingDedupe, syncArticlesToDedup } from './services/articleDedupService';
 import { hashTitle, calculateTokenSimilarity } from './services/duplicateService';
 import { ensureCollectionsExist } from './utils/firestoreValidation';
-import { requireAdmin } from './utils/authMiddleware';
 import { seedPromptTemplates } from './seed/promptTemplates';
 import { assertCompanyAccess, getCompanyRuntimeConfig } from './services/runtimeConfigService';
 import { PipelineInvocationOverrides, RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS, RuntimePipelineConfig } from './types/runtime';
