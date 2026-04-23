@@ -1,5 +1,0 @@
-import { ErrorBoundary } from 'react-error-boundary';
-import { Toaster } from 'react-hot-toast';
-import { GlobalErrorFallback } from '@/components/GlobalErrorFallback';
-
-// ... (Will replace App.tsx content later)
