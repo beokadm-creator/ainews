@@ -2063,11 +2063,11 @@ export const testSmtpConnection = onCall(
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
-    const { companyId: rawCompanyId, smtp } = request.data || {};
+    const { companyId: rawCompanyId, smtp, testTo } = request.data || {};
     const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
     await assertCompanyAccess(request.auth.uid, companyId);
 
-    let smtpConfig = { ...(smtp || {}) };
+    let smtpConfig: any = { ...(smtp || {}) };
 
     // If password not provided (user kept existing), load from Firestore
     if (!smtpConfig.pass) {
@@ -2083,7 +2083,7 @@ export const testSmtpConnection = onCall(
       };
     }
 
-    return testSmtpConfig(smtpConfig);
+    return testSmtpConfig({ ...smtpConfig, testTo: testTo || '' });
   }
 );
 
