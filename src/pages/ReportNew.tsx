@@ -412,11 +412,25 @@ export default function ReportNew() {
           </div>
         ) : (
           <div className="p-4">
-            <div className="rounded-lg border border-dashed border-gray-200 px-4 py-4 text-xs text-gray-500 dark:border-gray-700/60 dark:text-gray-400">
-              검색 조건 전체를 기준으로 리포트를 생성합니다.
-              <div className="mt-2">키워드: {keywords.length > 0 ? keywords.join(', ') : '없음'}</div>
-              <div className="mt-1">대상 매체 수: {sourceIds.length}</div>
-              <div className="mt-1">확정 기사 수: {resolvedArticleIds.length}</div>
+            <div className="flex items-center justify-between">
+              <div className="rounded-lg border border-dashed border-gray-200 px-4 py-4 text-xs text-gray-500 dark:border-gray-700/60 dark:text-gray-400 flex-1">
+                검색 조건 전체를 기준으로 리포트를 생성합니다.
+                <div className="mt-2">키워드: {keywords.length > 0 ? keywords.join(', ') : '없음'}</div>
+                <div className="mt-1">대상 매체 수: {sourceIds.length}</div>
+                <div className="mt-1">확정 기사 수: {resolvedArticleIds.length}</div>
+              </div>
+              {dedupStep === 'applied' && appliedExcludeCount > 0 && (
+                <span className="ml-3 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  중복 {appliedExcludeCount}건 제외됨
+                </span>
+              )}
+              {dedupStep === 'applied' && appliedExcludeCount === 0 && (
+                <span className="ml-3 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  중복 없음
+                </span>
+              )}
             </div>
             {articles.length > 0 && (
               <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
@@ -427,6 +441,119 @@ export default function ReportNew() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {/* AI dedup section */}
+            {dedupStep === 'idle' && resolvedArticleIds.length >= 2 && (
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  onClick={handleDedupCheck}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-3 py-1.5 text-xs font-medium text-[#1e3a5f] hover:bg-[#1e3a5f]/10 dark:border-blue-400/20 dark:bg-blue-400/5 dark:text-blue-400 dark:hover:bg-blue-400/10"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  AI 중복 검토
+                </button>
+                <span className="text-[10px] text-gray-400">리포트 생성 전 AI가 중복 기사를 확인합니다</span>
+              </div>
+            )}
+
+            {dedupStep === 'checking' && (
+              <div className="mt-4 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                AI가 중복 기사를 분석하고 있습니다…
+              </div>
+            )}
+
+            {dedupStep === 'reviewing' && dedupGroups.length === 0 && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                중복 기사가 감지되지 않았습니다.
+                <button
+                  onClick={() => setDedupStep('applied')}
+                  className="ml-auto font-semibold underline underline-offset-2"
+                >
+                  확인
+                </button>
+              </div>
+            )}
+
+            {dedupStep === 'reviewing' && dedupGroups.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5 dark:border-amber-800/40 dark:bg-amber-900/20">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    AI가 <span className="font-semibold">{totalDuplicateCount}건</span>의 중복 기사를 감지했습니다.
+                    제외할 기사를 확인하고 적용하세요.
+                  </p>
+                </div>
+
+                {dedupGroups.map((group) => {
+                  const keepArticle = articles.find((a) => a.id === group.keepId);
+                  return (
+                    <div key={group.keepId} className="rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700/40 dark:bg-gray-900/30">
+                      <div className="border-b border-gray-100 px-3 py-2 dark:border-gray-700/30">
+                        <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">유지</div>
+                        <div className="mt-0.5 text-xs font-medium text-gray-800 dark:text-gray-200">
+                          {keepArticle?.title || group.keepId}
+                        </div>
+                        {keepArticle?.source && (
+                          <div className="mt-0.5 text-[10px] text-gray-400">{keepArticle.source}</div>
+                        )}
+                      </div>
+                      <div className="px-3 py-2">
+                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-red-500 dark:text-red-400">중복 (제외 대상)</div>
+                        <div className="space-y-1.5">
+                          {group.duplicateIds.map((dupId) => {
+                            const dupArticle = articles.find((a) => a.id === dupId);
+                            const isChecked = pendingExcludeIds.has(dupId);
+                            return (
+                              <label key={dupId} className="flex cursor-pointer items-start gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    setPendingExcludeIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (e.target.checked) next.add(dupId);
+                                      else next.delete(dupId);
+                                      return next;
+                                    });
+                                  }}
+                                  className="mt-0.5 accent-red-500"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-xs text-gray-700 dark:text-gray-300">
+                                    {dupArticle?.title || dupId}
+                                  </div>
+                                  {dupArticle?.source && (
+                                    <div className="text-[10px] text-gray-400">{dupArticle.source}</div>
+                                  )}
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleApplyDedup}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-4 py-2 text-xs font-semibold text-white hover:bg-[#24456f]"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    적용 ({pendingExcludeIds.size}건 제외)
+                  </button>
+                  <button
+                    onClick={() => setDedupStep('idle')}
+                    className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
