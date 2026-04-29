@@ -303,7 +303,7 @@ function prioritizeArticlesForDigest(articles: any[]): any[] {
     return timeB - timeA;
   });
 
-  // digest 시점 중복 제거: 제목 토큰 유사도 0.75 초과 기사 필터링
+  // 1단계: 제목 토큰 유사도 기반 중복 제거 (어휘 기반)
   const deduped: any[] = [];
   for (const article of sorted) {
     const isDup = deduped.some(
@@ -311,7 +311,32 @@ function prioritizeArticlesForDigest(articles: any[]): any[] {
     );
     if (!isDup) deduped.push(article);
   }
-  return deduped; // 제거된 100건 제한
+
+  // 2단계: 엔티티 핑거프린트 기반 중복 제거 (의미 기반)
+  // acquiror + target이 동일한 기사 = 같은 딜 중복 보도 → relevanceScore 높은 기사(첫 번째) 유지
+  // 조건: acquiror AND target 모두 존재해야 적용 (엔티티 추출 오류로 인한 오탐 방지)
+  // dealType이 없는 경우 빈 문자열로 처리 — 미추출 기사가 dedup되지 않도록 의도적 설계
+  const entityDeduped: any[] = [];
+  const entityFingerprints = new Set<string>();
+  const entityDedupDropped: string[] = [];
+  for (const article of deduped) {
+    const acquiror = (article.companies?.acquiror || '').toLowerCase().replace(/\s+/g, '');
+    const target = (article.companies?.target || '').toLowerCase().replace(/\s+/g, '');
+    if (acquiror && target) {
+      const dealType = (article.deal?.type || '').toLowerCase().replace(/\s+/g, '');
+      const fingerprint = `${acquiror}|${target}|${dealType}`;
+      if (entityFingerprints.has(fingerprint)) {
+        entityDedupDropped.push(article.id);
+        continue;
+      }
+      entityFingerprints.add(fingerprint);
+    }
+    entityDeduped.push(article);
+  }
+  if (entityDedupDropped.length > 0) {
+    console.info(`[entity-dedup] Dropped ${entityDedupDropped.length} same-deal article(s): ${entityDedupDropped.join(', ')}`);
+  }
+  return entityDeduped;
 }
 
 function buildCustomReportArticleDigest(articles: any[]): { digest: string; orderedArticles: any[] } {
@@ -324,7 +349,20 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
     const safeTitle = fixEncodingIssues(cleanHtmlContent(article.title || ''));
     const safeSource = fixEncodingIssues(cleanHtmlContent(article.source || ''));
     const safeBody = fixEncodingIssues(cleanHtmlContent(article.content || (article.summary || []).join(' ')));
-    const safeSummary = Array.isArray(article.summary) ? article.summary.join(' / ') : ''; // 3줄 제한 해제
+    const safeSummary = Array.isArray(article.summary) ? article.summary.join(' / ') : '';
+    const acquiror = article.companies?.acquiror || '';
+    const target = article.companies?.target || '';
+    const financialSponsor = article.companies?.financialSponsor || '';
+    const dealType = article.deal?.type || '';
+    const dealAmount = article.deal?.amount || '';
+    const tags = Array.isArray(article.tags) ? article.tags.join(', ') : '';
+    const entityLines: string[] = [];
+    if (acquiror) entityLines.push(`ACQUIROR: ${acquiror}`);
+    if (target) entityLines.push(`TARGET: ${target}`);
+    if (financialSponsor) entityLines.push(`FINANCIAL_SPONSOR: ${financialSponsor}`);
+    if (dealType) entityLines.push(`DEAL_TYPE: ${dealType}`);
+    if (dealAmount) entityLines.push(`DEAL_AMOUNT: ${dealAmount}`);
+    if (tags) entityLines.push(`TAGS: ${tags}`);
     return [
       `[ARTICLE ${index + 1}]`,
       `ID: ${article.id}`,
@@ -334,6 +372,7 @@ function buildCustomReportArticleDigest(articles: any[]): { digest: string; orde
       `DATE: ${pub}`,
       `RELEVANCE_SCORE: ${article.relevanceScore || 0}/100`,
       `CATEGORY: ${article.category || 'uncategorized'}`,
+      ...entityLines,
       `SUMMARY: ${safeSummary || 'No summary available'}`,
       'BODY:',
       safeBody.substring(0, 1500), // 기사당 1500자 제한 — 입력 토큰 과다 방지
@@ -721,9 +760,15 @@ export async function generateCustomReport(options: CustomReportOptions) {
 [작성 원칙]
 1. 기사 원문의 내용을 충실히 전달합니다. 추측·전망·제언을 추가하지 않습니다.
 2. 딜 규모가 기사에 미언급이면 해당 줄 자체를 생략합니다 (빈 칸으로 두지 말 것).
-3. 출처 번호([1][2] 등)는 제목·본문 어디에도 표시하지 않습니다.
+3. 출처 번호([1][2] 등)와 <sup> 태그는 제목·본문 어디에도 사용하지 않습니다.
 4. 분류 우선순위: M&A > PE 동향 > 기타 시장 동향 (PE가 수행한 M&A → M&A로 분류).
 5. 모든 텍스트를 한국어로 작성합니다. 고유명사·약어(M&A, PE, IPO 등)는 예외.
+
+[딜 엔티티 인식]
+각 기사에는 AI가 추출한 ACQUIROR, TARGET, DEAL_TYPE 필드가 포함됩니다.
+동일한 ACQUIROR + TARGET 조합을 가진 기사들은 같은 딜에 관한 중복 보도입니다.
+분석 작성 시 연관 기사와의 관계를 명시하세요 (예: "이 기사는 기사 N과 동일한 딜에 관한 추가 보도입니다").
+기사 블록은 반드시 모두 유지합니다 (임의 병합·삭제 금지).
 
 [출력 방식]
 아래 <HTML_SKELETON>의 [AI_FILL: ...] 부분만 채우세요.
@@ -1025,7 +1070,7 @@ Universal Requirements (always apply):
 1. Output a COMPLETE HTML document: <!DOCTYPE html> through </html>, with <head> containing <meta charset="UTF-8"> and embedded <style>.
 2. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white or light-colored text. Do NOT include dark mode CSS or @media (prefers-color-scheme: dark).
 3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
-4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
+4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body. Do NOT use <sup> tags.
 5. Section numbers must be strictly sequential.
 
 [CRITICAL INSTRUCTION: FILL IN THE BLANKS]
@@ -1033,6 +1078,12 @@ You MUST use the exact HTML skeleton provided in the user prompt below.
 Your ONLY job is to replace the "[AI_FILL: ...]" placeholders with your actual expert analysis.
 DO NOT alter any existing HTML tags, class names, href attributes, or data-article-id attributes.
 DO NOT remove or modify any article blocks.
+
+[DEAL ENTITY AWARENESS]
+Each article in the digest includes ACQUIROR, TARGET, and DEAL_TYPE fields extracted by AI analysis.
+Articles sharing the same ACQUIROR + TARGET combination are duplicate reports on the same deal.
+When writing analysis for such articles, note the relationship explicitly (e.g., "이 기사는 기사 N과 동일한 딜에 관한 추가 보도입니다").
+Do NOT remove or merge article blocks — all blocks in the skeleton must remain in the output.
 
 [ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
 Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope.
@@ -1204,7 +1255,7 @@ Universal Requirements (always apply):
 1. Output a COMPLETE HTML document: <!DOCTYPE html> through </html>, with <head> containing <meta charset="UTF-8"> and embedded <style>.
 2. LIGHT MODE ONLY — white background (#ffffff), dark body text (#111827 or #1f2937). NEVER use white or light-colored text. Do NOT include dark mode CSS or @media (prefers-color-scheme: dark).
 3. All headings, labels, and body text must be in Korean. Exception: proper nouns, company names, and financial abbreviations (M&A, PE, IPO, GP, LP, etc.).
-4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body.
+4. Do NOT include footnote reference numbers like [1], [2], [3] anywhere in the report body. Do NOT use <sup> tags.
 5. Section numbers must be strictly sequential.
 
 [CRITICAL INSTRUCTION: FILL IN THE BLANKS]
@@ -1212,6 +1263,12 @@ You MUST use the exact HTML skeleton provided in the user prompt below.
 Your ONLY job is to replace the "[AI_FILL: ...]" placeholders with your actual expert analysis.
 DO NOT alter any existing HTML tags, class names, href attributes, or data-article-id attributes.
 DO NOT remove or modify the reference table at the bottom.
+
+[DEAL ENTITY AWARENESS]
+Each article in the digest includes ACQUIROR, TARGET, and DEAL_TYPE fields extracted by AI analysis.
+Articles sharing the same ACQUIROR + TARGET combination are duplicate reports on the same deal.
+When writing analysis for such articles, note the relationship explicitly (e.g., "이 기사는 기사 N과 동일한 딜에 관한 추가 보도입니다").
+Do NOT remove or merge article blocks — all blocks in the skeleton must remain in the output.
 
 [ANALYSIS INSTRUCTIONS — HIGHEST PRIORITY]
 Follow the instructions below EXACTLY. They define the structure, format, tone, and content scope.

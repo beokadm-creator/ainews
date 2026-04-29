@@ -799,7 +799,7 @@ export function resolveAiCallOptions(
       maxTokens: 128000,
       maxRetries: 8,
       requestTimeoutMs: 3600000, // 1시간 (최대 대기)
-      thinkingType: 'disabled',
+      thinkingType: 'enabled',
       clearThinking: true,
     },
   };
