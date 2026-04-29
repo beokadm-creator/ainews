@@ -88,6 +88,24 @@ async function getEmailConfig(companyId?: string | null) {
   };
 }
 
+function humanizeSmtpError(err: any, port: number, secure: boolean): string {
+  const msg: string = err?.message || '';
+  const code: string = err?.code || '';
+
+  if (msg.includes('wrong version number') || msg.includes('SSL') && msg.includes('version')) {
+    if (port === 465 && !secure) return `포트 465는 "Use SMTPS (secure)" 체크가 필요합니다. 체크 후 다시 시도하세요.`;
+    if (port === 587 && secure) return `포트 587은 "Use SMTPS (secure)" 체크를 해제해야 합니다. 해제 후 다시 시도하세요.`;
+    return `SSL 설정 불일치: 포트 587 → secure 해제, 포트 465 → secure 체크.`;
+  }
+  if (msg.includes('Invalid login') || msg.includes('Username and Password not accepted') || code === 'EAUTH') {
+    return `인증 실패: Gmail 앱 비밀번호를 사용하고 있는지 확인하세요. (Google 계정 → 보안 → 앱 비밀번호)`;
+  }
+  if (code === 'ECONNREFUSED') return `연결 거부: 호스트(${port}포트)에 연결할 수 없습니다. Host와 Port를 확인하세요.`;
+  if (code === 'ETIMEDOUT' || code === 'ESOCKET') return `연결 시간 초과: 호스트 주소 또는 포트를 확인하세요.`;
+  if (msg.includes('self signed certificate') || msg.includes('certificate')) return `TLS 인증서 오류: ${msg}`;
+  return msg || '연결 실패';
+}
+
 /** Test SMTP connection and send a test email to the specified recipient */
 export async function testSmtpConfig(smtpConfig: {
   host: string;
@@ -120,7 +138,7 @@ export async function testSmtpConfig(smtpConfig: {
     });
     return { success: true, message: `연결 성공. 테스트 메일을 ${recipient}로 발송했습니다.` };
   } catch (err: any) {
-    return { success: false, message: err.message || '연결 실패' };
+    return { success: false, message: humanizeSmtpError(err, port, secure) };
   }
 }
 
