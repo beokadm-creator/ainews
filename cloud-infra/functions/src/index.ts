@@ -19,7 +19,7 @@ import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { randomBytes } from 'crypto';
 import { processRssSources } from './services/rssService';
-import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection } from './services/aiService';
+import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection, callAiProvider, resolveAiCallOptions } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails, verifyUnsubscribeToken, generateUnsubscribeToken } from './services/emailService';
 import { buildOutputAssetBundle, buildOutputHtmlAsset, buildSharedReportPage } from './services/reportAssetService';
@@ -2809,6 +2809,110 @@ export const sharedReportPage = onRequest(
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.status(200).send(sharedHtml);
   },
+);
+
+export const checkArticleDuplicates = onCall(
+  { region: 'us-central1', timeoutSeconds: 120, cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const { companyId: rawCompanyId, articleIds = [] } = request.data || {};
+
+    if (!Array.isArray(articleIds) || articleIds.length < 2) {
+      return { groups: [] };
+    }
+
+    // Skip AI for very large sets — backend dedup handles those
+    if (articleIds.length > 200) {
+      return { groups: [], skipped: true };
+    }
+
+    const db = admin.firestore();
+    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const articleDocs = await Promise.all(
+      articleIds.map((id: string) => db.collection('articles').doc(id).get())
+    );
+    const articles = articleDocs
+      .filter((d) => d.exists)
+      .map((d) => ({ id: d.id, ...(d.data() as any) }));
+
+    if (articles.length < 2) return { groups: [] };
+
+    const articleList = articles.map((a, i) => {
+      const lines = [
+        `[${i + 1}] ID: ${a.id}`,
+        `TITLE: ${a.title || ''}`,
+        `SOURCE: ${a.source || ''}`,
+      ];
+      if (a.category) lines.push(`CATEGORY: ${a.category}`);
+      if (a.companies?.acquiror) lines.push(`ACQUIROR: ${a.companies.acquiror}`);
+      if (a.companies?.target) lines.push(`TARGET: ${a.companies.target}`);
+      if (a.deal?.type) lines.push(`DEAL_TYPE: ${a.deal.type}`);
+      if (a.deal?.amount) lines.push(`DEAL_AMOUNT: ${a.deal.amount}`);
+      return lines.join('\n');
+    }).join('\n\n');
+
+    const prompt = `You are an M&A news deduplication expert.
+
+Analyze the following M&A news articles and identify groups of articles that cover the SAME news event.
+
+Rules:
+- Articles are duplicates if they report on the exact same M&A deal announcement or corporate event
+- Different stages of the same deal (LOI, signing, closing) are NOT duplicates
+- The same announcement covered by multiple news sources IS a duplicate group
+- Articles about different deals involving the same parties are NOT duplicates
+
+Return ONLY valid JSON with this exact structure:
+{
+  "duplicateGroups": [
+    { "keepId": "<ID of most informative article>", "duplicateIds": ["<ID1>", "<ID2>"] }
+  ]
+}
+
+- keepId must be a valid article ID from the list
+- duplicateIds must be valid IDs not equal to keepId
+- Only include groups with at least one duplicateId
+- Return { "duplicateGroups": [] } if no duplicates found
+
+ARTICLES:
+---
+${articleList}`;
+
+    try {
+      const runtime = await getCompanyRuntimeConfig(companyId);
+      const callOptions = resolveAiCallOptions(runtime.ai.provider, 'article-dedup-check');
+      const aiResult = await callAiProvider(prompt, runtime.ai, callOptions, companyId);
+
+      let parsed: any;
+      try {
+        parsed = typeof aiResult.content === 'string' ? JSON.parse(aiResult.content) : aiResult.content;
+      } catch {
+        logger.warn('[checkArticleDuplicates] Failed to parse AI JSON response');
+        return { groups: [] };
+      }
+
+      const rawGroups = Array.isArray(parsed?.duplicateGroups) ? parsed.duplicateGroups : [];
+      const validIds = new Set(articles.map((a) => a.id));
+
+      const groups = rawGroups
+        .filter((g: any) => typeof g.keepId === 'string' && validIds.has(g.keepId))
+        .map((g: any) => ({
+          keepId: g.keepId,
+          duplicateIds: Array.isArray(g.duplicateIds)
+            ? g.duplicateIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== g.keepId)
+            : [],
+        }))
+        .filter((g: any) => g.duplicateIds.length > 0);
+
+      logger.info(`[checkArticleDuplicates] Found ${groups.length} duplicate group(s) among ${articles.length} articles`);
+      return { groups };
+    } catch (err: any) {
+      logger.warn(`[checkArticleDuplicates] AI call failed: ${err.message}`);
+      return { groups: [], error: 'ai_failed' };
+    }
+  }
 );
 
 export const requestManagedReport = onCall(

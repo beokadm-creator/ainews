@@ -717,7 +717,8 @@ export type AiTaskProfile =
   | 'dedup'
   | 'article-list-summary'
   | 'daily-briefing'
-  | 'custom-report';
+  | 'custom-report'
+  | 'article-dedup-check';
 
 type ApiCallOptions = {
   temperature?: number;
@@ -803,6 +804,14 @@ export function resolveAiCallOptions(
       // temperature override 없이 0.2로 맞춘 뒤 재검증 필요
       thinkingType: 'disabled',
       clearThinking: true,
+    },
+    'article-dedup-check': {
+      temperature: 0,
+      maxTokens: 3000,
+      doSample: false,
+      thinkingType: 'disabled',
+      clearThinking: true,
+      structuredJson: true,
     },
   };
 

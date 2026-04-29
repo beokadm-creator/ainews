@@ -1,7 +1,7 @@
 import { handleError } from "@/utils/errorHandler";
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, FileText, Loader2, Sparkles } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, FileText, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '@/lib/firebase';
@@ -13,6 +13,13 @@ interface ArticlePreview {
   source: string;
   publishedAt?: any;
   category?: string;
+}
+
+type DedupStep = 'idle' | 'checking' | 'reviewing' | 'applied';
+
+interface DedupGroup {
+  keepId: string;
+  duplicateIds: string[];
 }
 
 export default function ReportNew() {
@@ -48,6 +55,13 @@ export default function ReportNew() {
   const [done, setDone] = useState<{ outputId: string } | null>(null);
   const [availableTemplate, setAvailableTemplate] = useState<{ id: string; title: string } | null>(null);
   const [useTemplate, setUseTemplate] = useState(false);
+
+  // AI dedup state
+  const [dedupStep, setDedupStep] = useState<DedupStep>('idle');
+  const [dedupGroups, setDedupGroups] = useState<DedupGroup[]>([]);
+  // IDs the user has checked to exclude (initially all duplicateIds from AI response)
+  const [pendingExcludeIds, setPendingExcludeIds] = useState<Set<string>>(new Set());
+  const [appliedExcludeCount, setAppliedExcludeCount] = useState(0);
 
   useEffect(() => {
     const loadArticles = async () => {
@@ -122,6 +136,41 @@ export default function ReportNew() {
     loadCompanyPrompt().catch(handleError);
   }, [companyId]);
 
+  const handleDedupCheck = async () => {
+    setDedupStep('checking');
+    setDedupGroups([]);
+    setPendingExcludeIds(new Set());
+    try {
+      const fn = httpsCallable(functions, 'checkArticleDuplicates');
+      const result = await fn({ companyId, articleIds: resolvedArticleIds }) as any;
+      const groups: DedupGroup[] = result.data?.groups || [];
+      setDedupGroups(groups);
+      // Pre-check all duplicateIds for exclusion
+      const allDupIds = new Set(groups.flatMap((g) => g.duplicateIds));
+      setPendingExcludeIds(allDupIds);
+      setDedupStep('reviewing');
+    } catch (err: any) {
+      console.error('Dedup check failed:', err);
+      setDedupStep('idle');
+    }
+  };
+
+  const handleApplyDedup = () => {
+    if (pendingExcludeIds.size === 0) {
+      setDedupStep('applied');
+      setAppliedExcludeCount(0);
+      return;
+    }
+    const filteredIds = resolvedArticleIds.filter((id) => !pendingExcludeIds.has(id));
+    const filteredArticles = articles.filter((a) => !pendingExcludeIds.has(a.id));
+    setResolvedArticleIds(filteredIds);
+    setArticles(filteredArticles);
+    setAppliedExcludeCount(pendingExcludeIds.size);
+    setDedupGroups([]);
+    setPendingExcludeIds(new Set());
+    setDedupStep('applied');
+  };
+
   const handleGenerate = async () => {
     if (!companyId || resolvedArticleIds.length === 0) return;
 
@@ -187,6 +236,8 @@ export default function ReportNew() {
     );
   }
 
+  const totalDuplicateCount = dedupGroups.reduce((sum, g) => sum + g.duplicateIds.length, 0);
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 pb-12">
       <div className="border-b border-gray-200 pb-5 dark:border-gray-700/60">
@@ -222,7 +273,21 @@ export default function ReportNew() {
           </div>
         ) : articleIds.length > 0 ? (
           <div className="p-4">
-            <p className="text-xs text-gray-500 dark:text-gray-400">선택 기사 {resolvedArticleIds.length}건</p>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-500 dark:text-gray-400">선택 기사 {resolvedArticleIds.length}건</p>
+              {dedupStep === 'applied' && appliedExcludeCount > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  중복 {appliedExcludeCount}건 제외됨
+                </span>
+              )}
+              {dedupStep === 'applied' && appliedExcludeCount === 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  중복 없음
+                </span>
+              )}
+            </div>
             <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
               {articles.map((article, index) => (
                 <li key={article.id} className="px-3 py-2.5">
@@ -231,6 +296,119 @@ export default function ReportNew() {
                 </li>
               ))}
             </ul>
+
+            {/* AI dedup section */}
+            {dedupStep === 'idle' && resolvedArticleIds.length >= 2 && (
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  onClick={handleDedupCheck}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-3 py-1.5 text-xs font-medium text-[#1e3a5f] hover:bg-[#1e3a5f]/10 dark:border-blue-400/20 dark:bg-blue-400/5 dark:text-blue-400 dark:hover:bg-blue-400/10"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  AI 중복 검토
+                </button>
+                <span className="text-[10px] text-gray-400">리포트 생성 전 AI가 중복 기사를 확인합니다</span>
+              </div>
+            )}
+
+            {dedupStep === 'checking' && (
+              <div className="mt-4 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                AI가 중복 기사를 분석하고 있습니다…
+              </div>
+            )}
+
+            {dedupStep === 'reviewing' && dedupGroups.length === 0 && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                중복 기사가 감지되지 않았습니다.
+                <button
+                  onClick={() => setDedupStep('applied')}
+                  className="ml-auto font-semibold underline underline-offset-2"
+                >
+                  확인
+                </button>
+              </div>
+            )}
+
+            {dedupStep === 'reviewing' && dedupGroups.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5 dark:border-amber-800/40 dark:bg-amber-900/20">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    AI가 <span className="font-semibold">{totalDuplicateCount}건</span>의 중복 기사를 감지했습니다.
+                    제외할 기사를 확인하고 적용하세요.
+                  </p>
+                </div>
+
+                {dedupGroups.map((group) => {
+                  const keepArticle = articles.find((a) => a.id === group.keepId);
+                  return (
+                    <div key={group.keepId} className="rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700/40 dark:bg-gray-900/30">
+                      <div className="border-b border-gray-100 px-3 py-2 dark:border-gray-700/30">
+                        <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">유지</div>
+                        <div className="mt-0.5 text-xs font-medium text-gray-800 dark:text-gray-200">
+                          {keepArticle?.title || group.keepId}
+                        </div>
+                        {keepArticle?.source && (
+                          <div className="mt-0.5 text-[10px] text-gray-400">{keepArticle.source}</div>
+                        )}
+                      </div>
+                      <div className="px-3 py-2">
+                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-red-500 dark:text-red-400">중복 (제외 대상)</div>
+                        <div className="space-y-1.5">
+                          {group.duplicateIds.map((dupId) => {
+                            const dupArticle = articles.find((a) => a.id === dupId);
+                            const isChecked = pendingExcludeIds.has(dupId);
+                            return (
+                              <label key={dupId} className="flex cursor-pointer items-start gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    setPendingExcludeIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (e.target.checked) next.add(dupId);
+                                      else next.delete(dupId);
+                                      return next;
+                                    });
+                                  }}
+                                  className="mt-0.5 accent-red-500"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-xs text-gray-700 dark:text-gray-300">
+                                    {dupArticle?.title || dupId}
+                                  </div>
+                                  {dupArticle?.source && (
+                                    <div className="text-[10px] text-gray-400">{dupArticle.source}</div>
+                                  )}
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleApplyDedup}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#1e3a5f] px-4 py-2 text-xs font-semibold text-white hover:bg-[#24456f]"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    적용 ({pendingExcludeIds.size}건 제외)
+                  </button>
+                  <button
+                    onClick={() => setDedupStep('idle')}
+                    className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="p-4">
@@ -307,7 +485,7 @@ export default function ReportNew() {
       <div className="flex items-center gap-3">
         <button
           onClick={handleGenerate}
-          disabled={submitting || resolvedArticleIds.length === 0}
+          disabled={submitting || resolvedArticleIds.length === 0 || dedupStep === 'checking' || dedupStep === 'reviewing'}
           className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -315,6 +493,9 @@ export default function ReportNew() {
         </button>
         {submitting && (
           <span className="text-xs text-gray-500 dark:text-gray-400">AI가 리포트를 생성하고 있습니다…</span>
+        )}
+        {(dedupStep === 'checking' || dedupStep === 'reviewing') && !submitting && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">중복 검토를 먼저 완료해주세요</span>
         )}
       </div>
     </div>
