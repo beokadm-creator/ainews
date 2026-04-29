@@ -799,7 +799,9 @@ export function resolveAiCallOptions(
       maxTokens: 128000,
       maxRetries: 8,
       requestTimeoutMs: 3600000, // 1시간 (최대 대기)
-      thinkingType: 'enabled',
+      // thinking: daily-briefing(0.2)은 동작하나 custom-report는 temperature 0.4 override와 충돌하여 400 반환
+      // temperature override 없이 0.2로 맞춘 뒤 재검증 필요
+      thinkingType: 'disabled',
       clearThinking: true,
     },
   };
