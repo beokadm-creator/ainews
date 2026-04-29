@@ -23,7 +23,7 @@ import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyze
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
 import { sendBriefingEmails, sendOutputEmails, verifyUnsubscribeToken, generateUnsubscribeToken, encryptSmtpPass, testSmtpConfig } from './services/emailService';
 import { buildOutputAssetBundle, buildOutputHtmlAsset, buildSharedReportPage } from './services/reportAssetService';
-import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
+import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert, sendMessageToGroup, TelegramGroupConfig } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
 import { processScrapingSources } from './services/scrapingSourceService';
 import { processPuppeteerSources } from './services/puppeteerSourceService';
@@ -2624,6 +2624,123 @@ export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invo
     : undefined;
   return sendOutputEmails(outputId, explicitRecipients);
 });
+// ─── Telegram Group Management ──────────────────────────────────────────────
+
+export const getTelegramGroups = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+    const db = admin.firestore();
+    const snap = await db.collection('telegramGroups')
+      .where('companyId', '==', companyId)
+      .orderBy('createdAt', 'desc')
+      .get();
+    return {
+      groups: snap.docs.map(d => ({
+        id: d.id,
+        ...(d.data() as any),
+        // botToken은 마스킹 처리해서 반환
+        botToken: d.data().botToken ? '••••••••' + `${d.data().botToken}`.slice(-4) : '',
+        botTokenSet: Boolean(d.data().botToken),
+      })),
+    };
+  },
+);
+
+export const saveTelegramGroup = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const { groupId, name, chatId, botToken, trackedCompanyAlerts } = request.data || {};
+    if (!name?.trim()) throw new HttpsError('invalid-argument', '그룹 이름을 입력하세요.');
+    if (!chatId?.trim()) throw new HttpsError('invalid-argument', 'Chat ID를 입력하세요.');
+
+    const db = admin.firestore();
+    const payload: any = {
+      companyId,
+      name: name.trim(),
+      chatId: chatId.trim(),
+      trackedCompanyAlerts: Boolean(trackedCompanyAlerts),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    // botToken이 실제 값(마스킹 아님)으로 전달된 경우만 저장
+    if (botToken && !botToken.startsWith('••••')) {
+      payload.botToken = botToken.trim();
+    }
+
+    if (groupId) {
+      const ref = db.collection('telegramGroups').doc(groupId);
+      const existing = await ref.get();
+      if (!existing.exists || existing.data()?.companyId !== companyId) {
+        throw new HttpsError('not-found', '그룹을 찾을 수 없습니다.');
+      }
+      await ref.update(payload);
+      return { id: groupId };
+    } else {
+      payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+      const ref = await db.collection('telegramGroups').add(payload);
+      return { id: ref.id };
+    }
+  },
+);
+
+export const deleteTelegramGroup = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const { groupId } = request.data || {};
+    if (!groupId) throw new HttpsError('invalid-argument', 'groupId required');
+
+    const db = admin.firestore();
+    const ref = db.collection('telegramGroups').doc(groupId);
+    const existing = await ref.get();
+    if (!existing.exists || existing.data()?.companyId !== companyId) {
+      throw new HttpsError('not-found', '그룹을 찾을 수 없습니다.');
+    }
+    await ref.delete();
+    return { success: true };
+  },
+);
+
+export const testTelegramGroup = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public' },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+    const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    const { groupId } = request.data || {};
+    if (!groupId) throw new HttpsError('invalid-argument', 'groupId required');
+
+    const db = admin.firestore();
+    const ref = db.collection('telegramGroups').doc(groupId);
+    const doc = await ref.get();
+    if (!doc.exists || doc.data()?.companyId !== companyId) {
+      throw new HttpsError('not-found', '그룹을 찾을 수 없습니다.');
+    }
+
+    const data = doc.data() as any;
+    const groupConfig: TelegramGroupConfig = {
+      chatId: data.chatId,
+      botToken: data.botToken || undefined,
+    };
+
+    const testText = `✅ <b>[EUM PE] 텔레그램 연결 테스트</b>\n\n그룹 <b>${data.name || groupId}</b>에 메시지가 정상 수신되었습니다.\n<i>${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</i>`;
+    const result = await sendMessageToGroup(testText, groupConfig, 'HTML');
+    return result;
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
@@ -2715,12 +2832,33 @@ export const notifyTrackedCompanyArticleCreated = onDocumentCreated(
     if (!article) return;
 
     const matchedKeyword = `${article.keywordMatched || ''}`.trim();
-    if (!matchedKeyword || !DEFAULT_TRACKED_COMPANIES.includes(matchedKeyword)) {
-      return;
+    if (!matchedKeyword) return;
+
+    // Firestore에 저장된 동적 목록 우선, 없으면 기본값 사용
+    let trackedCompanies: string[] = DEFAULT_TRACKED_COMPANIES;
+    try {
+      const config = await getGlobalKeywordConfig();
+      if (config.trackedCompanies.length > 0) {
+        trackedCompanies = config.trackedCompanies;
+      }
+    } catch {
+      // 설정 로드 실패 시 기본값 유지
     }
 
+    if (!trackedCompanies.includes(matchedKeyword)) return;
+
     try {
-      await sendTrackedCompanyTelegramAlert(article);
+      // trackedCompanyAlerts가 활성화된 그룹 조회
+      const db = admin.firestore();
+      const groupSnap = await db.collection('telegramGroups')
+        .where('trackedCompanyAlerts', '==', true)
+        .get();
+
+      const groups: TelegramGroupConfig[] = groupSnap.docs
+        .map(d => ({ chatId: d.data().chatId, botToken: d.data().botToken || undefined }))
+        .filter(g => g.chatId);
+
+      await sendTrackedCompanyTelegramAlert(article, groups.length > 0 ? groups : undefined);
     } catch (error: any) {
       logger.error('notifyTrackedCompanyArticleCreated failed', {
         articleId: event.params.articleId,

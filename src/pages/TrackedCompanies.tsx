@@ -1,8 +1,9 @@
 import { handleError } from "@/utils/errorHandler";
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Building2, Calendar, ExternalLink, Loader2, Search, Tag, X } from 'lucide-react';
+import { Bell, Calendar, CheckCircle2, ExternalLink, Loader2, Search, Settings, Tag, X } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { format, subDays } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 import { functions } from '@/lib/firebase';
 import { useAuthStore } from '@/store/useAuthStore';
 import { formatArticleContentParagraphs } from '@/lib/articleContent';
@@ -87,6 +88,7 @@ function defaultDateRange() {
 
 export default function TrackedCompanies() {
   const { user } = useAuthStore();
+  const navigate = useNavigate();
   const companyId = (user as any)?.primaryCompanyId || (user as any)?.companyIds?.[0] || (user as any)?.companyId || null;
   const defaults = defaultDateRange();
 
@@ -97,6 +99,18 @@ export default function TrackedCompanies() {
   const [articles, setArticles] = useState<TrackedArticle[]>([]);
   const [loading, setLoading] = useState(false);
   const [previewArticle, setPreviewArticle] = useState<TrackedArticle | null>(null);
+
+  // 텔레그램 알림 그룹 현황
+  const [tgAlertGroups, setTgAlertGroups] = useState<{ id: string; name: string; chatId: string }[]>([]);
+
+  useEffect(() => {
+    if (!companyId) return;
+    const fn = httpsCallable(functions, 'getTelegramGroups');
+    fn({ companyId }).then((result: any) => {
+      const groups = (result.data?.groups || []) as any[];
+      setTgAlertGroups(groups.filter((g: any) => g.trackedCompanyAlerts));
+    }).catch(() => { /* 무시 */ });
+  }, [companyId]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -160,6 +174,45 @@ export default function TrackedCompanies() {
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           추적 회사 키워드로 수집된 기사를 일자별로 바로 확인합니다.
         </p>
+      </div>
+
+      {/* 텔레그램 알림 현황 배너 */}
+      <div className={`flex items-center justify-between gap-4 rounded-xl border px-4 py-3 ${
+        tgAlertGroups.length > 0
+          ? 'border-sky-200 bg-sky-50 dark:border-sky-500/30 dark:bg-sky-500/10'
+          : 'border-gray-200 bg-gray-50 dark:border-gray-700/60 dark:bg-gray-800/40'
+      }`}>
+        <div className="flex items-center gap-2.5">
+          {tgAlertGroups.length > 0 ? (
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-sky-500" />
+          ) : (
+            <Bell className="h-4 w-4 shrink-0 text-gray-400" />
+          )}
+          <div>
+            {tgAlertGroups.length > 0 ? (
+              <>
+                <p className="text-xs font-semibold text-sky-700 dark:text-sky-300">
+                  텔레그램 알림 활성 — {tgAlertGroups.map(g => g.name).join(', ')}
+                </p>
+                <p className="mt-0.5 text-[11px] text-sky-600/80 dark:text-sky-400/80">
+                  추적 회사 기사가 감지되면 위 그룹으로 자동 발송됩니다.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">텔레그램 알림 미설정</p>
+                <p className="mt-0.5 text-[11px] text-gray-400">텔레그램 그룹을 설정하면 기사 감지 시 자동으로 알림을 받을 수 있습니다.</p>
+              </>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => navigate('/delivery')}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs font-medium text-sky-600 hover:bg-sky-50 dark:border-sky-500/40 dark:bg-transparent dark:text-sky-400"
+        >
+          <Settings className="h-3.5 w-3.5" />
+          그룹 설정
+        </button>
       </div>
 
       {/* Filter card */}
