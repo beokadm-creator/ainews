@@ -807,7 +807,7 @@ export function resolveAiCallOptions(
     },
     'article-dedup-check': {
       temperature: 0,
-      maxTokens: 3000,
+      maxTokens: 6000,
       doSample: false,
       thinkingType: 'disabled',
       clearThinking: true,

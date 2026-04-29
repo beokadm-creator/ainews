@@ -2812,7 +2812,7 @@ export const sharedReportPage = onRequest(
 );
 
 export const checkArticleDuplicates = onCall(
-  { region: 'us-central1', timeoutSeconds: 120, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 300, cors: true, invoker: 'public' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
 
@@ -2820,11 +2820,6 @@ export const checkArticleDuplicates = onCall(
 
     if (!Array.isArray(articleIds) || articleIds.length < 2) {
       return { groups: [] };
-    }
-
-    // Skip AI for very large sets — backend dedup handles those
-    if (articleIds.length > 200) {
-      return { groups: [], skipped: true };
     }
 
     const db = admin.firestore();
@@ -2840,9 +2835,9 @@ export const checkArticleDuplicates = onCall(
 
     if (articles.length < 2) return { groups: [] };
 
-    const articleList = articles.map((a, i) => {
+    const buildArticleBlock = (a: any, idx: number): string => {
       const lines = [
-        `[${i + 1}] ID: ${a.id}`,
+        `[${idx + 1}] ID: ${a.id}`,
         `TITLE: ${a.title || ''}`,
         `SOURCE: ${a.source || ''}`,
       ];
@@ -2851,15 +2846,19 @@ export const checkArticleDuplicates = onCall(
       if (a.companies?.target) lines.push(`TARGET: ${a.companies.target}`);
       if (a.deal?.type) lines.push(`DEAL_TYPE: ${a.deal.type}`);
       if (a.deal?.amount) lines.push(`DEAL_AMOUNT: ${a.deal.amount}`);
+      const summaryText = Array.isArray(a.summary) ? a.summary.join(' ') : '';
+      const snippet = (summaryText || a.content || '').replace(/\s+/g, ' ').slice(0, 400).trim();
+      if (snippet) lines.push(`CONTENT: ${snippet}`);
       return lines.join('\n');
-    }).join('\n\n');
+    };
 
-    const prompt = `You are an M&A news deduplication expert.
+    const DEDUP_PROMPT_BASE = `You are an M&A news deduplication expert.
 
 Analyze the following M&A news articles and identify groups of articles that cover the SAME news event.
 
 Rules:
 - Articles are duplicates if they report on the exact same M&A deal announcement or corporate event
+- Use TITLE, CONTENT, companies, and deal fields together — content similarity is the strongest signal
 - Different stages of the same deal (LOI, signing, closing) are NOT duplicates
 - The same announcement covered by multiple news sources IS a duplicate group
 - Articles about different deals involving the same parties are NOT duplicates
@@ -2877,41 +2876,64 @@ Return ONLY valid JSON with this exact structure:
 - Return { "duplicateGroups": [] } if no duplicates found
 
 ARTICLES:
----
-${articleList}`;
+---`;
 
-    try {
-      const runtime = await getCompanyRuntimeConfig(companyId);
-      const callOptions = resolveAiCallOptions(runtime.ai.provider, 'article-dedup-check');
-      const aiResult = await callAiProvider(prompt, runtime.ai, callOptions, companyId);
+    const runtime = await getCompanyRuntimeConfig(companyId);
+    const callOptions = resolveAiCallOptions(runtime.ai.provider, 'article-dedup-check');
 
-      let parsed: any;
+    const runDedupBatch = async (batchArticles: any[]): Promise<Array<{ keepId: string; duplicateIds: string[] }>> => {
+      const articleList = batchArticles.map((a, i) => buildArticleBlock(a, i)).join('\n\n');
+      const prompt = `${DEDUP_PROMPT_BASE}\n${articleList}`;
+      const validIds = new Set(batchArticles.map((a) => a.id));
+
       try {
-        parsed = typeof aiResult.content === 'string' ? JSON.parse(aiResult.content) : aiResult.content;
-      } catch {
-        logger.warn('[checkArticleDuplicates] Failed to parse AI JSON response');
-        return { groups: [] };
+        const aiResult = await callAiProvider(prompt, runtime.ai, callOptions, companyId);
+        let parsed: any;
+        try {
+          parsed = typeof aiResult.content === 'string' ? JSON.parse(aiResult.content) : aiResult.content;
+        } catch {
+          logger.warn('[checkArticleDuplicates] Failed to parse AI JSON response for batch');
+          return [];
+        }
+        const rawGroups = Array.isArray(parsed?.duplicateGroups) ? parsed.duplicateGroups : [];
+        return rawGroups
+          .filter((g: any) => typeof g.keepId === 'string' && validIds.has(g.keepId))
+          .map((g: any) => ({
+            keepId: g.keepId,
+            duplicateIds: Array.isArray(g.duplicateIds)
+              ? g.duplicateIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== g.keepId)
+              : [],
+          }))
+          .filter((g: any) => g.duplicateIds.length > 0);
+      } catch (err: any) {
+        logger.warn(`[checkArticleDuplicates] AI batch call failed: ${err.message}`);
+        return [];
       }
+    };
 
-      const rawGroups = Array.isArray(parsed?.duplicateGroups) ? parsed.duplicateGroups : [];
-      const validIds = new Set(articles.map((a) => a.id));
+    // Sort by publishedAt so temporally nearby articles land in the same batch
+    const sorted = [...articles].sort((a, b) => {
+      const ta = a.publishedAt?.toMillis?.() ?? 0;
+      const tb = b.publishedAt?.toMillis?.() ?? 0;
+      return ta - tb;
+    });
 
-      const groups = rawGroups
-        .filter((g: any) => typeof g.keepId === 'string' && validIds.has(g.keepId))
-        .map((g: any) => ({
-          keepId: g.keepId,
-          duplicateIds: Array.isArray(g.duplicateIds)
-            ? g.duplicateIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== g.keepId)
-            : [],
-        }))
-        .filter((g: any) => g.duplicateIds.length > 0);
+    const BATCH_SIZE = 80;
+    const allGroups: Array<{ keepId: string; duplicateIds: string[] }> = [];
+    const consumedIds = new Set<string>();
 
-      logger.info(`[checkArticleDuplicates] Found ${groups.length} duplicate group(s) among ${articles.length} articles`);
-      return { groups };
-    } catch (err: any) {
-      logger.warn(`[checkArticleDuplicates] AI call failed: ${err.message}`);
-      return { groups: [], error: 'ai_failed' };
+    for (let i = 0; i < sorted.length; i += BATCH_SIZE) {
+      const batch = sorted.slice(i, i + BATCH_SIZE).filter((a) => !consumedIds.has(a.id));
+      if (batch.length < 2) continue;
+      const batchGroups = await runDedupBatch(batch);
+      for (const g of batchGroups) {
+        allGroups.push(g);
+        g.duplicateIds.forEach((id) => consumedIds.add(id));
+      }
     }
+
+    logger.info(`[checkArticleDuplicates] Found ${allGroups.length} duplicate group(s) among ${articles.length} articles`);
+    return { groups: allGroups };
   }
 );
 

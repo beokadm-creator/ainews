@@ -433,8 +433,8 @@ export default function ReportNew() {
               )}
             </div>
             {articles.length > 0 && (
-              <ul className="mt-3 divide-y divide-gray-100 rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
-                {articles.slice(0, 12).map((article, index) => (
+              <ul className="mt-3 max-h-80 divide-y divide-gray-100 overflow-y-auto rounded-lg border border-gray-100 dark:divide-gray-700/40 dark:border-gray-700/40">
+                {articles.map((article, index) => (
                   <li key={article.id} className="px-3 py-2.5">
                     <div className="text-[11px] text-gray-400">{index + 1}. {article.source}</div>
                     <div className="mt-0.5 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
