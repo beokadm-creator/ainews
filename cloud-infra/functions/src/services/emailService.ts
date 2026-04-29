@@ -3,7 +3,9 @@ import * as nodemailer from 'nodemailer';
 import * as admin from 'firebase-admin';
 import { createHmac, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { retryWithBackoff } from '../utils/errorHandling';
-import { buildOutputAssetBundle, buildEmailHtml, resolveOutputDate } from './reportAssetService';
+import { load } from 'cheerio';
+import * as juice from 'juice';
+import { buildSharedReportPage, resolveOutputDate } from './reportAssetService';
 
 // ---------------------------------------------------------------------------
 // SMTP password encryption (AES-256-GCM)
@@ -146,6 +148,82 @@ export async function sendBriefingEmails(outputId: string) {
   return sendOutputEmails(outputId);
 }
 
+function adaptSharedReportForEmail(
+  sharedHtml: string,
+  opts: { shareUrl?: string; unsubscribeUrl?: string } = {},
+): string {
+  const $ = load(sharedHtml);
+
+  // Remove all script tags — email clients block JS anyway
+  $('script').remove();
+
+  // Remove "참고 기사 목록" section entirely from email (per user request — keep email focused on PART sections)
+  $('.part-title').each(function () {
+    if (/참고\s*기사\s*목록/.test($(this).text())) {
+      $(this).remove();
+    }
+  });
+  $('.ref-table, .ref-summary').remove();
+
+  // Article title links → shared-report page with #article-XXX hash (auto-opens modal there, not external news site)
+  if (opts.shareUrl) {
+    $('details.article-block, div.article-block').each(function () {
+      const articleId = $(this).attr('data-article-id');
+      if (!articleId) return;
+      const titleLink = $(this).find('.article-title a').first();
+      if (titleLink.length) {
+        titleLink.attr('href', `${opts.shareUrl}#article-${articleId}`);
+        titleLink.attr('target', '_blank');
+        titleLink.attr('rel', 'noopener noreferrer');
+      }
+    });
+  }
+
+  // Convert <details> → static closed div for email.
+  // Gmail inlines display:flex onto <summary> via juice, breaking native <details> open/close behavior.
+  // Email is static (no JS), so show only the title summary row and hide the body.
+  // Article title links already point to the shared web page where users can read the full content.
+  $('details.article-block').each(function () {
+    const $el = $(this);
+    const articleId = $el.attr('data-article-id') || '';
+    const summaryHtml = $el.find('> summary').first().prop('outerHTML') || '';
+    const bodyParts: string[] = [];
+    $el.children().each(function () {
+      if (!$(this).is('summary')) bodyParts.push($(this).prop('outerHTML') || '');
+    });
+    const idAttr = articleId ? ` data-article-id="${articleId}"` : '';
+    $el.replaceWith(
+      `<div class="article-block"${idAttr} style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #e8e8e8;">`
+      + summaryHtml
+      + `<div class="article-body" style="display:none;">${bodyParts.join('')}</div>`
+      + `</div>`,
+    );
+  });
+
+  // "웹에서 보기" top banner
+  const topBanner = opts.shareUrl
+    ? `<div style="text-align:center;padding:10px 0 18px;"><a href="${opts.shareUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:6px 18px;background:#1e3a5f;color:#fff;font-size:12px;font-weight:600;border-radius:6px;text-decoration:none;">웹에서 보기 →</a></div>`
+    : '';
+
+  // Unsubscribe footer
+  const footer = opts.unsubscribeUrl
+    ? `<div style="margin-top:32px;padding:16px 0;border-top:1px solid #e5e7eb;text-align:center;font-size:11px;color:#9ca3af;">이 메일은 EUM PE 뉴스레터 구독자에게 발송됩니다. &nbsp;<a href="${opts.unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">구독 취소</a></div>`
+    : '';
+
+  const bodyEl = $('body');
+  if (bodyEl.length > 0) {
+    bodyEl.prepend(topBanner);
+    bodyEl.append(footer);
+  }
+
+  // Inline all <style> CSS so email clients render it correctly
+  const inlined = (juice as any).default
+    ? (juice as any).default($.html(), { removeStyleTags: false, preserveMediaQueries: true })
+    : (juice as any)($.html(), { removeStyleTags: false, preserveMediaQueries: true });
+
+  return inlined;
+}
+
 export async function sendOutputEmails(
   outputId: string,
   explicitRecipients?: string[],
@@ -185,7 +263,8 @@ export async function sendOutputEmails(
       secure,
       auth: { user, pass },
     });
-    const assetBundle = await buildOutputAssetBundle(outputId);
+    // Build shared-report HTML (same as web view) once per send batch
+    const sharedPageHtml = await buildSharedReportPage({ id: outputId, ...output });
 
     let subscriberEmails: string[] = [];
 
@@ -225,7 +304,7 @@ export async function sendOutputEmails(
       return { success: true, sentCount: 0, failedCount: 0, failedEmails: [], message: 'All subscribers unsubscribed' };
     }
 
-    const shareUrl = assetBundle.output.shareUrl as string | undefined;
+    const shareUrl = output.shareUrl as string | undefined;
     const subject = `${options?.subjectPrefix || '[EUM PE]'} ${output.title || 'AI News Report'} (${resolveOutputDate(output)})`;
 
     // Send individually to embed per-recipient unsubscribe links
@@ -235,20 +314,13 @@ export async function sendOutputEmails(
 
     for (const recipientEmail of subscriberEmails) {
       const unsubscribeUrl = companyId ? buildUnsubscribeUrl(recipientEmail, companyId) : undefined;
-      const html = await buildEmailHtml(assetBundle.output, assetBundle.articles, { shareUrl, unsubscribeUrl });
+      const html = adaptSharedReportForEmail(sharedPageHtml, { shareUrl, unsubscribeUrl });
       try {
         const info = await retryWithBackoff(() => transporter.sendMail({
           from,
           to: recipientEmail,
           subject,
           html,
-          attachments: [
-            {
-              filename: assetBundle.pdfFilename,
-              content: assetBundle.pdfBuffer,
-              contentType: 'application/pdf',
-            },
-          ],
         }));
         lastMessageId = info.messageId;
         sentCount++;
