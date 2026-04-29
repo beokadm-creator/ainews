@@ -365,13 +365,13 @@ export default function DeliveryCenter() {
       await setDoc(targetRef, payload, { merge: true });
       setSelectedId(targetRef.id);
       setMessage('메일링 그룹을 저장했습니다.');
-      await loadAll();
     } catch (err: any) {
       console.error('Failed to save group:', err);
       setMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSaving(false);
     }
+    loadAll().catch(handleError);
   };
 
   // 발송 설정을 그룹 기본값으로 저장
@@ -383,6 +383,7 @@ export default function DeliveryCenter() {
       await setDoc(
         doc(db, 'distributionGroups', sendGroup.id),
         {
+          companyId,
           sourceIds: sendSourceIds,
           sourceNames: sendSourceNames,
           keywords: parseLines(sendKeywordsText),
@@ -396,12 +397,12 @@ export default function DeliveryCenter() {
         { merge: true },
       );
       setMessage('발송 설정을 그룹 기본값으로 저장했습니다.');
-      await loadAll();
     } catch (err: any) {
       setMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSavingDefaults(false);
     }
+    loadAll().catch(handleError);
   };
 
   const requestReport = async (scheduledAt?: string | null) => {
