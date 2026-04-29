@@ -13,6 +13,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -363,7 +364,11 @@ export default function DeliveryCenter() {
       };
       if (selectedId === 'new') payload.createdAt = serverTimestamp();
       console.log('[saveGroup] uid:', user?.uid, 'role:', (user as any)?.role, 'companyId:', companyId, 'op:', selectedId === 'new' ? 'create' : 'update');
-      await setDoc(targetRef, payload, { merge: true });
+      if (selectedId === 'new') {
+        await setDoc(targetRef, payload);
+      } else {
+        await updateDoc(targetRef, payload);
+      }
       setSelectedId(targetRef.id);
       setMessage('메일링 그룹을 저장했습니다.');
     } catch (err: any) {
@@ -381,10 +386,9 @@ export default function DeliveryCenter() {
     setSavingDefaults(true);
     setMessage('');
     try {
-      await setDoc(
+      await updateDoc(
         doc(db, 'distributionGroups', sendGroup.id),
         {
-          companyId,
           sourceIds: sendSourceIds,
           sourceNames: sendSourceNames,
           keywords: parseLines(sendKeywordsText),
@@ -395,7 +399,6 @@ export default function DeliveryCenter() {
           autoTimeKst: sendAutoTimeKst,
           updatedAt: serverTimestamp(),
         },
-        { merge: true },
       );
       setMessage('발송 설정을 그룹 기본값으로 저장했습니다.');
     } catch (err: any) {
