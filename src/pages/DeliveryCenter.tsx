@@ -21,7 +21,6 @@ import { format } from 'date-fns';
 import {
   AlertCircle,
   CalendarClock,
-  Clock3,
   ExternalLink,
   Eye,
   Loader2,
@@ -92,6 +91,7 @@ export default function DeliveryCenter() {
   const [activeTab, setActiveTab] = useState<'groups' | 'send'>('groups');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingDefaults, setSavingDefaults] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [sending, setSending] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -99,22 +99,20 @@ export default function DeliveryCenter() {
   const [groups, setGroups] = useState<DeliveryGroup[]>([]);
   const [recentRuns, setRecentRuns] = useState<any[]>([]);
 
-  // Group tab form state
+  // Group tab form state (수신자만)
   const [selectedId, setSelectedId] = useState<string>('new');
   const [name, setName] = useState('');
   const [emailsText, setEmailsText] = useState('');
-  const [keywordsText, setKeywordsText] = useState('');
-  const [groupReportTitle, setGroupReportTitle] = useState('');
-  const [groupPrompt, setGroupPrompt] = useState('');
-  const [datePreset, setDatePreset] = useState<DatePreset>('24h');
-  const [sourceIds, setSourceIds] = useState<string[]>([]);
-  const [autoEnabled, setAutoEnabled] = useState(true);
-  const [autoTimeKst, setAutoTimeKst] = useState('08:00');
 
   // Send tab state
   const [sendGroupId, setSendGroupId] = useState<string | null>(null);
   const [sendTitle, setSendTitle] = useState('');
   const [sendPrompt, setSendPrompt] = useState('');
+  const [sendSourceIds, setSendSourceIds] = useState<string[]>([]);
+  const [sendKeywordsText, setSendKeywordsText] = useState('');
+  const [sendDatePreset, setSendDatePreset] = useState<DatePreset>('24h');
+  const [sendAutoEnabled, setSendAutoEnabled] = useState(true);
+  const [sendAutoTimeKst, setSendAutoTimeKst] = useState('08:00');
   const [reservedAt, setReservedAt] = useState('');
   const [useTemplate, setUseTemplate] = useState(false);
 
@@ -130,10 +128,6 @@ export default function DeliveryCenter() {
   const [unsubscribes, setUnsubscribes] = useState<Record<string, string>>({});
   const [subManageLoading, setSubManageLoading] = useState(false);
 
-  const selectedSourceNames = useMemo(
-    () => sources.filter((item) => sourceIds.includes(item.id)).map((item) => item.name),
-    [sourceIds, sources],
-  );
   const selectedGroup = useMemo(
     () => groups.find((g) => g.id === selectedId) || null,
     [groups, selectedId],
@@ -143,8 +137,8 @@ export default function DeliveryCenter() {
     [groups, sendGroupId],
   );
   const sendSourceNames = useMemo(
-    () => sources.filter((s) => (sendGroup?.sourceIds || []).includes(s.id)).map((s) => s.name),
-    [sendGroup, sources],
+    () => sources.filter((s) => sendSourceIds.includes(s.id)).map((s) => s.name),
+    [sendSourceIds, sources],
   );
   const previewHtml = useMemo(
     () =>
@@ -252,29 +246,28 @@ export default function DeliveryCenter() {
     loadAll().catch(handleError);
   }, [companyId]);
 
+  // 그룹 탭: 선택된 그룹에서 이름+이메일만 로드
   useEffect(() => {
     if (!selectedGroup) {
       setName('');
       setEmailsText('');
-      setKeywordsText('');
-      setGroupReportTitle(defaultReportTitle);
-      setGroupPrompt(defaultExternalPrompt);
-      setDatePreset('24h');
-      setSourceIds([]);
-      setAutoEnabled(true);
-      setAutoTimeKst('08:00');
       return;
     }
     setName(selectedGroup.name || '');
     setEmailsText((selectedGroup.emails || []).join('\n'));
-    setKeywordsText((selectedGroup.keywords || []).join(', '));
-    setGroupReportTitle(selectedGroup.reportTitle || '이음M&A NEWS');
-    setGroupPrompt(selectedGroup.prompt || '');
-    setDatePreset(selectedGroup.datePreset || '24h');
-    setSourceIds(selectedGroup.sourceIds || []);
-    setAutoEnabled(Boolean(selectedGroup.autoEnabled));
-    setAutoTimeKst(selectedGroup.autoTimeKst || '08:00');
-  }, [defaultExternalPrompt, defaultReportTitle, selectedGroup]);
+  }, [selectedGroup]);
+
+  // 발송 탭: 선택된 그룹에서 발송 설정 로드
+  useEffect(() => {
+    if (!sendGroup) return;
+    setSendTitle(sendGroup.reportTitle || defaultReportTitle);
+    setSendPrompt(sendGroup.prompt || defaultExternalPrompt);
+    setSendSourceIds(sendGroup.sourceIds || []);
+    setSendKeywordsText((sendGroup.keywords || []).join(', '));
+    setSendDatePreset(sendGroup.datePreset || '24h');
+    setSendAutoEnabled(Boolean(sendGroup.autoEnabled));
+    setSendAutoTimeKst(sendGroup.autoTimeKst || '08:00');
+  }, [sendGroupId, defaultExternalPrompt, defaultReportTitle]);
 
   useEffect(() => {
     if (!previewRequestId) return undefined;
@@ -312,21 +305,18 @@ export default function DeliveryCenter() {
 
   const handleReportClick = useReportClickHandler(previewArticles, setPreviewArticle);
 
-  const toggleSource = (sourceId: string) => {
-    setSourceIds((prev) =>
+  const toggleSendSource = (sourceId: string) => {
+    setSendSourceIds((prev) =>
       prev.includes(sourceId) ? prev.filter((item) => item !== sourceId) : [...prev, sourceId],
     );
   };
 
-  const goToSend = (group: DeliveryGroup) => {
+  const selectGroup = (group: DeliveryGroup) => {
     setSendGroupId(group.id);
-    setSendTitle(group.reportTitle || defaultReportTitle);
-    setSendPrompt(group.prompt || defaultExternalPrompt);
     setPreviewOutput(null);
     setPreviewRequestId(null);
     setPreviewArticles([]);
     setReservedAt('');
-    setActiveTab('send');
     setMessage('');
   };
 
@@ -347,6 +337,7 @@ export default function DeliveryCenter() {
     }
   };
 
+  // 그룹 저장: 이름 + 이메일만
   const saveGroup = async () => {
     if (!companyId) {
       setMessage('회사 정보를 불러올 수 없습니다. 새로고침해 주세요.');
@@ -367,27 +358,49 @@ export default function DeliveryCenter() {
         companyId,
         name: name.trim(),
         emails: parseLines(emailsText),
-        sourceIds,
-        sourceNames: selectedSourceNames,
-        keywords: parseLines(keywordsText),
-        datePreset,
-        prompt: groupPrompt.trim(),
-        reportTitle: groupReportTitle.trim(),
-        autoEnabled,
-        autoTimeKst,
         active: true,
         updatedAt: serverTimestamp(),
       };
       if (selectedId === 'new') payload.createdAt = serverTimestamp();
       await setDoc(targetRef, payload, { merge: true });
       setSelectedId(targetRef.id);
-      setMessage('메일링 그룹 설정을 저장했습니다.');
+      setMessage('메일링 그룹을 저장했습니다.');
       await loadAll();
     } catch (err: any) {
       console.error('Failed to save group:', err);
       setMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 발송 설정을 그룹 기본값으로 저장
+  const saveGroupDefaults = async () => {
+    if (!companyId || !sendGroup) return;
+    setSavingDefaults(true);
+    setMessage('');
+    try {
+      await setDoc(
+        doc(db, 'distributionGroups', sendGroup.id),
+        {
+          sourceIds: sendSourceIds,
+          sourceNames: sendSourceNames,
+          keywords: parseLines(sendKeywordsText),
+          datePreset: sendDatePreset,
+          prompt: sendPrompt.trim(),
+          reportTitle: sendTitle.trim(),
+          autoEnabled: sendAutoEnabled,
+          autoTimeKst: sendAutoTimeKst,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      setMessage('발송 설정을 그룹 기본값으로 저장했습니다.');
+      await loadAll();
+    } catch (err: any) {
+      setMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
+    } finally {
+      setSavingDefaults(false);
     }
   };
 
@@ -400,12 +413,12 @@ export default function DeliveryCenter() {
       await fn({
         companyId,
         mode: 'external',
-        reportTitle: sendTitle.trim() || sendGroup.reportTitle || sendGroup.name,
+        reportTitle: sendTitle.trim() || sendGroup.name,
         prompt: sendPrompt.trim(),
         filters: {
-          sourceIds: sendGroup.sourceIds,
-          keywords: sendGroup.keywords,
-          datePreset: sendGroup.datePreset,
+          sourceIds: sendSourceIds,
+          keywords: parseLines(sendKeywordsText),
+          datePreset: sendDatePreset,
         },
         distributionGroupId: sendGroup.id,
         distributionGroupName: sendGroup.name,
@@ -434,12 +447,12 @@ export default function DeliveryCenter() {
       const result = (await fn({
         companyId,
         mode: 'external',
-        reportTitle: sendTitle.trim() || sendGroup.reportTitle || sendGroup.name,
+        reportTitle: sendTitle.trim() || sendGroup.name,
         prompt: sendPrompt.trim(),
         filters: {
-          sourceIds: sendGroup.sourceIds,
-          keywords: sendGroup.keywords,
-          datePreset: sendGroup.datePreset,
+          sourceIds: sendSourceIds,
+          keywords: parseLines(sendKeywordsText),
+          datePreset: sendDatePreset,
         },
         distributionGroupId: sendGroup.id,
         distributionGroupName: sendGroup.name,
@@ -547,7 +560,7 @@ export default function DeliveryCenter() {
         </div>
       )}
 
-      {/* ── Tab 1: 그룹 관리 ── */}
+      {/* ── Tab 1: 그룹 관리 (수신자 그룹만) ── */}
       {activeTab === 'groups' && (
         <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
           {/* Sidebar */}
@@ -574,7 +587,7 @@ export default function DeliveryCenter() {
                 >
                   <div className="text-sm font-medium">{group.name}</div>
                   <div className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
-                    {group.emails?.length || 0}명 · {group.sourceIds?.length || 0}개 매체
+                    {group.emails?.length || 0}명
                   </div>
                 </button>
               ))}
@@ -586,12 +599,12 @@ export default function DeliveryCenter() {
             </div>
           </div>
 
-          {/* Group form */}
+          {/* Group form — 이름 + 이메일만 */}
           <div className="space-y-5">
             <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
               <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
                 <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                  {selectedId === 'new' ? '새 그룹 만들기' : '그룹 설정'}
+                  {selectedId === 'new' ? '새 그룹 만들기' : '그룹 편집'}
                 </span>
                 {selectedId !== 'new' && (
                   <button
@@ -605,86 +618,31 @@ export default function DeliveryCenter() {
                 )}
               </div>
               <div className="space-y-4 p-4">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">그룹 이름</label>
-                    <input value={name} onChange={(e) => setName(e.target.value)} className={FIELD} placeholder="예: 데일리 PE 메일링" />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">리포트 제목</label>
-                    <input value={groupReportTitle} onChange={(e) => setGroupReportTitle(e.target.value)} className={FIELD} placeholder="비워두면 그룹 이름을 사용합니다" />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">수신 이메일</label>
-                    <textarea value={emailsText} onChange={(e) => setEmailsText(e.target.value)} rows={5} className={FIELD} placeholder={'ceo@company.com\nir@company.com'} />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">AI 분석 지시</label>
-                    <textarea value={groupPrompt} onChange={(e) => setGroupPrompt(e.target.value)} rows={5} className={FIELD} placeholder="예: PE 관점에서 핵심 포인트와 체크포인트만 간결하게 정리" />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">키워드</label>
-                    <input value={keywordsText} onChange={(e) => setKeywordsText(e.target.value)} className={FIELD} placeholder="PE, 인수금융, 구조조정" />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">기사 기간</label>
-                    <select value={datePreset} onChange={(e) => setDatePreset(e.target.value as DatePreset)} className={FIELD}>
-                      {DATE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">자동발송 시간 (KST)</label>
-                    <input type="time" value={autoTimeKst} onChange={(e) => setAutoTimeKst(e.target.value)} className={FIELD} />
-                  </div>
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">그룹 이름</label>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className={FIELD}
+                    placeholder="예: 데일리 PE 메일링"
+                  />
                 </div>
 
                 <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">대상 매체</label>
-                    <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
-                      <input type="checkbox" checked={autoEnabled} onChange={(e) => setAutoEnabled(e.target.checked)} />
-                      자동발송 활성화
-                    </label>
-                  </div>
-                  <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3 dark:border-gray-700/40 dark:bg-white/5">
-                    {sources.length === 0 ? (
-                      <div className="flex items-center gap-4">
-                        <p className="text-xs text-gray-500 dark:text-gray-400">아직 구독된 매체가 없어 외부 메일링용 매체 선택이 비어 있습니다.</p>
-                        <button type="button" onClick={() => navigate('/media')} className="shrink-0 rounded-lg border border-[#1e3a5f] px-3 py-1.5 text-xs font-medium text-[#1e3a5f] hover:bg-[#1e3a5f]/5 dark:border-blue-400 dark:text-blue-300">
-                          매체 구독으로 이동
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="mb-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">선택된 매체 {selectedSourceNames.length}개</div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {sources.map((source) => (
-                            <button
-                              key={source.id}
-                              type="button"
-                              onClick={() => toggleSource(source.id)}
-                              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
-                                sourceIds.includes(source.id)
-                                  ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
-                                  : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 dark:border-gray-700/60 dark:bg-gray-800 dark:text-gray-300'
-                              }`}
-                            >
-                              {source.name}
-                            </button>
-                          ))}
-                        </div>
-                        {selectedSourceNames.length === 0 && (
-                          <p className="mt-2 text-[11px] text-gray-400">매체를 선택하면 해당 매체 기사만 기준으로 외부 리포트를 생성합니다.</p>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                    수신 이메일
+                  </label>
+                  <p className="mb-2 text-[11px] text-gray-400">한 줄에 이메일 하나씩 입력하세요.</p>
+                  <textarea
+                    value={emailsText}
+                    onChange={(e) => setEmailsText(e.target.value)}
+                    rows={8}
+                    className={FIELD}
+                    placeholder={'ceo@company.com\nir@company.com\nanalyst@fund.com'}
+                  />
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    현재 {parseLines(emailsText).length}개 이메일
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -694,11 +652,14 @@ export default function DeliveryCenter() {
                     className="inline-flex items-center gap-2 rounded-xl bg-[#1e3a5f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#24456f] disabled:opacity-50"
                   >
                     {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    {selectedId === 'new' ? '새 그룹 저장' : '그룹 정보 저장'}
+                    {selectedId === 'new' ? '그룹 저장' : '저장'}
                   </button>
                   {selectedId !== 'new' && selectedGroup && (
                     <button
-                      onClick={() => goToSend(selectedGroup)}
+                      onClick={() => {
+                        selectGroup(selectedGroup);
+                        setActiveTab('send');
+                      }}
                       className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f] bg-white px-5 py-2.5 text-sm font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/5 dark:border-blue-400 dark:bg-transparent dark:text-blue-300"
                     >
                       <Send className="h-4 w-4" />
@@ -709,12 +670,11 @@ export default function DeliveryCenter() {
               </div>
             </div>
 
-            {/* Stat cards */}
-            <div className="grid gap-3 md:grid-cols-3">
+            {/* Email count stat */}
+            <div className="grid gap-3 md:grid-cols-2">
               {[
                 { Icon: Mail, label: '수신 예정', value: parseLines(emailsText).length.toString(), sub: '현재 입력된 이메일 수' },
-                { Icon: Sparkles, label: '선택 매체', value: sourceIds.length.toString(), sub: '현재 그룹에 포함된 매체 수' },
-                { Icon: Clock3, label: '자동발송', value: autoEnabled ? autoTimeKst : 'OFF', sub: '자동발송 설정 시각' },
+                { Icon: Users, label: '전체 그룹', value: groups.length.toString(), sub: '등록된 메일링 그룹 수' },
               ].map((stat) => (
                 <div key={stat.label} className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700/60 dark:bg-gray-800/60">
                   <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -737,7 +697,7 @@ export default function DeliveryCenter() {
             <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
               <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">발송 그룹 선택</span>
               <p className="mt-1 text-[11px] text-gray-400">
-                발송할 수신자 그룹을 선택하세요. 그룹에 저장된 매체·키워드·기간 조건으로 리포트를 생성합니다.
+                발송할 수신자 그룹을 선택하세요.
               </p>
             </div>
             {groups.length === 0 ? (
@@ -756,14 +716,7 @@ export default function DeliveryCenter() {
                 {groups.map((group) => (
                   <button
                     key={group.id}
-                    onClick={() => {
-                      setSendGroupId(group.id);
-                      setSendTitle(group.reportTitle || defaultReportTitle);
-                      setSendPrompt(group.prompt || defaultExternalPrompt);
-                      setPreviewOutput(null);
-                      setPreviewRequestId(null);
-                      setPreviewArticles([]);
-                    }}
+                    onClick={() => selectGroup(group)}
                     className={`rounded-xl border p-4 text-left transition ${
                       sendGroupId === group.id
                         ? 'border-[#1e3a5f] bg-[#1e3a5f]/5 ring-1 ring-[#1e3a5f]/20 dark:border-blue-400 dark:bg-blue-500/10'
@@ -776,17 +729,8 @@ export default function DeliveryCenter() {
                         <span className="shrink-0 rounded-full bg-[#1e3a5f] px-2 py-0.5 text-[10px] font-bold text-white">선택됨</span>
                       )}
                     </div>
-                    <div className="mt-2 space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-                      <div className="flex items-center gap-1"><Mail className="h-3 w-3" />{group.emails?.length || 0}명</div>
-                      <div className="flex items-center gap-1">
-                        <Sparkles className="h-3 w-3" />
-                        {group.sourceIds?.length || 0}개 매체 · {DATE_OPTIONS.find((o) => o.value === group.datePreset)?.label || group.datePreset}
-                      </div>
-                      {(group.keywords?.length || 0) > 0 && (
-                        <p className="truncate text-gray-400">
-                          키워드: {group.keywords.slice(0, 3).join(', ')}{group.keywords.length > 3 ? ` 외 ${group.keywords.length - 3}개` : ''}
-                        </p>
-                      )}
+                    <div className="mt-2 flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      <Mail className="h-3 w-3" />{group.emails?.length || 0}명
                     </div>
                   </button>
                 ))}
@@ -797,51 +741,181 @@ export default function DeliveryCenter() {
           {/* Send config — only when group selected */}
           {sendGroup && (
             <>
+              {/* 콘텐츠 설정 */}
               <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
                 <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
-                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">발송 설정</span>
+                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">콘텐츠 설정</span>
                   <p className="mt-1 text-[11px] text-gray-400">
-                    제목과 AI 지시는 이번 발송에만 적용됩니다. 비워두면 그룹에 저장된 값을 사용합니다.
+                    어떤 기사로, 어떻게 리포트를 만들지 설정하세요.
                   </p>
                 </div>
                 <div className="space-y-4 p-4">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
-                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">리포트 제목 (이번 발송)</label>
-                      <input value={sendTitle} onChange={(e) => setSendTitle(e.target.value)} className={FIELD} placeholder={sendGroup.reportTitle || sendGroup.name} />
+                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">리포트 제목</label>
+                      <input
+                        value={sendTitle}
+                        onChange={(e) => setSendTitle(e.target.value)}
+                        className={FIELD}
+                        placeholder="이음M&A NEWS"
+                      />
                     </div>
                     <div>
-                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">예약 발송 시각 (KST)</label>
-                      <input type="datetime-local" value={reservedAt} onChange={(e) => setReservedAt(e.target.value)} className={FIELD} />
+                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">키워드</label>
+                      <input
+                        value={sendKeywordsText}
+                        onChange={(e) => setSendKeywordsText(e.target.value)}
+                        className={FIELD}
+                        placeholder="PE, 인수금융, 구조조정"
+                      />
                     </div>
                   </div>
 
                   <div>
-                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">AI 분석 지시 (이번 발송)</label>
-                    <textarea value={sendPrompt} onChange={(e) => setSendPrompt(e.target.value)} rows={3} className={FIELD} placeholder={sendGroup.prompt || '그룹 기본 지시를 사용합니다'} />
+                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">AI 분석 지시</label>
+                    <textarea
+                      value={sendPrompt}
+                      onChange={(e) => setSendPrompt(e.target.value)}
+                      rows={3}
+                      className={FIELD}
+                      placeholder="예: PE 관점에서 핵심 포인트와 체크포인트만 간결하게 정리"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">기사 기간</label>
+                      <select
+                        value={sendDatePreset}
+                        onChange={(e) => setSendDatePreset(e.target.value as DatePreset)}
+                        className={FIELD}
+                      >
+                        {DATE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">자동발송 시간 (KST)</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="time"
+                          value={sendAutoTimeKst}
+                          onChange={(e) => setSendAutoTimeKst(e.target.value)}
+                          disabled={!sendAutoEnabled}
+                          className={`${FIELD} disabled:opacity-50`}
+                        />
+                        <label className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={sendAutoEnabled}
+                            onChange={(e) => setSendAutoEnabled(e.target.checked)}
+                          />
+                          활성화
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between">
+                      <label className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">대상 매체</label>
+                      <span className="text-[11px] text-gray-400">선택 {sendSourceIds.length}개</span>
+                    </div>
+                    <div className="rounded-lg border border-gray-100 bg-gray-50/60 p-3 dark:border-gray-700/40 dark:bg-white/5">
+                      {sources.length === 0 ? (
+                        <div className="flex items-center gap-4">
+                          <p className="text-xs text-gray-500 dark:text-gray-400">아직 구독된 매체가 없습니다.</p>
+                          <button
+                            type="button"
+                            onClick={() => navigate('/media')}
+                            className="shrink-0 rounded-lg border border-[#1e3a5f] px-3 py-1.5 text-xs font-medium text-[#1e3a5f] hover:bg-[#1e3a5f]/5 dark:border-blue-400 dark:text-blue-300"
+                          >
+                            매체 구독으로 이동
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {sources.map((source) => (
+                            <button
+                              key={source.id}
+                              type="button"
+                              onClick={() => toggleSendSource(source.id)}
+                              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                                sendSourceIds.includes(source.id)
+                                  ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                                  : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 dark:border-gray-700/60 dark:bg-gray-800 dark:text-gray-300'
+                              }`}
+                            >
+                              {source.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {externalTemplate && (
                     <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-                      <input type="checkbox" checked={useTemplate} onChange={(e) => setUseTemplate(e.target.checked)} className="rounded accent-[#d4af37]" />
+                      <input
+                        type="checkbox"
+                        checked={useTemplate}
+                        onChange={(e) => setUseTemplate(e.target.checked)}
+                        className="rounded accent-[#d4af37]"
+                      />
                       <Sparkles className="h-3 w-3 shrink-0 text-amber-500" />
                       스타일 템플릿 적용: <span className="truncate font-medium">{externalTemplate.title}</span>
                     </label>
                   )}
 
-                  <div className="rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-white/5 dark:text-gray-400">
-                    발송 조건: {sendGroup.name} · 매체 {sendSourceNames.length > 0 ? sendSourceNames.join(', ') : '구독 전체'} ·{' '}
-                    {DATE_OPTIONS.find((o) => o.value === sendGroup.datePreset)?.label || sendGroup.datePreset} · 수신자 {sendGroup.emails?.length || 0}명
+                  <button
+                    onClick={saveGroupDefaults}
+                    disabled={savingDefaults}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-200"
+                  >
+                    {savingDefaults ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                    이 설정을 그룹 기본값으로 저장
+                  </button>
+                </div>
+              </div>
+
+              {/* 발송 */}
+              <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+                <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">발송</span>
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    {sendGroup.name} · 수신자 {sendGroup.emails?.length || 0}명
+                  </p>
+                </div>
+                <div className="space-y-4 p-4">
+                  <div>
+                    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">예약 발송 시각 (KST)</label>
+                    <input
+                      type="datetime-local"
+                      value={reservedAt}
+                      onChange={(e) => setReservedAt(e.target.value)}
+                      className={FIELD}
+                    />
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    <button onClick={generatePreview} disabled={previewing || sending} className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f] bg-white px-4 py-2.5 text-sm font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/5 disabled:opacity-50 dark:border-blue-400 dark:bg-transparent dark:text-blue-300">
+                    <button
+                      onClick={generatePreview}
+                      disabled={previewing || sending}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f] bg-white px-4 py-2.5 text-sm font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/5 disabled:opacity-50 dark:border-blue-400 dark:bg-transparent dark:text-blue-300"
+                    >
                       {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}미리보기
                     </button>
-                    <button onClick={() => requestReport(null)} disabled={sending || previewing} className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c49e2c] disabled:opacity-50">
+                    <button
+                      onClick={() => requestReport(null)}
+                      disabled={sending || previewing}
+                      className="inline-flex items-center gap-2 rounded-xl bg-[#d4af37] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c49e2c] disabled:opacity-50"
+                    >
                       {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}즉시 발송
                     </button>
-                    <button onClick={() => requestReport(reservedAt || null)} disabled={sending || previewing || !reservedAt} className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700/60 dark:bg-transparent dark:text-gray-200">
+                    <button
+                      onClick={() => requestReport(reservedAt || null)}
+                      disabled={sending || previewing || !reservedAt}
+                      className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700/60 dark:bg-transparent dark:text-gray-200"
+                    >
                       <CalendarClock className="h-4 w-4" />예약 발송
                     </button>
                   </div>
@@ -856,7 +930,10 @@ export default function DeliveryCenter() {
                     <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">리포트 미리보기</span>
                   </div>
                   {previewOutput && (
-                    <button onClick={() => navigate(`/briefing?outputId=${previewOutput.id}`)} className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] hover:underline dark:text-blue-300">
+                    <button
+                      onClick={() => navigate(`/briefing?outputId=${previewOutput.id}`)}
+                      className="inline-flex items-center gap-1 text-xs text-[#1e3a5f] hover:underline dark:text-blue-300"
+                    >
                       <ExternalLink className="h-3 w-3" />브리핑에서 열기
                     </button>
                   )}
