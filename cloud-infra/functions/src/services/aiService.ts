@@ -8,7 +8,7 @@ import { getApiKeyByEnvKey, getApiKeyForCompany, validateApiKey } from '../utils
 import { RuntimeAiConfig, AiProvider, PROVIDER_DEFAULTS } from '../types/runtime';
 import { syncArticlesToDedup } from './articleDedupService';
 import { recordMetric } from './metricsService';
-import { hasSportsContext } from './globalKeywordService';
+import { hasSportsContext, getGlobalKeywordConfig } from './globalKeywordService';
 import { DEFAULT_TRACKED_COMPANIES } from './trackedCompanyConfig';
 
 const GLM_COST_PER_1K_TOKENS = { input: 0.01, output: 0.01 };
@@ -1331,21 +1331,60 @@ export async function processRelevanceFiltering(options?: {
 
   logger.info(`[RelevanceFilter] Claimed ${articles.length} articles to process.`);
 
-  let processed = 0;
-  let passed = 0;
+  // 추적 회사 기사는 AI 관련성 체크 없이 자동 통과
+  let trackedCompanies: string[] = DEFAULT_TRACKED_COMPANIES;
+  try {
+    const config = await getGlobalKeywordConfig();
+    if (config.trackedCompanies.length > 0) trackedCompanies = config.trackedCompanies;
+  } catch { /* 로드 실패 시 기본값 유지 */ }
+
+  const autoPassBatch = db.batch();
+  let autoPassCount = 0;
+  const remainingArticles: typeof articles = [];
+
+  for (const doc of articles) {
+    const data = doc.data() as any;
+    const matchedKw = `${data.keywordMatched || ''}`.trim();
+    if (matchedKw && trackedCompanies.includes(matchedKw)) {
+      autoPassBatch.update(doc.ref, {
+        status: 'filtered',
+        filteredAt: admin.firestore.FieldValue.serverTimestamp(),
+        relevanceBasis: 'keyword_prefilter',
+        relevanceScore: 80,
+        relevanceScoreMax: 100,
+        relevanceConfidence: 0.9,
+        ...clearWorkerFields(),
+      });
+      autoPassCount++;
+    } else {
+      remainingArticles.push(doc);
+    }
+  }
+
+  if (autoPassCount > 0) {
+    await autoPassBatch.commit();
+    logger.info(`[RelevanceFilter] Auto-passed ${autoPassCount} tracked company articles.`);
+  }
+
+  if (remainingArticles.length === 0) {
+    return { success: true, processed: autoPassCount, passed: autoPassCount };
+  }
+
+  let processed = autoPassCount;
+  let passed = autoPassCount;
   let failed = 0;
 
   // 429 rate limit 방지: 최소 동시 호출 1개 (기존 3개에서 낮춤)
   // AI 설정의 maxPendingBatch 값으로 조정 가능 (기본 2)
   const parallelLimit = Math.max(1, Math.min(3, getDynamicBatchSize(Math.min(3, options?.aiConfig.maxPendingBatch || 2))));
 
-  for (let i = 0; i < articles.length; i += parallelLimit) {
+  for (let i = 0; i < remainingArticles.length; i += parallelLimit) {
     if (options?.abortChecker && await options.abortChecker()) {
-      logger.info(`[RelevanceFilter] Abort requested at batch ${i}/${articles.length}. Returning partial results.`);
+      logger.info(`[RelevanceFilter] Abort requested at batch ${i}/${remainingArticles.length}. Returning partial results.`);
       break;
     }
 
-    const chunk = articles.slice(i, i + parallelLimit);
+    const chunk = remainingArticles.slice(i, i + parallelLimit);
     const results = await Promise.all(chunk.map(async (doc) => {
       const article = doc.data() as any;
       try {

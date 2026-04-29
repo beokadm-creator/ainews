@@ -21,7 +21,9 @@ import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import {
   AlertCircle,
+  Bell,
   CalendarClock,
+  CheckCircle2,
   ExternalLink,
   Eye,
   Loader2,
@@ -43,6 +45,16 @@ import { useReportClickHandler } from '@/hooks/useReportClickHandler';
 import { ArticlePreviewModal } from '@/components/briefing/ArticlePreviewModal';
 
 type DatePreset = '24h' | '3d' | '7d' | '15d' | '30d';
+
+interface TelegramGroup {
+  id: string;
+  name: string;
+  chatId: string;
+  botToken?: string;
+  botTokenSet?: boolean;
+  trackedCompanyAlerts: boolean;
+  updatedAt?: any;
+}
 
 interface SourceItem {
   id: string;
@@ -89,7 +101,7 @@ export default function DeliveryCenter() {
     (user as any)?.companyIds?.[0] ||
     null;
 
-  const [activeTab, setActiveTab] = useState<'groups' | 'send'>('groups');
+  const [activeTab, setActiveTab] = useState<'groups' | 'send' | 'telegram'>('groups');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingDefaults, setSavingDefaults] = useState(false);
@@ -129,6 +141,18 @@ export default function DeliveryCenter() {
   const [unsubscribes, setUnsubscribes] = useState<Record<string, string>>({});
   const [subManageLoading, setSubManageLoading] = useState(false);
 
+  // ── Telegram tab state ──
+  const [tgGroups, setTgGroups] = useState<TelegramGroup[]>([]);
+  const [tgSelectedId, setTgSelectedId] = useState<string>('new');
+  const [tgName, setTgName] = useState('');
+  const [tgChatId, setTgChatId] = useState('');
+  const [tgBotToken, setTgBotToken] = useState('');
+  const [tgTrackedAlerts, setTgTrackedAlerts] = useState(true);
+  const [tgSaving, setTgSaving] = useState(false);
+  const [tgDeleting, setTgDeleting] = useState(false);
+  const [tgTesting, setTgTesting] = useState(false);
+  const [tgMessage, setTgMessage] = useState('');
+
   const selectedGroup = useMemo(
     () => groups.find((g) => g.id === selectedId) || null,
     [groups, selectedId],
@@ -152,6 +176,98 @@ export default function DeliveryCenter() {
       ),
     [previewArticles, previewOutput],
   );
+
+  const tgSelected = useMemo(
+    () => tgGroups.find(g => g.id === tgSelectedId) || null,
+    [tgGroups, tgSelectedId],
+  );
+
+  const loadTelegramGroups = async () => {
+    if (!companyId) return;
+    try {
+      const fn = httpsCallable(functions, 'getTelegramGroups');
+      const result = await fn({ companyId }) as any;
+      setTgGroups(result.data?.groups || []);
+    } catch { /* 무시 */ }
+  };
+
+  const selectTgGroup = (group: TelegramGroup) => {
+    setTgSelectedId(group.id);
+    setTgName(group.name || '');
+    setTgChatId(group.chatId || '');
+    setTgBotToken(''); // 보안상 재입력 요구
+    setTgTrackedAlerts(Boolean(group.trackedCompanyAlerts));
+    setTgMessage('');
+  };
+
+  const resetTgForm = () => {
+    setTgSelectedId('new');
+    setTgName('');
+    setTgChatId('');
+    setTgBotToken('');
+    setTgTrackedAlerts(true);
+    setTgMessage('');
+  };
+
+  const saveTelegramGroup = async () => {
+    if (!companyId) return;
+    setTgSaving(true);
+    setTgMessage('');
+    try {
+      const fn = httpsCallable(functions, 'saveTelegramGroup');
+      const result = await fn({
+        companyId,
+        groupId: tgSelectedId !== 'new' ? tgSelectedId : undefined,
+        name: tgName,
+        chatId: tgChatId,
+        botToken: tgBotToken || undefined,
+        trackedCompanyAlerts: tgTrackedAlerts,
+      }) as any;
+      setTgSelectedId(result.data?.id || 'new');
+      setTgMessage('텔레그램 그룹을 저장했습니다.');
+      await loadTelegramGroups();
+    } catch (err: any) {
+      setTgMessage(`저장 실패: ${err.message || '알 수 없는 오류'}`);
+    } finally {
+      setTgSaving(false);
+    }
+  };
+
+  const deleteTelegramGroup = async (groupId: string) => {
+    if (!window.confirm('이 텔레그램 그룹을 삭제하시겠습니까?')) return;
+    setTgDeleting(true);
+    setTgMessage('');
+    try {
+      const fn = httpsCallable(functions, 'deleteTelegramGroup');
+      await fn({ companyId, groupId });
+      resetTgForm();
+      setTgMessage('그룹을 삭제했습니다.');
+      await loadTelegramGroups();
+    } catch (err: any) {
+      setTgMessage(`삭제 실패: ${err.message || '알 수 없는 오류'}`);
+    } finally {
+      setTgDeleting(false);
+    }
+  };
+
+  const testTelegramGroup = async () => {
+    if (!companyId || tgSelectedId === 'new') return;
+    setTgTesting(true);
+    setTgMessage('');
+    try {
+      const fn = httpsCallable(functions, 'testTelegramGroup');
+      const result = await fn({ companyId, groupId: tgSelectedId }) as any;
+      if (result.data?.success) {
+        setTgMessage('✅ 테스트 메시지 발송 성공! 텔레그램 채팅을 확인해주세요.');
+      } else {
+        setTgMessage(`테스트 실패: ${result.data?.error || '알 수 없는 오류'}`);
+      }
+    } catch (err: any) {
+      setTgMessage(`테스트 실패: ${err.message || '알 수 없는 오류'}`);
+    } finally {
+      setTgTesting(false);
+    }
+  };
 
   const loadUnsubscribes = async () => {
     if (!companyId) return;
@@ -245,6 +361,7 @@ export default function DeliveryCenter() {
 
   useEffect(() => {
     loadAll().catch(handleError);
+    loadTelegramGroups().catch(handleError);
   }, [companyId]);
 
   // 그룹 탭: 선택된 그룹에서 이름+이메일만 로드
@@ -536,12 +653,13 @@ export default function DeliveryCenter() {
       {/* Tab navigation */}
       <div className="flex gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1 dark:border-gray-700/60 dark:bg-gray-800/40">
         {([
-          { key: 'groups' as const, label: '그룹 관리', Icon: Users },
-          { key: 'send' as const, label: '메일 발송', Icon: Send },
-        ] as const).map(({ key, label, Icon }) => (
+          { key: 'groups' as const, label: '그룹 관리', Icon: Users, badge: null },
+          { key: 'send' as const, label: '메일 발송', Icon: Send, badge: groups.length > 0 ? groups.length : null },
+          { key: 'telegram' as const, label: '텔레그램', Icon: Send, badge: tgGroups.length > 0 ? tgGroups.length : null },
+        ] as const).map(({ key, label, Icon, badge }) => (
           <button
             key={key}
-            onClick={() => { setActiveTab(key); setMessage(''); }}
+            onClick={() => { setActiveTab(key); setMessage(''); setTgMessage(''); }}
             className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold transition ${
               activeTab === key
                 ? 'bg-white text-[#1e3a5f] shadow-sm dark:bg-gray-700 dark:text-white'
@@ -550,9 +668,9 @@ export default function DeliveryCenter() {
           >
             <Icon className="h-4 w-4" />
             {label}
-            {key === 'send' && groups.length > 0 && (
+            {badge !== null && (
               <span className="rounded-full bg-[#1e3a5f]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#1e3a5f] dark:bg-blue-500/20 dark:text-blue-300">
-                {groups.length}
+                {badge}
               </span>
             )}
           </button>
@@ -974,6 +1092,195 @@ export default function DeliveryCenter() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ── Tab 3: 텔레그램 그룹 관리 ── */}
+      {activeTab === 'telegram' && (
+        <div className="space-y-4">
+          {tgMessage && (
+            <div className={`rounded-lg border px-4 py-3 text-xs ${
+              tgMessage.startsWith('✅')
+                ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-500/30 dark:bg-green-500/10 dark:text-green-400'
+                : tgMessage.includes('실패') || tgMessage.includes('오류')
+                  ? 'border-red-200 bg-red-50 text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400'
+                  : 'border-[#1e3a5f]/20 bg-[#1e3a5f]/5 text-[#1e3a5f] dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300'
+            }`}>
+              {tgMessage}
+            </div>
+          )}
+
+          <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
+            {/* 그룹 목록 */}
+            <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+              <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">텔레그램 그룹</span>
+                <button
+                  onClick={resetTgForm}
+                  className="text-xs font-semibold text-sky-500 hover:underline"
+                >
+                  새 그룹
+                </button>
+              </div>
+              <div className="space-y-1 p-2">
+                {tgGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    onClick={() => selectTgGroup(group)}
+                    className={`w-full rounded-lg px-3 py-2.5 text-left transition ${
+                      tgSelectedId === group.id
+                        ? 'bg-sky-500/10 text-sky-600 dark:text-sky-300'
+                        : 'text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    <div className="text-sm font-medium">{group.name}</div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-gray-500">
+                      <span className="font-mono">{group.chatId}</span>
+                      {group.trackedCompanyAlerts && (
+                        <span className="rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600 dark:bg-sky-500/20 dark:text-sky-300">알림ON</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+                {tgGroups.length === 0 && (
+                  <div className="px-3 py-8 text-center text-xs text-gray-400">
+                    저장된 텔레그램 그룹이 없습니다.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 그룹 폼 */}
+            <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+              <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/40">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                  {tgSelectedId === 'new' ? '새 그룹 추가' : '그룹 편집'}
+                </span>
+                {tgSelectedId !== 'new' && (
+                  <button
+                    onClick={() => deleteTelegramGroup(tgSelectedId)}
+                    disabled={tgDeleting}
+                    className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+                  >
+                    {tgDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                    삭제
+                  </button>
+                )}
+              </div>
+              <div className="space-y-4 p-4">
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">그룹 이름</label>
+                  <input
+                    value={tgName}
+                    onChange={e => setTgName(e.target.value)}
+                    className={FIELD}
+                    placeholder="예: EUM PE 알림방"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">Chat ID</label>
+                  <input
+                    value={tgChatId}
+                    onChange={e => setTgChatId(e.target.value)}
+                    className={FIELD}
+                    placeholder="-100123456789"
+                  />
+                  <p className="mt-1 text-[11px] text-gray-400">채널·그룹의 Chat ID. 음수(-100...)로 시작하는 경우가 많습니다.</p>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                    Bot Token <span className="normal-case font-normal">(선택 · 미입력 시 시스템 기본값 사용)</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={tgBotToken}
+                    onChange={e => setTgBotToken(e.target.value)}
+                    className={FIELD}
+                    placeholder={tgSelected?.botTokenSet ? '변경하려면 새 토큰 입력' : '123456789:AAAA...'}
+                  />
+                  {tgSelected?.botTokenSet && !tgBotToken && (
+                    <p className="mt-1 text-[11px] text-sky-500 dark:text-sky-400">✓ 커스텀 Bot Token이 저장되어 있습니다. 변경하려면 위에 입력하세요.</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="inline-flex cursor-pointer items-center gap-2.5">
+                    <input
+                      type="checkbox"
+                      checked={tgTrackedAlerts}
+                      onChange={e => setTgTrackedAlerts(e.target.checked)}
+                      className="h-4 w-4 rounded accent-sky-500"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200">관심 등록 회사 알림 수신</span>
+                      <p className="text-[11px] text-gray-400">추적 회사 기사가 감지되면 이 그룹으로 자동 발송합니다.</p>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    onClick={saveTelegramGroup}
+                    disabled={tgSaving}
+                    className="inline-flex items-center gap-2 rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 disabled:opacity-50"
+                  >
+                    {tgSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    {tgSelectedId === 'new' ? '그룹 저장' : '저장'}
+                  </button>
+                  {tgSelectedId !== 'new' && (
+                    <button
+                      onClick={testTelegramGroup}
+                      disabled={tgTesting || tgSaving}
+                      className="inline-flex items-center gap-2 rounded-xl border border-sky-300 bg-white px-5 py-2.5 text-sm font-semibold text-sky-600 hover:bg-sky-50 disabled:opacity-50 dark:border-sky-500/40 dark:bg-transparent dark:text-sky-400"
+                    >
+                      {tgTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bell className="h-4 w-4" />}
+                      연결 테스트
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 현황 카드 */}
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              {
+                label: '전체 그룹',
+                value: tgGroups.length,
+                sub: '등록된 텔레그램 그룹 수',
+              },
+              {
+                label: '추적 알림 활성',
+                value: tgGroups.filter(g => g.trackedCompanyAlerts).length,
+                sub: '관심 회사 알림 수신 그룹',
+              },
+              {
+                label: '커스텀 Bot',
+                value: tgGroups.filter(g => g.botTokenSet).length,
+                sub: '개별 Bot Token 사용 그룹',
+              },
+            ].map(stat => (
+              <div key={stat.label} className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700/60 dark:bg-gray-800/60">
+                <p className="text-xs text-gray-500 dark:text-gray-400">{stat.label}</p>
+                <p className="mt-2 text-2xl font-bold tabular-nums text-sky-500 dark:text-sky-400">{stat.value}</p>
+                <p className="mt-0.5 text-[11px] text-gray-400">{stat.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* 안내 */}
+          <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-4 text-xs text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/5 dark:text-sky-300">
+            <p className="font-semibold mb-1">텔레그램 봇 설정 방법</p>
+            <ol className="space-y-1 list-decimal list-inside text-gray-600 dark:text-gray-400">
+              <li>@BotFather 에서 새 봇 생성 후 Bot Token을 받으세요.</li>
+              <li>봇을 채널·그룹에 관리자로 추가하세요.</li>
+              <li>@userinfobot 또는 Telegram API로 Chat ID를 확인하세요.</li>
+              <li>Bot Token을 환경변수 <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">TELEGRAM_BOT_TOKEN</code>에 설정하거나, 그룹별로 직접 입력하세요.</li>
+            </ol>
+          </div>
         </div>
       )}
 

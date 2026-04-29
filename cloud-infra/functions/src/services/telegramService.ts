@@ -9,6 +9,63 @@ async function getTelegramConfig() {
   };
 }
 
+export interface TelegramGroupConfig {
+  chatId: string;
+  botToken?: string; // 없으면 env var 사용
+}
+
+async function resolveToken(groupConfig?: TelegramGroupConfig): Promise<string | undefined> {
+  return groupConfig?.botToken || process.env.TELEGRAM_BOT_TOKEN;
+}
+
+export async function sendMessageToGroup(
+  text: string,
+  groupConfig: TelegramGroupConfig,
+  parseMode: 'HTML' | 'MarkdownV2' = 'HTML',
+  maxRetries = 3,
+) {
+  const token = await resolveToken(groupConfig);
+  if (!token || !groupConfig.chatId) {
+    return { success: false, error: 'Telegram group config missing' };
+  }
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios.post(url, {
+        chat_id: groupConfig.chatId,
+        text,
+        parse_mode: parseMode,
+        disable_web_page_preview: false,
+      });
+      return { success: true, messageId: response.data.result.message_id };
+    } catch (error: any) {
+      const status = error.response?.status;
+      if (status === 429) {
+        const delay = parseInt(error.response?.headers?.['retry-after'] || '0') * 1000 || (2 ** attempt) * 1000;
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      if (status === 400 && parseMode === 'HTML') {
+        const stripped = text.replace(/<[^>]*>/g, '');
+        return await axios.post(url, {
+          chat_id: groupConfig.chatId,
+          text: stripped.substring(0, 4096),
+          disable_web_page_preview: false,
+        }).then(r => ({ success: true, messageId: r.data.result.message_id }))
+          .catch(() => ({ success: false, error: 'HTML parse failed and plaintext fallback also failed' }));
+      }
+      if (attempt === maxRetries) {
+        logger.error('Error sending to Telegram group:', error.response?.data || error.message);
+        return { success: false, error: error.message };
+      }
+      await new Promise(r => setTimeout(r, (2 ** attempt) * 1000));
+    }
+  }
+  return { success: false, error: 'Max retries exceeded' };
+}
+
 function escapeHtml(text: string): string {
   if (!text) return '';
   return text
@@ -297,13 +354,18 @@ export async function sendBriefingToTelegram(outputId: string) {
   }
 }
 
-export async function sendTrackedCompanyTelegramAlert(article: {
-  title?: string;
-  source?: string;
-  url?: string;
-  keywordMatched?: string | null;
-  collectedAt?: any;
-}) {
+export async function sendTrackedCompanyTelegramAlert(
+  article: {
+    title?: string;
+    source?: string;
+    url?: string;
+    keywordMatched?: string | null;
+    collectedAt?: any;
+    summary?: string[];
+    content?: string;
+  },
+  groups?: TelegramGroupConfig[],
+) {
   const trackedCompany = `${article.keywordMatched || ''}`.trim();
   if (!trackedCompany) {
     return { success: false, error: 'Tracked company missing' };
@@ -315,13 +377,32 @@ export async function sendTrackedCompanyTelegramAlert(article: {
       ? new Date(article.collectedAt)
       : new Date();
 
+  // 요약문 조합: summary 배열 우선, 없으면 content 앞부분
+  let summaryText = '';
+  if (Array.isArray(article.summary) && article.summary.length > 0) {
+    summaryText = article.summary.map((s) => `${s || ''}`.trim()).filter(Boolean).join('\n');
+  } else if (article.content) {
+    summaryText = `${article.content}`.trim().substring(0, 500);
+    if (article.content.length > 500) summaryText += '…';
+  }
+
   const text =
     `🔔 <b>[EUM PE] 추적회사 기사 감지</b>\n\n` +
     `<b>회사:</b> ${escapeHtml(trackedCompany)}\n` +
     `<b>매체:</b> ${escapeHtml(article.source || '-')}\n` +
     `<b>시각:</b> ${escapeHtml(collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))}\n\n` +
-    `<b>제목:</b>\n${escapeHtml(article.title || '')}\n\n` +
-    (article.url ? `<a href="${article.url}">기사 열기</a>` : '');
+    `<b>제목:</b>\n${escapeHtml(article.title || '')}\n` +
+    (summaryText ? `\n<b>요약:</b>\n${escapeHtml(summaryText)}\n` : '') +
+    (article.url ? `\n<a href="${article.url}">원문 보기</a>` : '');
+
+  // 설정된 그룹이 있으면 각 그룹에 발송, 없으면 env var 기본값 사용
+  if (groups && groups.length > 0) {
+    const results = await Promise.allSettled(
+      groups.map(g => sendMessageToGroup(text, g, 'HTML'))
+    );
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value?.success));
+    return { success: failed.length === 0, sentCount: groups.length - failed.length };
+  }
 
   return sendTelegramMessage(text, 'HTML');
 }
