@@ -362,6 +362,7 @@ export default function DeliveryCenter() {
         updatedAt: serverTimestamp(),
       };
       if (selectedId === 'new') payload.createdAt = serverTimestamp();
+      console.log('[saveGroup] uid:', user?.uid, 'role:', (user as any)?.role, 'companyId:', companyId, 'op:', selectedId === 'new' ? 'create' : 'update');
       await setDoc(targetRef, payload, { merge: true });
       setSelectedId(targetRef.id);
       setMessage('메일링 그룹을 저장했습니다.');
