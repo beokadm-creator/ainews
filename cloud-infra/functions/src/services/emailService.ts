@@ -88,7 +88,7 @@ async function getEmailConfig(companyId?: string | null) {
   };
 }
 
-/** Test SMTP connection and send a test email to the configured user address */
+/** Test SMTP connection and send a test email to the specified recipient */
 export async function testSmtpConfig(smtpConfig: {
   host: string;
   port: number;
@@ -96,12 +96,14 @@ export async function testSmtpConfig(smtpConfig: {
   user: string;
   pass: string;
   from: string;
+  testTo?: string;
 }): Promise<{ success: boolean; message: string }> {
-  const { host, port, secure, user, pass: rawPass, from } = smtpConfig;
+  const { host, port, secure, user, pass: rawPass, from, testTo } = smtpConfig;
   if (!user || !rawPass) {
     return { success: false, message: 'SMTP 사용자와 비밀번호를 입력해 주세요.' };
   }
   const pass = decryptSmtpPass(rawPass);
+  const recipient = (testTo || '').trim() || user;
   const transporter = nodemailer.createTransport({
     host: host || 'smtp.gmail.com',
     port: port || 587,
@@ -112,11 +114,11 @@ export async function testSmtpConfig(smtpConfig: {
     await transporter.verify();
     await transporter.sendMail({
       from: from || user,
-      to: user,
+      to: recipient,
       subject: '[EUM] SMTP 연결 테스트',
       html: '<div style="font-family:sans-serif;max-width:480px;padding:24px"><h3 style="color:#1e3a5f">EUM News — SMTP 연결 테스트</h3><p>이 메일이 수신되면 SMTP 설정이 정상적으로 작동하고 있습니다.</p></div>',
     });
-    return { success: true, message: `연결 성공. 테스트 메일을 ${user}로 발송했습니다.` };
+    return { success: true, message: `연결 성공. 테스트 메일을 ${recipient}로 발송했습니다.` };
   } catch (err: any) {
     return { success: false, message: err.message || '연결 실패' };
   }

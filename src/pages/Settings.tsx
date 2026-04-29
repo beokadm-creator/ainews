@@ -64,6 +64,7 @@ export default function Settings() {
   const [smtpPassSaved, setSmtpPassSaved] = useState(false); // true = encrypted pass already in Firestore
   const [smtpFrom, setSmtpFrom] = useState('');
   const [testingSmtp, setTestingSmtp] = useState(false);
+  const [smtpTestTo, setSmtpTestTo] = useState('');
   const [smtpTestResult, setSmtpTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [trackingCompaniesText, setTrackingCompaniesText] = useState(DEFAULT_TRACKED_COMPANIES.join('\n'));
   const [usage, setUsage] = useState<any>(null);
@@ -160,6 +161,7 @@ export default function Settings() {
       const fn = httpsCallable(functions, 'testSmtpConnection');
       const result = await fn({
         companyId,
+        testTo: smtpTestTo.trim() || undefined,
         smtp: {
           host: smtpHost.trim(),
           port: Number(smtpPort || 587),
@@ -378,7 +380,15 @@ export default function Settings() {
           </label>
         </div>
 
-        {/* Test result */}
+        {/* Test recipient + result */}
+        <div className="mt-4 flex items-center gap-2">
+          <input
+            value={smtpTestTo}
+            onChange={(e) => setSmtpTestTo(e.target.value)}
+            placeholder={`테스트 수신자 이메일 (비워두면 ${smtpUser.trim() || 'SMTP User'}로 발송)`}
+            className={`flex-1 ${FIELD_CLASS}`}
+          />
+        </div>
         {smtpTestResult && (
           <div className={`mt-3 flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs ${smtpTestResult.success ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'}`}>
             {smtpTestResult.success
