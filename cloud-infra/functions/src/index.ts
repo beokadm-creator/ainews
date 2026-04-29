@@ -2612,7 +2612,7 @@ export const diagnosticHttp = onRequest(
 // ?????????????????????????????????????????
 // triggerRssCollection: removed (replaced by scheduled pipeline in runFullPipeline)
 // triggerAiFiltering, triggerDeepAnalysis, triggerBriefingGeneration: removed (internal steps, use runFullPipeline)
-export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
+export const triggerEmailSend = onCall({ region: 'us-central1', cors: true, invoker: 'public', memory: '512MiB' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
   const companyId = request.data?.companyId || await getPrimaryCompanyId(request.auth.uid);
   await assertCompanyAccess(request.auth.uid, companyId);
@@ -2946,7 +2946,7 @@ export const createReportShareLink = onCall(
 );
 
 export const sharedReportPage = onRequest(
-  { region: 'us-central1', timeoutSeconds: 120, cors: true, invoker: 'public' },
+  { region: 'us-central1', timeoutSeconds: 120, memory: '512MiB', cors: true, invoker: 'public' },
   async (request, response) => {
     const tokenFromPath = `${request.path || ''}`.split('/').filter(Boolean).pop();
     const shareToken = `${request.query.token || tokenFromPath || ''}`.trim();
@@ -2976,16 +2976,18 @@ export const sharedReportPage = onRequest(
       return;
     }
 
-    // Serve AI-generated HTML as-is with only footnote modal injected (no branded shell)
     const sharedHtml = await buildSharedReportPage(output);
 
-    await outputSnap.docs[0].ref.set({
-      shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-
-    response.setHeader('Cache-Control', 'no-store');
+    // CDN/browser cache so newsletter recipients hit cached HTML instead of cold-starting the function
+    response.setHeader('Cache-Control', 'public, max-age=300, s-maxage=600');
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.status(200).send(sharedHtml);
+
+    // Fire-and-forget analytics update — don't block response
+    outputSnap.docs[0].ref.set(
+      { shareLastViewedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true },
+    ).catch((err) => logger.warn('shareLastViewedAt update failed', err));
   },
 );
 

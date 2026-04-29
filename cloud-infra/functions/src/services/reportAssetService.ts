@@ -1919,6 +1919,10 @@ export async function buildSharedReportPage(output: any): Promise<string> {
         });
         if(modal){modal.addEventListener('click',function(e){if(e.target===modal||(e.target&&e.target.closest&&e.target.closest('[data-close-modal]')))closeModal();});}
         document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+        // 이메일 링크: URL 해시(#article-ID)로 모달 자동 오픈
+        function openModalFromHash(){var h=window.location.hash||'';if(h.startsWith('#article-')){var id=h.slice(9);if(id)openModal(id);}}
+        openModalFromHash();
+        window.addEventListener('hashchange',openModalFromHash);
       })();
     </script>
   `;

@@ -82,9 +82,19 @@ service cloud.firestore {
     }
 
     match /distributionGroups/{groupId} {
-      allow read: if signedIn() && belongsToCompany(resource.data.companyId);
-      allow create: if canOperateCompany(request.resource.data.companyId);
-      allow update, delete: if canOperateCompany(resource.data.companyId);
+      // Direct companyId comparison to avoid issues with belongsToCompany() helper that can fail on field-type mismatches in user docs
+      allow read: if signedIn() && (
+        isSuperadmin() ||
+        resource.data.companyId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId
+      );
+      allow create: if signedIn() && (
+        isSuperadmin() ||
+        request.resource.data.companyId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId
+      );
+      allow update, delete: if signedIn() && (
+        isSuperadmin() ||
+        resource.data.companyId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId
+      );
     }
 
     match /articles/{articleId} {
