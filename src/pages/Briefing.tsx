@@ -279,13 +279,18 @@ export default function Briefing() {
             if (!unsubscribes.has(norm) && !allEmails.includes(norm)) allEmails.push(norm);
           }));
       }
-      await httpsCallable(functions, 'triggerEmailSend')({
+      const result = await httpsCallable(functions, 'triggerEmailSend')({
         id: targetId,
         companyId,
         recipients: allEmails.length > 0 ? allEmails : undefined,
-      });
-      updateState({ emailSendStatus: `발송 완료 (${allEmails.length > 0 ? allEmails.length + '명' : '기본 수신자'})` });
-      setTimeout(() => updateState({ emailModalOpen: false }), 1500);
+      }) as any;
+      const { sentCount = 0, failedCount = 0, failedEmails = [] } = result.data || {};
+      const baseMsg = `발송 완료 — ${sentCount}명 성공`;
+      const failMsg = failedCount > 0
+        ? `, ${failedCount}명 실패: ${(failedEmails as string[]).slice(0, 3).join(', ')}${failedEmails.length > 3 ? ' 외' : ''}`
+        : '';
+      updateState({ emailSendStatus: baseMsg + failMsg });
+      if (failedCount === 0) setTimeout(() => updateState({ emailModalOpen: false }), 1800);
     } catch (err: any) {
       updateState({ emailSendStatus: `발송 실패: ${err?.message || '오류 발생'}` });
     } finally {
@@ -783,7 +788,7 @@ export default function Briefing() {
                 return <div className="mt-3 rounded-lg bg-[#1e3a5f]/5 px-3 py-2 text-xs text-[#1e3a5f] dark:bg-blue-500/10 dark:text-blue-300">총 {allEmails.size}명에게 발송됩니다</div>;
               })()}
               {emailSendStatus && (
-                <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${emailSendStatus.startsWith('발송 실패') ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400' : 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'}`}>
+                <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${emailSendStatus.startsWith('발송 실패') ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400' : emailSendStatus.includes('실패') ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400' : 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'}`}>
                   {emailSendStatus}
                 </div>
               )}

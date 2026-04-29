@@ -10,7 +10,9 @@ import {
   Mail,
   RefreshCw,
   Save,
+  Send,
   Sparkles,
+  XCircle,
 } from 'lucide-react';
 import { collection, doc, getDoc, getDocs } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -59,7 +61,10 @@ export default function Settings() {
   const [smtpSecure, setSmtpSecure] = useState(false);
   const [smtpUser, setSmtpUser] = useState('');
   const [smtpPass, setSmtpPass] = useState('');
+  const [smtpPassSaved, setSmtpPassSaved] = useState(false); // true = encrypted pass already in Firestore
   const [smtpFrom, setSmtpFrom] = useState('');
+  const [testingSmtp, setTestingSmtp] = useState(false);
+  const [smtpTestResult, setSmtpTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [trackingCompaniesText, setTrackingCompaniesText] = useState(DEFAULT_TRACKED_COMPANIES.join('\n'));
   const [usage, setUsage] = useState<any>(null);
   const [styleTemplates, setStyleTemplates] = useState<{ internal?: string; external?: string }>({});
@@ -87,8 +92,11 @@ export default function Settings() {
       setSmtpPort(`${settings.smtp?.port || 587}`);
       setSmtpSecure(Boolean(settings.smtp?.secure));
       setSmtpUser(settings.smtp?.user || '');
-      setSmtpPass(settings.smtp?.pass || '');
+      const storedPass = settings.smtp?.pass || '';
+      setSmtpPassSaved(storedPass.startsWith('enc:') || (storedPass.length > 0 && !storedPass.startsWith('enc:')));
+      setSmtpPass(''); // never expose stored pass to frontend
       setSmtpFrom(settings.smtp?.from || '');
+      setSmtpTestResult(null);
       setTrackingCompaniesText(
         Array.isArray((trackedCompaniesResult as any)?.data?.trackedCompanies) && (trackedCompaniesResult as any).data.trackedCompanies.length > 0
           ? (trackedCompaniesResult as any).data.trackedCompanies.join('\n')
@@ -130,12 +138,43 @@ export default function Settings() {
           port: Number(smtpPort || 587),
           secure: smtpSecure,
           user: smtpUser.trim(),
-          pass: smtpPass.trim(),
+          // null = keep existing encrypted pass; '' = cleared by user; string = new pass
+          pass: smtpPassSaved && !smtpPass.trim() ? null : smtpPass.trim(),
           from: smtpFrom.trim(),
         },
       });
+      // After saving, mark the pass as stored again if we sent a new one
+      if (smtpPass.trim()) {
+        setSmtpPassSaved(true);
+        setSmtpPass('');
+      }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const testSmtp = async () => {
+    setTestingSmtp(true);
+    setSmtpTestResult(null);
+    try {
+      const fn = httpsCallable(functions, 'testSmtpConnection');
+      const result = await fn({
+        companyId,
+        smtp: {
+          host: smtpHost.trim(),
+          port: Number(smtpPort || 587),
+          secure: smtpSecure,
+          user: smtpUser.trim(),
+          // send new pass if entered; otherwise backend loads stored pass
+          pass: smtpPass.trim() || null,
+          from: smtpFrom.trim(),
+        },
+      }) as any;
+      setSmtpTestResult(result.data);
+    } catch (err: any) {
+      setSmtpTestResult({ success: false, message: err.message || '연결 테스트 실패' });
+    } finally {
+      setTestingSmtp(false);
     }
   };
 
@@ -317,17 +356,47 @@ export default function Settings() {
       {/* SMTP */}
       <SectionCard icon={Mail} title="SMTP / 메일 설정">
         <div className="grid gap-3 md:grid-cols-2">
-          <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="SMTP Host" className={FIELD_CLASS} />
+          <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="SMTP Host (예: smtp.gmail.com)" className={FIELD_CLASS} />
           <input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} placeholder="Port (예: 587)" className={FIELD_CLASS} />
-          <input value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="SMTP User" className={FIELD_CLASS} />
-          <input type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="SMTP Password" className={FIELD_CLASS} />
-          <input value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder='From (예: "EUM" <noreply@domain.com>)' className={`md:col-span-2 ${FIELD_CLASS}`} />
+          <input value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="SMTP User (Gmail 주소)" className={FIELD_CLASS} />
+          <div className="relative">
+            <input
+              type="password"
+              value={smtpPass}
+              onChange={(e) => { setSmtpPass(e.target.value); setSmtpPassSaved(false); }}
+              placeholder={smtpPassSaved ? '비밀번호 저장됨 (변경하려면 입력)' : 'SMTP Password (Gmail 앱 비밀번호)'}
+              className={FIELD_CLASS}
+            />
+            {smtpPassSaved && !smtpPass && (
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">저장됨</span>
+            )}
+          </div>
+          <input value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder='From (예: "EUM PE" <you@gmail.com>)' className={`md:col-span-2 ${FIELD_CLASS}`} />
           <label className="md:col-span-2 inline-flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
             <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} className="rounded" />
-            Use SMTPS (secure)
+            Use SMTPS (secure) — Port 465 사용 시 체크
           </label>
         </div>
-        <div className="mt-4 flex justify-end">
+
+        {/* Test result */}
+        {smtpTestResult && (
+          <div className={`mt-3 flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs ${smtpTestResult.success ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'}`}>
+            {smtpTestResult.success
+              ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+            {smtpTestResult.message}
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <button
+            onClick={testSmtp}
+            disabled={testingSmtp || saving || (!smtpUser.trim() && !smtpPassSaved)}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#1e3a5f]/20 bg-[#1e3a5f]/5 px-4 py-2 text-xs font-semibold text-[#1e3a5f] hover:bg-[#1e3a5f]/10 disabled:opacity-40 dark:border-blue-400/20 dark:bg-blue-400/5 dark:text-blue-400 dark:hover:bg-blue-400/10"
+          >
+            {testingSmtp ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+            테스트 메일 발송
+          </button>
           <button
             onClick={saveSettings}
             disabled={saving}

@@ -21,7 +21,7 @@ import { randomBytes } from 'crypto';
 import { processRssSources } from './services/rssService';
 import { checkRelevance, processRelevanceFiltering, processDeepAnalysis, analyzeArticle, testAiProviderConnection, callAiProvider, resolveAiCallOptions } from './services/aiService';
 import { createDailyBriefing, generateCustomReport } from './services/briefingService';
-import { sendBriefingEmails, sendOutputEmails, verifyUnsubscribeToken, generateUnsubscribeToken } from './services/emailService';
+import { sendBriefingEmails, sendOutputEmails, verifyUnsubscribeToken, generateUnsubscribeToken, encryptSmtpPass, testSmtpConfig } from './services/emailService';
 import { buildOutputAssetBundle, buildOutputHtmlAsset, buildSharedReportPage } from './services/reportAssetService';
 import { sendBriefingToTelegram, sendTrackedCompanyTelegramAlert } from './services/telegramService';
 import { processApiSources } from './services/apiSourceService';
@@ -2020,10 +2020,21 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
       port: Number(smtp.port || 587),
       secure: Boolean(smtp.secure),
       user: `${smtp.user || ''}`.trim(),
-      pass: `${smtp.pass || ''}`.trim(),
+      // null = keep existing; '' = clear; string = new value to encrypt
+      pass: smtp.pass === null ? null : `${smtp.pass || ''}`.trim(),
       from: `${smtp.from || ''}`.trim(),
     }
     : null;
+
+  // Handle SMTP password: null → keep existing; already-encrypted → keep; plaintext → encrypt
+  if (safeSmtp) {
+    if (safeSmtp.pass === null) {
+      const existingDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
+      safeSmtp.pass = (existingDoc.data() as any)?.smtp?.pass || '';
+    } else if (safeSmtp.pass && !safeSmtp.pass.startsWith('enc:')) {
+      safeSmtp.pass = encryptSmtpPass(safeSmtp.pass);
+    }
+  }
   const safeTrackingCompanies = Array.isArray(trackingCompanies)
     ? trackingCompanies.map((item: string) => `${item || ''}`.trim()).filter(Boolean)
     : [];
@@ -2046,6 +2057,35 @@ export const saveCompanySettings = onCall({ region: 'us-central1', cors: true, i
 
   return { success: true, companyId };
 });
+
+export const testSmtpConnection = onCall(
+  { region: 'us-central1', cors: true, invoker: 'public', timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
+
+    const { companyId: rawCompanyId, smtp } = request.data || {};
+    const companyId = rawCompanyId || await getPrimaryCompanyId(request.auth.uid);
+    await assertCompanyAccess(request.auth.uid, companyId);
+
+    let smtpConfig = { ...(smtp || {}) };
+
+    // If password not provided (user kept existing), load from Firestore
+    if (!smtpConfig.pass) {
+      const settingsDoc = await admin.firestore().collection('companySettings').doc(companyId).get();
+      const storedSmtp = (settingsDoc.data() as any)?.smtp || {};
+      smtpConfig = {
+        host: smtpConfig.host || storedSmtp.host || 'smtp.gmail.com',
+        port: Number(smtpConfig.port || storedSmtp.port || 587),
+        secure: typeof smtpConfig.secure === 'boolean' ? smtpConfig.secure : Boolean(storedSmtp.secure),
+        user: smtpConfig.user || storedSmtp.user || '',
+        pass: storedSmtp.pass || '',
+        from: smtpConfig.from || storedSmtp.from || '',
+      };
+    }
+
+    return testSmtpConfig(smtpConfig);
+  }
+);
 
 export const saveCompanyStyleTemplate = onCall({ region: 'us-central1', cors: true, invoker: 'public' }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Authentication required');
