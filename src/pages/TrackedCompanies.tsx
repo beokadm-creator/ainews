@@ -1,5 +1,5 @@
 import { handleError } from "@/utils/errorHandler";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, Calendar, CheckCircle2, ExternalLink, Loader2, Search, Settings, Tag, X } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { format, subDays } from 'date-fns';
@@ -20,6 +20,7 @@ interface TrackedArticle {
   content?: string;
   url?: string;
   publishedAt?: any;
+  collectedAt?: any;
   relevanceReason?: string;
   keywordMatched?: string | null;
   keywordPrefilterReason?: string;
@@ -67,15 +68,28 @@ function getArticleReasonDetails(article: TrackedArticle) {
   };
 }
 
-function formatPublishedAt(value: any) {
-  if (!value) return '';
+function toDate(value: any): Date | null {
+  if (!value) return null;
   try {
-    const date = typeof value?.toDate === 'function' ? value.toDate() : new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return format(date, 'yyyy.MM.dd HH:mm');
+    const d = typeof value?.toDate === 'function' ? value.toDate() : new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
   } catch {
-    return '';
+    return null;
   }
+}
+
+function getArticleDate(article: TrackedArticle): Date | null {
+  return toDate(article.publishedAt) ?? toDate(article.collectedAt);
+}
+
+function formatArticleDate(article: TrackedArticle): string {
+  const d = getArticleDate(article);
+  return d ? format(d, 'yyyy.MM.dd HH:mm') : '';
+}
+
+function getDateLabel(article: TrackedArticle): string {
+  const d = getArticleDate(article);
+  return d ? format(d, 'yyyy.MM.dd') : '날짜 확인 중';
 }
 
 function defaultDateRange() {
@@ -86,6 +100,8 @@ function defaultDateRange() {
   };
 }
 
+const LAST_CHECKED_KEY = (companyId: string) => `tracked_last_checked_${companyId}`;
+
 export default function TrackedCompanies() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
@@ -93,12 +109,17 @@ export default function TrackedCompanies() {
   const defaults = defaultDateRange();
 
   const [companies, setCompanies] = useState<string[]>(DEFAULT_TRACKED_COMPANIES);
+  // '' = 전체
   const [selectedCompany, setSelectedCompany] = useState<string>(DEFAULT_TRACKED_COMPANIES[0] || '');
   const [startDate, setStartDate] = useState(defaults.start);
   const [endDate, setEndDate] = useState(defaults.end);
   const [articles, setArticles] = useState<TrackedArticle[]>([]);
   const [loading, setLoading] = useState(false);
   const [previewArticle, setPreviewArticle] = useState<TrackedArticle | null>(null);
+
+  // 마지막 확인 시각 (localStorage)
+  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
+  const updateCheckedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 텔레그램 알림 그룹 현황
   const [tgAlertGroups, setTgAlertGroups] = useState<{ id: string; name: string; chatId: string }[]>([]);
@@ -121,19 +142,31 @@ export default function TrackedCompanies() {
         ? result.data.trackedCompanies
         : DEFAULT_TRACKED_COMPANIES;
       setCompanies(trackedCompanies);
-      setSelectedCompany((prev) => prev || trackedCompanies[0] || '');
+      setSelectedCompany((prev) => prev !== '' ? prev : trackedCompanies[0] || '');
     };
     loadSettings().catch(handleError);
   }, [companyId]);
 
+  // lastCheckedAt 읽기
+  useEffect(() => {
+    if (!companyId) return;
+    const raw = localStorage.getItem(LAST_CHECKED_KEY(companyId));
+    if (raw) {
+      const d = new Date(raw);
+      if (!Number.isNaN(d.getTime())) setLastCheckedAt(d);
+    }
+  }, [companyId]);
+
   const loadArticles = useCallback(async () => {
-    if (!companyId || !selectedCompany) return;
+    if (!companyId) return;
+    if (selectedCompany !== '' && !selectedCompany) return;
     setLoading(true);
     try {
       const fn = httpsCallable(functions, 'searchArticles');
+      const keywords = selectedCompany === '' ? companies : [selectedCompany];
       const result = await fn({
         companyId,
-        keywords: [selectedCompany],
+        keywords,
         startDate,
         endDate,
         statuses: ['analyzed', 'published'],
@@ -141,25 +174,58 @@ export default function TrackedCompanies() {
         offset: 0,
       }) as any;
       setArticles(result.data?.articles || []);
+
+      // 기사 로드 후 5초 뒤에 lastCheckedAt 갱신
+      if (updateCheckedTimer.current) clearTimeout(updateCheckedTimer.current);
+      updateCheckedTimer.current = setTimeout(() => {
+        if (!companyId) return;
+        const now = new Date();
+        localStorage.setItem(LAST_CHECKED_KEY(companyId), now.toISOString());
+        setLastCheckedAt(now);
+      }, 5000);
     } finally {
       setLoading(false);
     }
-  }, [companyId, endDate, selectedCompany, startDate]);
+  }, [companyId, companies, endDate, selectedCompany, startDate]);
 
   useEffect(() => {
     void loadArticles();
   }, [loadArticles]);
 
-  const groupedArticles = useMemo(() => {
+  useEffect(() => {
+    return () => {
+      if (updateCheckedTimer.current) clearTimeout(updateCheckedTimer.current);
+    };
+  }, []);
+
+  // 기사를 날짜별로 그루핑, NEW 여부 판별
+  const { groupedArticles, newCount } = useMemo(() => {
     const grouped = new Map<string, TrackedArticle[]>();
+    let newCount = 0;
+
     for (const article of articles) {
-      const label = formatPublishedAt(article.publishedAt)?.slice(0, 10) || '\uB0A0\uC9DC \uBBF8\uC0C1';
+      const label = getDateLabel(article);
       const bucket = grouped.get(label) || [];
       bucket.push(article);
       grouped.set(label, bucket);
+
+      if (lastCheckedAt) {
+        const d = getArticleDate(article);
+        if (d && d > lastCheckedAt) newCount++;
+      }
     }
-    return Array.from(grouped.entries());
-  }, [articles]);
+
+    return {
+      groupedArticles: Array.from(grouped.entries()),
+      newCount,
+    };
+  }, [articles, lastCheckedAt]);
+
+  const isNew = useCallback((article: TrackedArticle) => {
+    if (!lastCheckedAt) return false;
+    const d = getArticleDate(article);
+    return d ? d > lastCheckedAt : false;
+  }, [lastCheckedAt]);
 
   const previewContentParagraphs = useMemo(
     () => formatArticleContentParagraphs(previewArticle?.content || ''),
@@ -173,6 +239,11 @@ export default function TrackedCompanies() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">관심등록회사</h1>
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           추적 회사 키워드로 수집된 기사를 일자별로 바로 확인합니다.
+          {lastCheckedAt && (
+            <span className="ml-2 text-gray-400">
+              · 마지막 확인 {format(lastCheckedAt, 'MM.dd HH:mm')}
+            </span>
+          )}
         </p>
       </div>
 
@@ -195,7 +266,7 @@ export default function TrackedCompanies() {
                   텔레그램 알림 활성 — {tgAlertGroups.map(g => g.name).join(', ')}
                 </p>
                 <p className="mt-0.5 text-[11px] text-sky-600/80 dark:text-sky-400/80">
-                  추적 회사 기사가 감지되면 위 그룹으로 자동 발송됩니다.
+                  추적 회사 기사가 새로 수집되면 위 그룹으로 자동 발송됩니다.
                 </p>
               </>
             ) : (
@@ -219,6 +290,19 @@ export default function TrackedCompanies() {
       <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
         <div className="p-4">
           <div className="flex flex-wrap gap-2">
+            {/* 전체 버튼 */}
+            <button
+              key="__all__"
+              type="button"
+              onClick={() => setSelectedCompany('')}
+              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                selectedCompany === ''
+                  ? 'border-[#1e3a5f] bg-[#1e3a5f] text-white'
+                  : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-gray-700/60 dark:bg-gray-900/30 dark:text-gray-300 dark:hover:border-gray-500'
+              }`}
+            >
+              전체
+            </button>
             {companies.map((company) => (
               <button
                 key={company}
@@ -260,7 +344,7 @@ export default function TrackedCompanies() {
             </label>
           </div>
 
-          <div className="mt-3">
+          <div className="mt-3 flex items-center gap-3">
             <button
               type="button"
               onClick={() => void loadArticles()}
@@ -270,6 +354,12 @@ export default function TrackedCompanies() {
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               기사 갱신
             </button>
+            {newCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 dark:bg-red-500/10 dark:text-red-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                신규 {newCount}건
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -283,43 +373,78 @@ export default function TrackedCompanies() {
             조건에 맞는 관심 회사 기사가 없습니다.
           </div>
         ) : (
-          groupedArticles.map(([dateLabel, items]) => (
-            <section key={dateLabel} className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
-              <div className="border-b border-gray-100 px-4 py-2.5 dark:border-gray-700/40">
-                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">{dateLabel}</span>
+          groupedArticles.map(([dateLabel, items], groupIndex) => {
+            // 이 그룹에 신규 기사가 있는지 확인
+            const hasNewInGroup = items.some(a => isNew(a));
+            // 이전 그룹들이 모두 NEW였는데 이 그룹부터 OLD인 경우 → 구분선 표시
+            const prevGroupsAllNew = groupIndex > 0 &&
+              groupedArticles.slice(0, groupIndex).every(([, prevItems]) => prevItems.some(a => isNew(a)));
+            const showNewDivider = prevGroupsAllNew && !hasNewInGroup;
+
+            return (
+              <div key={dateLabel}>
+                {/* 신규/기존 구분선 */}
+                {showNewDivider && (
+                  <div className="my-3 flex items-center gap-3">
+                    <div className="flex-1 border-t border-dashed border-gray-300 dark:border-gray-600" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">이전 기사</span>
+                    <div className="flex-1 border-t border-dashed border-gray-300 dark:border-gray-600" />
+                  </div>
+                )}
+                <section className="rounded-xl border border-gray-200 bg-white dark:border-gray-700/60 dark:bg-gray-800/60">
+                  <div className={`flex items-center gap-2 border-b px-4 py-2.5 dark:border-gray-700/40 ${
+                    hasNewInGroup ? 'border-red-100 bg-red-50/40 dark:border-red-500/20 dark:bg-red-500/5' : 'border-gray-100'
+                  }`}>
+                    <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">{dateLabel}</span>
+                    {hasNewInGroup && (
+                      <span className="rounded-full bg-red-500 px-1.5 py-px text-[10px] font-bold text-white leading-none">NEW</span>
+                    )}
+                  </div>
+                  <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
+                    {items.map((article) => {
+                      const articleIsNew = isNew(article);
+                      return (
+                        <li key={article.id}>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewArticle(article)}
+                            className="w-full px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/5"
+                          >
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+                              {articleIsNew && (
+                                <span className="rounded-sm bg-red-500 px-1.5 py-px text-[10px] font-bold text-white leading-none">N</span>
+                              )}
+                              <span>{article.source}</span>
+                              {article.keywordMatched && selectedCompany === '' && (
+                                <span className="rounded-sm bg-blue-50 px-1.5 py-px text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">
+                                  {article.keywordMatched}
+                                </span>
+                              )}
+                              {article.category && (
+                                <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">{article.category}</span>
+                              )}
+                              <span className="ml-auto">{formatArticleDate(article)}</span>
+                            </div>
+                            <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
+                            {article.tags?.length ? (
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {article.tags.slice(0, 5).map((tagName) => (
+                                  <span key={tagName} className="inline-flex items-center gap-0.5 rounded-sm bg-gray-100 px-1.5 py-px text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                                    <Tag className="h-2.5 w-2.5" />
+                                    {tagName}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
               </div>
-              <ul className="divide-y divide-gray-100 dark:divide-gray-700/40">
-                {items.map((article) => (
-                  <li key={article.id}>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewArticle(article)}
-                      className="w-full px-4 py-3 text-left transition hover:bg-gray-50 dark:hover:bg-white/5"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
-                        <span>{article.source}</span>
-                        {article.category && (
-                          <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">{article.category}</span>
-                        )}
-                        <span className="ml-auto">{formatPublishedAt(article.publishedAt)}</span>
-                      </div>
-                      <div className="mt-1 text-sm font-medium text-gray-900 dark:text-white">{article.title}</div>
-                      {article.tags?.length ? (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {article.tags.slice(0, 5).map((tagName) => (
-                            <span key={tagName} className="inline-flex items-center gap-0.5 rounded-sm bg-gray-100 px-1.5 py-px text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
-                              <Tag className="h-2.5 w-2.5" />
-                              {tagName}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))
+            );
+          })
         )}
       </div>
 
@@ -335,7 +460,7 @@ export default function TrackedCompanies() {
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
                   <span>{previewArticle.source}</span>
                   {previewArticle.category && <span className="rounded-sm bg-gray-100 px-1.5 py-px dark:bg-gray-700 dark:text-gray-300">{previewArticle.category}</span>}
-                  <span>{formatPublishedAt(previewArticle.publishedAt)}</span>
+                  <span>{formatArticleDate(previewArticle)}</span>
                 </div>
                 <h3 className="mt-2 text-base font-bold text-gray-900 dark:text-white">{previewArticle.title}</h3>
               </div>
