@@ -2635,7 +2635,6 @@ export const getTelegramGroups = onCall(
     const db = admin.firestore();
     const snap = await db.collection('telegramGroups')
       .where('companyId', '==', companyId)
-      .orderBy('createdAt', 'desc')
       .get();
     return {
       groups: snap.docs.map(d => ({
