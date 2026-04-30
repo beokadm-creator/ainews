@@ -141,52 +141,39 @@ export function splitMessageSafely(message: string, maxLen = 3800): string[] {
 export function formatOutputForTelegram(output: any, articles: any[]): string {
   const dateStr = resolveOutputDate(output);
   const structured = output.structuredOutput || {};
-  const highlights: any[] = structured.highlights || [];
-  const themes: any[] = structured.themes || [];
   const summary: string = structured.summary || '';
 
-  let message = `📣 <b>[EUM PE] AI News Report</b> (${dateStr})\n`;
-  message += `📋 ${escapeHtml(output.title || 'Analysis Report')} · Articles: ${output.articleCount || articles.length}\n\n`;
+  // 헤더
+  let message = `📣 <b>[EUM PE] AI 뉴스 리포트</b> (${dateStr})\n`;
+  message += `기사 ${output.articleCount || articles.length}건\n`;
+  if (output.title) message += `<i>${escapeHtml(output.title)}</i>\n`;
+  message += '\n';
 
-  // Executive Summary
+  // Executive Summary — 2문장 이내로 압축
   if (summary) {
-    message += `💡 <b>Executive Summary</b>\n`;
-    message += `${escapeHtml(summary.substring(0, 400))}\n\n`;
+    const sentences = summary.replace(/\n+/g, ' ').split(/(?<=[.!?])\s+/).filter(Boolean);
+    const brief = sentences.slice(0, 2).join(' ');
+    message += `${escapeHtml(brief.substring(0, 250))}${brief.length > 250 ? '…' : ''}\n\n`;
   }
 
-  // Highlights
-  if (highlights.length > 0) {
-    message += `🎯 <b>Highlights</b>\n`;
-    highlights.slice(0, 3).forEach((h: any) => {
-      message += `• <b>${escapeHtml(h.title || '')}</b>\n`;
-      if (h.description) message += `  └ ${escapeHtml(h.description.substring(0, 120))}\n`;
-    });
-    message += '\n';
-  }
-
-  // Key Themes
-  if (themes.length > 0) {
-    message += `🔍 <b>Key Themes</b>\n`;
-    themes.slice(0, 3).forEach((t: any) => {
-      message += `• <b>${escapeHtml(t.name || '')}</b>: ${escapeHtml((t.description || '').substring(0, 100))}\n`;
-    });
-    message += '\n';
-  }
-
-  // Articles by category
+  // 기사 목록 — 딜 금액 있는 것 우선 최대 8건, 카테고리 구분 없이 플랫하게
   if (articles.length > 0) {
-    message += `📰 <b>Articles by Sector</b>\n`;
-    const categories = [...new Set(articles.map((a: any) => a.category || '기타'))];
-    categories.forEach(cat => {
-      const catArticles = articles.filter((a: any) => (a.category || '기타') === cat).slice(0, 3);
-      if (catArticles.length > 0) {
-        message += `\n[${escapeHtml(String(cat))}]\n`;
-        catArticles.forEach((a: any) => {
-          const amountStr = a.deal?.amount && a.deal.amount !== 'undisclosed' ? ` (💰 ${escapeHtml(a.deal.amount)})` : '';
-          message += `• <a href="${a.url || '#'}">${escapeHtml(a.title || '')}</a>${amountStr}\n`;
-        });
+    const sorted = [...articles].sort((a, b) => {
+      const aHas = a.deal?.amount && a.deal.amount !== 'undisclosed' ? 1 : 0;
+      const bHas = b.deal?.amount && b.deal.amount !== 'undisclosed' ? 1 : 0;
+      return bHas - aHas;
+    });
+    message += `<b>주요 기사</b>\n`;
+    sorted.slice(0, 8).forEach((a: any, i: number) => {
+      const amountStr = a.deal?.amount && a.deal.amount !== 'undisclosed' ? ` · 💰${escapeHtml(a.deal.amount)}` : '';
+      const title = escapeHtml((a.title || '').substring(0, 60)) + ((a.title || '').length > 60 ? '…' : '');
+      if (a.url) {
+        message += `${i + 1}. <a href="${a.url}">${title}</a>${amountStr}\n`;
+      } else {
+        message += `${i + 1}. ${title}${amountStr}\n`;
       }
     });
+    if (articles.length > 8) message += `외 ${articles.length - 8}건\n`;
   }
 
   return message;
@@ -402,38 +389,23 @@ export async function sendTrackedCompanyTelegramAlert(
       ? new Date(article.collectedAt)
       : new Date();
 
-  // 요약문: "Key: Value" 패턴(분류/당사자/딜규모 등 구조화 필드)을 제거하고 내러티브 문장만 추출
+  // 요약문: summary 배열 전체, 없으면 content 앞부분
   let summaryText = '';
   if (Array.isArray(article.summary) && article.summary.length > 0) {
-    const narrativeLines = article.summary
-      .map((s) => `${s || ''}`.trim())
-      .filter((s) => s.length > 0)
-      // "짧은키워드: " 패턴 제거 (분류, 당사자, 딜 규모, 딜 구조 등)
-      .filter((s) => !/^[가-힣A-Za-z\s]{1,12}:\s/.test(s))
-      // 너무 짧은 라인 제거
-      .filter((s) => s.length > 20);
-    // 최대 3문장, 총 300자 이내
-    const picked: string[] = [];
-    let total = 0;
-    for (const line of narrativeLines) {
-      if (picked.length >= 3) break;
-      if (total + line.length > 300) break;
-      picked.push(line);
-      total += line.length;
-    }
-    summaryText = picked.join('\n');
+    summaryText = article.summary.map((s) => `${s || ''}`.trim()).filter(Boolean).join('\n');
   } else if (article.content) {
-    summaryText = `${article.content}`.trim().substring(0, 300);
-    if (article.content.length > 300) summaryText += '…';
+    summaryText = `${article.content}`.trim().substring(0, 500);
+    if (article.content.length > 500) summaryText += '…';
   }
 
-  const dateStr = collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-
   const text =
-    `🔔 <b>${escapeHtml(trackedCompany)}</b> · ${escapeHtml(article.source || '-')} · ${escapeHtml(dateStr)}\n\n` +
-    `${escapeHtml(article.title || '')}\n` +
-    (summaryText ? `\n${escapeHtml(summaryText)}\n` : '') +
-    (article.url ? `\n<a href="${article.url}">원문 보기 →</a>` : '');
+    `🔔 <b>[EUM PE] 추적회사 기사 감지</b>\n\n` +
+    `<b>회사:</b> ${escapeHtml(trackedCompany)}\n` +
+    `<b>매체:</b> ${escapeHtml(article.source || '-')}\n` +
+    `<b>시각:</b> ${escapeHtml(collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))}\n\n` +
+    `<b>제목:</b>\n${escapeHtml(article.title || '')}\n` +
+    (summaryText ? `\n<b>요약:</b>\n${escapeHtml(summaryText)}\n` : '') +
+    (article.url ? `\n<a href="${article.url}">원문 보기</a>` : '');
 
   // 설정된 그룹이 있으면 각 그룹에 발송, 없으면 env var 기본값 사용
   if (groups && groups.length > 0) {
