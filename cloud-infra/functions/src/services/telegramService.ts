@@ -402,23 +402,38 @@ export async function sendTrackedCompanyTelegramAlert(
       ? new Date(article.collectedAt)
       : new Date();
 
-  // 요약문 조합: summary 배열 우선, 없으면 content 앞부분
+  // 요약문: "Key: Value" 패턴(분류/당사자/딜규모 등 구조화 필드)을 제거하고 내러티브 문장만 추출
   let summaryText = '';
   if (Array.isArray(article.summary) && article.summary.length > 0) {
-    summaryText = article.summary.map((s) => `${s || ''}`.trim()).filter(Boolean).join('\n');
+    const narrativeLines = article.summary
+      .map((s) => `${s || ''}`.trim())
+      .filter((s) => s.length > 0)
+      // "짧은키워드: " 패턴 제거 (분류, 당사자, 딜 규모, 딜 구조 등)
+      .filter((s) => !/^[가-힣A-Za-z\s]{1,12}:\s/.test(s))
+      // 너무 짧은 라인 제거
+      .filter((s) => s.length > 20);
+    // 최대 3문장, 총 300자 이내
+    const picked: string[] = [];
+    let total = 0;
+    for (const line of narrativeLines) {
+      if (picked.length >= 3) break;
+      if (total + line.length > 300) break;
+      picked.push(line);
+      total += line.length;
+    }
+    summaryText = picked.join('\n');
   } else if (article.content) {
-    summaryText = `${article.content}`.trim().substring(0, 500);
-    if (article.content.length > 500) summaryText += '…';
+    summaryText = `${article.content}`.trim().substring(0, 300);
+    if (article.content.length > 300) summaryText += '…';
   }
 
+  const dateStr = collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+
   const text =
-    `🔔 <b>[EUM PE] 추적회사 기사 감지</b>\n\n` +
-    `<b>회사:</b> ${escapeHtml(trackedCompany)}\n` +
-    `<b>매체:</b> ${escapeHtml(article.source || '-')}\n` +
-    `<b>시각:</b> ${escapeHtml(collectedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))}\n\n` +
-    `<b>제목:</b>\n${escapeHtml(article.title || '')}\n` +
-    (summaryText ? `\n<b>요약:</b>\n${escapeHtml(summaryText)}\n` : '') +
-    (article.url ? `\n<a href="${article.url}">원문 보기</a>` : '');
+    `🔔 <b>${escapeHtml(trackedCompany)}</b> · ${escapeHtml(article.source || '-')} · ${escapeHtml(dateStr)}\n\n` +
+    `${escapeHtml(article.title || '')}\n` +
+    (summaryText ? `\n${escapeHtml(summaryText)}\n` : '') +
+    (article.url ? `\n<a href="${article.url}">원문 보기 →</a>` : '');
 
   // 설정된 그룹이 있으면 각 그룹에 발송, 없으면 env var 기본값 사용
   if (groups && groups.length > 0) {
