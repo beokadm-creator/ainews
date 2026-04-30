@@ -48,10 +48,10 @@ export async function sendMessageToGroup(
         continue;
       }
       if (status === 400 && parseMode === 'HTML') {
-        const stripped = text.replace(/<[^>]*>/g, '');
+        const plain = htmlToPlaintext(text);
         return await axios.post(url, {
           chat_id: groupConfig.chatId,
-          text: stripped.substring(0, 4096),
+          text: plain.substring(0, 4096),
           disable_web_page_preview: false,
         }).then(r => ({ success: true, messageId: r.data.result.message_id }))
           .catch(() => ({ success: false, error: 'HTML parse failed and plaintext fallback also failed' }));
@@ -72,6 +72,21 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// HTML → plaintext 변환 시 <a href> 링크를 "텍스트 (URL)" 형태로 보존
+function htmlToPlaintext(html: string): string {
+  return html
+    .replace(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, url, label) => {
+      const cleanLabel = label.replace(/<[^>]*>/g, '').trim();
+      return cleanLabel ? `${cleanLabel} (${url})` : url;
+    })
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|section)[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // ─────────────────────────────────────────
@@ -209,12 +224,11 @@ export async function sendTelegramMessage(text: string, parseMode: 'HTML' | 'Mar
       }
 
       if (status === 400 && parseMode === 'HTML') {
-        // HTML 파싱 실패 → HTML 태그 제거 후 plaintext로 재시도
         logger.warn('Telegram HTML parse failed, retrying as plain text');
-        const stripped = text.replace(/<[^>]*>/g, '');
+        const plain = htmlToPlaintext(text);
         return await axios.post(url, {
           chat_id: config.chatId,
-          text: stripped.substring(0, 4096),
+          text: plain.substring(0, 4096),
           disable_web_page_preview: false,
         }).then(r => ({ success: true, messageId: r.data.result.message_id }));
       }
