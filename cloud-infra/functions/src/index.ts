@@ -2746,7 +2746,15 @@ export const triggerTelegramSend = onCall({ region: 'us-central1', cors: true, i
   await assertCompanyAccess(request.auth.uid, companyId);
   const outputId = request.data?.id;
   if (!outputId) throw new HttpsError('invalid-argument', 'Output ID is required');
-  return sendBriefingToTelegram(outputId);
+
+  // 등록된 텔레그램 그룹으로 발송, 없으면 env var fallback
+  const db = admin.firestore();
+  const groupSnap = await db.collection('telegramGroups').where('companyId', '==', companyId).get();
+  const groups: TelegramGroupConfig[] = groupSnap.docs
+    .map(d => ({ chatId: d.data().chatId as string, botToken: d.data().botToken as string | undefined }))
+    .filter(g => g.chatId);
+
+  return sendBriefingToTelegram(outputId, groups.length > 0 ? groups : undefined);
 });
 /** Public HTTP endpoint: validates HMAC token and records unsubscribe in Firestore */
 export const handleUnsubscribe = onRequest(

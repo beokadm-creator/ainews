@@ -315,11 +315,10 @@ export function formatCustomReportForTelegram(output: any, articles: any[]): str
   return message;
 }
 
-export async function sendBriefingToTelegram(outputId: string) {
+export async function sendBriefingToTelegram(outputId: string, groups?: TelegramGroupConfig[]) {
   const db = admin.firestore();
 
   try {
-    // BUG-03 FIX: outputs 컬렉션 사용
     const outputDoc = await db.collection('outputs').doc(outputId).get();
     if (!outputDoc.exists) {
       throw new Error(`Output ${outputId} not found`);
@@ -332,12 +331,24 @@ export async function sendBriefingToTelegram(outputId: string) {
       ? formatCustomReportForTelegram(output, articles)
       : formatOutputForTelegram(output, articles);
 
-    // Telegram has 4096 char limit per message
     const chunks: string[] = splitMessageSafely(message);
 
     let lastResult: any = null;
-    for (const chunk of chunks) {
-      lastResult = await sendTelegramMessage(chunk, 'HTML');
+
+    if (groups && groups.length > 0) {
+      // 등록된 그룹 전체에 발송
+      for (const chunk of chunks) {
+        const results = await Promise.allSettled(
+          groups.map(g => sendMessageToGroup(chunk, g, 'HTML'))
+        );
+        const succeeded = results.filter(r => r.status === 'fulfilled' && (r as any).value?.success);
+        lastResult = { success: succeeded.length > 0, sentCount: succeeded.length, totalCount: groups.length };
+      }
+    } else {
+      // env var 기본값으로 발송
+      for (const chunk of chunks) {
+        lastResult = await sendTelegramMessage(chunk, 'HTML');
+      }
     }
 
     if (lastResult?.success) {
